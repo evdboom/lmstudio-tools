@@ -14,7 +14,7 @@ Use filesystem tools only: list_files, list_folders, read_file, add_folder, add_
 
 Create one campaign folder per run under the user-selected base path.
 
-Suggested folder name: campaign-<slug>-<yyyymmdd>
+Suggested folder name: campaign-<slug>
 
 Required structure:
 

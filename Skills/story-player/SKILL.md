@@ -8,7 +8,7 @@ allow_scripts: false
 
 Purpose: play one turn at a time while keeping continuity in files, not in long chat memory.
 
-Use filesystem tools only: list_files, read_file, add_file, replace_file, append_file.
+Use filesystem tools only: list_folders, list_files, read_file, add_file, replace_file, append_file.
 
 ## Expected Campaign Files
 

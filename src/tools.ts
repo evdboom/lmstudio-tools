@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { safeResolve, SandboxError } from "./sandbox.js";
+import { readTextFile, ReadError, DEFAULT_MAX_BYTES } from "./io.js";
 
 export type ToolOk = { ok: true; text: string };
 export type ToolErr = { ok: false; error: string };
@@ -15,6 +16,7 @@ function err(error: string): ToolErr {
 
 function toError(e: unknown): string {
   if (e instanceof SandboxError) return e.message;
+  if (e instanceof ReadError) return e.message;
   if (e instanceof Error) return e.message;
   return String(e);
 }
@@ -64,14 +66,20 @@ export async function listFolders(
 
 export async function readFile(
   root: string,
-  rel: string
+  rel: string,
+  maxBytes: number = DEFAULT_MAX_BYTES
 ): Promise<ToolResult> {
   try {
     const abs = await safeResolve(root, rel);
     const st = await fs.stat(abs);
     if (!st.isFile()) return err(`Not a file: ${rel}`);
-    const data = await fs.readFile(abs, "utf8");
-    return ok(data);
+    const r = await readTextFile(abs, { maxBytes });
+    if (r.truncated) {
+      return ok(
+        `[TRUNCATED ${r.text.length} of ${r.totalBytes} bytes; raise maxBytes to read more]\n${r.text}`
+      );
+    }
+    return ok(r.text);
   } catch (e) {
     return err(toError(e));
   }

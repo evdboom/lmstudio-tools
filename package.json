@@ -4,7 +4,8 @@
   "description": "Local MCP server exposing sandboxed filesystem tools for LM Studio.",
   "type": "module",
   "bin": {
-    "lmstudio-tools": "dist/index.js"
+    "lmstudio-tools": "dist/index.js",
+    "lmstudio-skills": "dist/skills-index.js"
   },
   "main": "dist/index.js",
   "scripts": {
@@ -16,6 +17,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
+    "yaml": "^2.6.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {

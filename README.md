@@ -1,8 +1,12 @@
 # lmstudio-tools
 
-A local **MCP (Model Context Protocol)** server that gives an LM Studio model
-sandboxed filesystem tools scoped to a single folder you choose. It speaks
-**stdio** so it plugs into LM Studio's built-in MCP client.
+Two local **MCP (Model Context Protocol)** servers for LM Studio:
+
+- **`lmstudio-tools`** — sandboxed filesystem tools scoped to a folder you choose.
+- **`lmstudio-skills`** — a Claude-Code-style "skills" framework: drop
+  `SKILL.md` files into a folder, the model lists/loads them on demand.
+
+Both speak **stdio** and plug into LM Studio's built-in MCP client.
 
 ## Tools exposed
 
@@ -21,6 +25,25 @@ sandboxed filesystem tools scoped to a single folder you choose. It speaks
 All paths are **relative to the sandbox root**. Absolute paths and any path that
 resolves outside the root (including via symlinks) are rejected.
 
+### `read_file` size + binary guards
+
+`read_file` accepts an optional `maxBytes` arg (default **256 KiB**). Files
+larger than `maxBytes` are read up to the cap and prefixed with a
+`[TRUNCATED N of M bytes; raise maxBytes to read more]` header so the model
+can decide whether to ask for more.
+
+`read_file` and `read_skill_file` also refuse:
+
+- **Known binary extensions**: `.exe`, `.dll`, `.so`, `.dylib`, `.bin`, `.msi`,
+  `.iso`, `.img`, `.zip`, `.tar`, `.gz`, `.7z`, `.rar`, `.pdf`, `.png`, `.jpg`,
+  `.mp3`, `.mp4`, `.ttf`, `.woff`, and more (see `src/io.ts`). This protects
+  the model context from blobs that have no plain-text value.
+- **NUL-byte content**: even with a permitted extension, if the read bytes
+  contain a NUL the file is treated as binary and refused.
+
+The list is hard-coded in v1. To extend or trim it, edit `BLOCKED_EXTENSIONS`
+in `src/io.ts` and rebuild.
+
 ## Requirements
 
 - **Node.js 18.17+** (Node 20 LTS or newer recommended)
@@ -35,7 +58,8 @@ npm install
 npm run build
 ```
 
-This produces `dist/index.js`, the entry point used by LM Studio.
+This produces `dist/index.js` (file-tools server) and `dist/skills-index.js`
+(skills server). Both are used by LM Studio.
 
 ### Quick sanity check (optional)
 
@@ -94,15 +118,161 @@ stderr. The server reads MCP JSON-RPC over stdin; press `Ctrl+C` to exit.
 
 `--root` wins if both are set.
 
+### One server, one root
+
+Each server instance serves exactly **one root**. To expose multiple folders,
+register multiple `mcpServers` entries, each pointing at its own root and using
+a distinct key:
+
+```json
+{
+  "mcpServers": {
+    "lmstudio-tools-projects": {
+      "command": "node",
+      "args": ["C:\\repo\\LmStudioTools\\dist\\index.js", "--root", "C:\\Projects"]
+    },
+    "lmstudio-tools-scratch": {
+      "command": "node",
+      "args": ["C:\\repo\\LmStudioTools\\dist\\index.js", "--root", "C:\\Scratch"]
+    }
+  }
+}
+```
+
+This keeps the sandbox model simple — every path is unambiguously inside one
+known root, no merge rules, no name collisions.
+
+### Logging
+
+Every tool call writes one JSON line to **stderr** by default:
+
+```json
+{"ts":"2026-06-11T19:34:09.412Z","server":"lmstudio-tools","tool":"add_file","args":{"path":"a.txt","content":"…"},"ok":true,"durMs":3}
+```
+
+Disable with `--quiet` (or `-q`) in the `args` array. The flag works on both
+servers. LM Studio shows server stderr in its MCP log panel — useful for
+debugging tool calls.
+
+## The skills server (`lmstudio-skills`)
+
+A "skill" is a folder with a `SKILL.md` file. The model decides on each turn
+whether any installed skill applies, then loads the one it needs.
+
+### Folder layout
+
+```
+<skills-root>/
+  pdf-extract/
+    SKILL.md
+    references/
+      notes.md
+    examples/
+      sample.pdf
+  csv-clean/
+    SKILL.md
+```
+
+`SKILL.md` must start with YAML frontmatter:
+
+```markdown
+---
+name: pdf-extract
+description: Extract text and tables from PDF files.
+when_to_use: User mentions PDF, scanned doc, or OCR.
+allow_scripts: false
+---
+# How to extract a PDF
+
+1. Confirm the file exists with `list_files`.
+2. Call `pdftotext`, fallback to OCR if empty.
+3. ...
+```
+
+The body (everything after the second `---`) is what the model reads when it
+calls `load_skill`. Frontmatter is parsed with full YAML (the `yaml` package).
+
+#### `allow_scripts` is reserved, not honored
+
+`allow_scripts: true` in frontmatter is **not executed** in v1. There is no
+`run_skill_script` tool — script execution is the highest-risk surface and is
+intentionally skipped. The field is reserved so existing skills do not need
+re-authoring when a future opt-in execution mode is added (which will require
+both a frontmatter `allow_scripts: true` **and** a `--allow-scripts` CLI flag
+on the server, plus a hard subprocess timeout).
+
+#### Authoring skills
+
+Small local models struggle to write coherent `SKILL.md` files. Recommended
+workflow: draft skills with a **cloud frontier model** (Claude, GPT-5, etc.),
+review them, and drop the resulting folder into the skills root. Add skills by
+**plain folder copy** or `git clone <repo> <skills-root>/<name>` — there is no
+registry, install command, or skill-creator tool in this project.
+
+### Tools exposed
+
+| Tool              | Purpose                                                                |
+| ----------------- | ---------------------------------------------------------------------- |
+| `list_skills`     | Return JSON `[{name, description, when_to_use?, allow_scripts?}]`.     |
+| `load_skill`      | Return the `SKILL.md` body for one skill (frontmatter stripped).       |
+| `read_skill_file` | Read a support file inside a skill folder (`references/...`, etc.).    |
+
+Skill names must match `^[a-z0-9][a-z0-9_-]{0,63}$`. Anything else (including
+`..`, `/`, `\`) is rejected before any filesystem op.
+
+### LM Studio config
+
+```json
+{
+  "mcpServers": {
+    "lmstudio-skills": {
+      "command": "node",
+      "args": [
+        "C:\\repo\\LmStudioTools\\dist\\skills-index.js",
+        "--root",
+        "C:\\path\\to\\your\\skills"
+      ]
+    }
+  }
+}
+```
+
+Or use the `MCP_SKILLS_ROOT` env var instead of `--root`. CLI wins if both set.
+
+### Recommended system prompt
+
+LM Studio does not auto-inject anything from MCP. Add a system prompt so the
+model knows skills exist:
+
+```text
+You have access to a skills framework via the `lmstudio-skills` MCP server.
+At the start of any non-trivial task, call `list_skills` to see which skills
+are available. If a skill's `when_to_use` matches the user's request, call
+`load_skill` with that skill's name and follow the instructions in its body
+exactly. Use `read_skill_file` to fetch referenced support files when needed.
+```
+
+### Running the skills server side-by-side
+
+You can register both servers in `mcp.json`. They are independent processes;
+the model sees `list_skills`, `load_skill`, `read_skill_file` alongside the
+file-edit tools and decides which to call.
+
 ## Sandboxing
+
+Both servers share `src/sandbox.ts`:
 
 - All input paths must be **relative** to the configured root.
 - Paths are resolved with `path.resolve` then verified to remain inside the
   root.
 - The deepest existing ancestor is `realpath`'d to block symlink escapes.
 - `remove_folder` refuses to delete the sandbox root itself.
+- The skills server additionally validates `name` against
+  `^[a-z0-9][a-z0-9_-]{0,63}$` before touching the filesystem.
+- `read_skill_file` re-realpaths the per-skill folder and sandbox-checks the
+  requested file against that folder, blocking escapes into sibling skills.
 - The process inherits OS file permissions of the user running LM Studio,
-  so pick a root the model is allowed to touch and nothing more.
+  so pick roots the model is allowed to touch and nothing more.
 
 ## Development
 
@@ -123,7 +293,9 @@ The project ships a `vitest` suite covering three layers:
 | File                          | Focus                                                                |
 | ----------------------------- | -------------------------------------------------------------------- |
 | `test/sandbox.test.ts`        | `safeResolve`: `..` traversal, absolute paths, NUL bytes, symlink escape. |
-| `test/tools.test.ts`          | Each tool: happy path + error paths + escape attempts via the tool.  |
+| `test/io.test.ts`             | Size cap, truncation, binary-extension blocklist, NUL-byte refusal.  |
+| `test/tools.test.ts`          | Each file tool: happy path + error paths + escape attempts.          |
+| `test/skills.test.ts`         | Skill name validation, frontmatter parse, list/load/read + escapes.  |
 | `test/integration.test.ts`    | Spawn the server, do MCP handshake, exercise the tools over stdio.   |
 
 Run them:
@@ -138,16 +310,23 @@ admin rights (where `fs.symlink` returns `EPERM`).
 ## Project layout
 
 ```
-package.json           # npm metadata + scripts + deps
-tsconfig.json          # TypeScript compiler config
-vitest.config.ts       # test runner config
-src/sandbox.ts         # path-resolution + escape guards
-src/tools.ts           # filesystem operations (pure async fns)
-src/index.ts           # MCP server wiring + CLI entry
-test/                  # vitest suites + helpers
-dist/index.js          # built entry point (after npm run build)
+package.json             # npm metadata + scripts + deps
+tsconfig.json            # TypeScript compiler config
+vitest.config.ts         # test runner config
+LICENSE                  # MIT
+.github/workflows/ci.yml # Linux/Mac/Windows × Node 20/22 CI matrix
+src/sandbox.ts           # shared path-resolution + escape guards
+src/io.ts                # readTextFile: size cap + binary blocklist
+src/log.ts               # structured stderr logger (toggle with --quiet)
+src/tools.ts             # filesystem operations (pure async fns)
+src/index.ts             # MCP server wiring + CLI entry (file tools)
+src/skills.ts            # skill list/load/read implementations
+src/skills-index.ts      # MCP server wiring + CLI entry (skills)
+test/                    # vitest suites + helpers
+dist/index.js            # built file-tools entry point
+dist/skills-index.js     # built skills entry point
 ```
 
 ## License
 
-MIT
+MIT — see [LICENSE](./LICENSE).

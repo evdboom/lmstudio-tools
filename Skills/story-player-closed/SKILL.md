@@ -45,6 +45,9 @@ Choices are the interface.
 
 - If player picks A/B/C or option label, narrate that chosen action.
 - If player gives free action, resolve it, then return to choices.
+- Do not restate, polish, or convert the player's latest words into second-person narration.
+- Do not narrate the protagonist's private feelings, hesitation, hope, fear, or intent unless the player explicitly performs them.
+- End on NPC/world result plus choices, not on the protagonist waiting, bracing, deciding, hoping, or preparing.
 - No labels like `Focus:`, `Skill:`, `(Romance route)`.
 - Choices must be distinct. No fake variants.
 - Strict choice-only only if user asks.
@@ -104,6 +107,8 @@ Keep generated quests small. Add later steps only when play discovers them.
 ## Dialogue
 
 - If player speaks, NPC answers naturally.
+- Start with the NPC/world reaction after the player's last visible speech/action.
+- Do not open with `You hesitate`, `You feel`, `You try`, `You wait`, or a paraphrase of the player line.
 - If no meaningful change: no `commit_turn`.
 - Return to choices at next decision.
 

@@ -64,6 +64,10 @@ export interface GameSummaryOptions {
   journalLimit?: number;
 }
 
+export interface OpeningSceneOptions {
+  campaignPath: string;
+}
+
 export interface SaveSlotOptions {
   slotId?: string;
   label?: string;
@@ -176,6 +180,23 @@ function inventoryRel(campaignPath: string): string {
 
 function clocksRel(campaignPath: string): string {
   return rel(campaignPath, "30-runtime", "clocks.json");
+}
+
+function templateCampaignPath(campaignPath: string): string {
+  const parts = path.normalize(campaignPath).split(/[\\/]+/).filter((part) => part.length > 0 && part !== ".");
+  const saveIndex = parts.lastIndexOf("40-saves");
+  if (saveIndex > 0 && parts.length > saveIndex + 1) {
+    return parts.slice(0, saveIndex).join(path.sep);
+  }
+  return campaignPath;
+}
+
+function openingSceneRel(campaignPath: string): string {
+  return rel(templateCampaignPath(campaignPath), "20-story", "opening-scene.md");
+}
+
+function displayPath(fileRel: string): string {
+  return fileRel.replace(/\\/g, "/");
 }
 
 function slugifyTitle(title: string): string {
@@ -415,13 +436,130 @@ function verifyCompactRecord(
   }
 }
 
+function verifyOpeningSceneText(
+  text: string | undefined,
+  choiceMode: string,
+  issues: VerifyIssue[]
+): void {
+  if (text === undefined) return;
+  const fileRel = "20-story/opening-scene.md";
+  const isOpenMode = choiceMode !== "closed";
+  const lowerText = text.toLowerCase();
+
+  if (isOpenMode) {
+    const forbiddenPromptPatterns = [
+      /what\s+do\s+you\s+do\??/i,
+      /what\s+draws\s+you\s+out\s+first\??/i,
+      /your\s+choice/i,
+      /\bchoose\b/i,
+      /\boption\b/i,
+      /do\s+you\s+(speak|walk|seek|explore|wander|take|want|decide)\b/i,
+    ];
+    if (forbiddenPromptPatterns.some((pattern) => pattern.test(text))) {
+      addIssue(
+        issues,
+        "error",
+        "opening_scene_forbidden_prompt",
+        fileRel,
+        "Open-mode opening scene contains direct prompt/menu language. End on live scene facts instead."
+      );
+    }
+    if (/^\s*[a-d][).]/im.test(text)) {
+      addIssue(
+        issues,
+        "error",
+        "opening_scene_choice_menu",
+        fileRel,
+        "Open-mode opening scene contains A/B/C style choice markers."
+      );
+    }
+  }
+
+  const scaffoldPatterns = [
+    "possible paths",
+    "live scene facts",
+    "opening line",
+    "game summary",
+    "starting context packet",
+    "active threads",
+    "present characters",
+    "present companions",
+  ];
+  if (scaffoldPatterns.some((phrase) => lowerText.includes(phrase))) {
+    addIssue(
+      issues,
+      "warning",
+      "opening_scene_scaffold",
+      fileRel,
+      "Opening scene appears to contain authoring/context scaffold. Prefer player-facing prose only."
+    );
+  }
+  if (/^\s*[-*]\s+\*\*/m.test(text)) {
+    addIssue(
+      issues,
+      "warning",
+      "opening_scene_bullets",
+      fileRel,
+      "Opening scene contains bullet-list presentation. Prefer prose for open-mode startup."
+    );
+  }
+}
+
+function verifyPlayerSetup(state: JsonRecord | undefined, issues: VerifyIssue[]): void {
+  const fileRel = "30-runtime/state.json";
+  if (!state) return;
+  if (!isRecord(state.player_setup)) {
+    addIssue(
+      issues,
+      "warning",
+      "missing_player_setup",
+      fileRel,
+      "State should define player_setup so new-run protagonist questions match the campaign premise."
+    );
+    return;
+  }
+
+  const setup = state.player_setup;
+  if (!isNonEmptyString(setup.protagonist_premise)) {
+    addIssue(
+      issues,
+      "warning",
+      "thin_player_setup",
+      fileRel,
+      "player_setup should include protagonist_premise with fixed campaign facts."
+    );
+  }
+  const askFields = asStringArray(setup.ask_fields);
+  if (askFields.length === 0) {
+    addIssue(
+      issues,
+      "warning",
+      "thin_player_setup",
+      fileRel,
+      "player_setup should include ask_fields for the short new-run questionnaire."
+    );
+  }
+  const genericFields = askFields.filter((field) => /^(race|ancestry|class)$/i.test(field.trim()));
+  if (genericFields.length > 0) {
+    addIssue(
+      issues,
+      "warning",
+      "generic_player_setup_field",
+      fileRel,
+      `player_setup asks generic fantasy field(s): ${genericFields.join(", ")}. Use campaign-specific fields unless these are real campaign concepts.`
+    );
+  }
+}
+
 function defaultSlotId(options: SaveSlotOptions): string {
   if (options.slotId) return options.slotId;
   if (isRecord(options.character)) {
     const characterName = asString(options.character.name);
-    const characterRole = asString(options.character.role) || asString(options.character.class);
-    const characterAncestry = asString(options.character.ancestry) || asString(options.character.race);
-    const source = [characterAncestry, characterRole, characterName].filter(Boolean).join(" ");
+    const characterRole = asString(options.character.role)
+      || asString(options.character.focus)
+      || asString(options.character.track)
+      || asString(options.character.year);
+    const source = [characterName, characterRole].filter(Boolean).join(" ");
     if (source) return slugifyBare(source, "slot-1");
   }
   return slugifyBare(options.label ?? "slot-1", "slot-1");
@@ -613,6 +751,13 @@ export async function verifyCampaign(
     if (state && !isRecord(state.flags)) {
       addIssue(issues, "error", "invalid_json_field", "30-runtime/state.json", "Expected object field: flags.");
     }
+    verifyPlayerSetup(state, issues);
+
+    verifyOpeningSceneText(
+      await readTextOptional(root, rel(campaignPath, "20-story", "opening-scene.md")),
+      asString(state?.choice_mode, "open"),
+      issues
+    );
 
     const journal = await readTextOptional(root, journalRel(campaignPath));
     if (journal === undefined) {
@@ -1150,6 +1295,51 @@ function recapLines(input: {
   return lines;
 }
 
+function compactStateForSummary(state: JsonRecord, location?: string, gameStage?: number, act?: string): JsonRecord {
+  return {
+    turn: state.turn ?? 0,
+    in_game_day: state.in_game_day,
+    time_of_day: state.time_of_day,
+    location,
+    game_stage: gameStage,
+    act,
+    scene_scale: state.scene_scale,
+    play_style: state.play_style,
+    choice_mode: state.choice_mode,
+    last_summary: state.last_summary,
+    player_setup: isRecord(state.player_setup) ? state.player_setup : undefined,
+    player_character: isRecord(state.player_character) ? state.player_character : undefined,
+  };
+}
+
+function playerSetupForSummary(state: JsonRecord): JsonRecord | null {
+  if (isRecord(state.player_setup)) return state.player_setup;
+  return {
+    protagonist_premise: "Use the campaign premise from state, opening scene, and current location.",
+    ask_fields: ["name", "one campaign-appropriate personal detail"],
+    avoid_fields: ["race", "ancestry", "class"],
+    guidance: "Ask only for details that fit this campaign. Do not invent generic fantasy ancestry/class prompts.",
+  };
+}
+
+async function openingScenePayload(
+  root: string,
+  campaignPath: string,
+  state: JsonRecord
+): Promise<JsonRecord | undefined> {
+  const sourceRel = openingSceneRel(campaignPath);
+  const text = await readTextOptional(root, sourceRel);
+  if (text === undefined) return undefined;
+  return {
+    kind: "opening_scene",
+    source_path: displayPath(sourceRel),
+    choice_mode: asString(state.choice_mode, "open"),
+    player_setup: playerSetupForSummary(state),
+    text,
+    narrator_instruction: "Use the opening scene as source material for the first player-facing scene. Do not dump this packet, headings, labels, or metadata. In open mode, end on live scene facts instead of a direct question or choice prompt.",
+  };
+}
+
 async function readNpcIndex(root: string, campaignPath: string): Promise<JsonRecord[]> {
   const index = await readOptionalRecord(root, npcIndexRel(campaignPath));
   return Array.isArray(index?.npcs) ? index.npcs.filter(isRecord) : [];
@@ -1474,6 +1664,32 @@ export async function getSceneContext(
   }
 }
 
+export async function getOpeningScene(
+  root: string,
+  options: OpeningSceneOptions
+): Promise<ToolResult> {
+  try {
+    await ensureCampaignFolder(root, options.campaignPath);
+    const state = await readState(root, options.campaignPath);
+    const location = asString(state.location) || undefined;
+    const gameStage = asNumber(state.game_stage);
+    const act = asString(state.act) || undefined;
+    const openingScene = await openingScenePayload(root, options.campaignPath, state);
+    if (!openingScene) {
+      return err(`Opening scene not found: ${displayPath(openingSceneRel(options.campaignPath))}`);
+    }
+    return ok(json({
+      summary_type: "new_game_opening",
+      player_facing: true,
+      should_commit_turn: false,
+      state: compactStateForSummary(state, location, gameStage, act),
+      startup: openingScene,
+    }));
+  } catch (e) {
+    return err(toError(e));
+  }
+}
+
 export async function getGameSummary(
   root: string,
   options: GameSummaryOptions
@@ -1512,22 +1728,16 @@ export async function getGameSummary(
       options.journalLimit ?? 5
     );
     const compactJournal = recentJournal.map(compactJournalEntry);
+    const isNewGame = (asNumber(state.turn) ?? 0) === 0 && compactJournal.length === 0;
+    const startup = isNewGame
+      ? await openingScenePayload(root, options.campaignPath, state)
+      : undefined;
 
     const payload = {
-      summary_type: "returning_player",
+      summary_type: isNewGame ? "new_game_start" : "returning_player",
       player_facing: true,
-      state: {
-        turn: state.turn ?? 0,
-        in_game_day: state.in_game_day,
-        time_of_day: state.time_of_day,
-        location,
-        game_stage: gameStage,
-        act,
-        scene_scale: state.scene_scale,
-        play_style: state.play_style,
-        choice_mode: state.choice_mode,
-        last_summary: state.last_summary,
-      },
+      state: compactStateForSummary(state, location, gameStage, act),
+      player_setup: playerSetupForSummary(state),
       current_location: locationRecord ? compactLocation(locationRecord) : null,
       present_npcs: presentNpcs,
       active_quests: activeQuests,
@@ -1545,6 +1755,7 @@ export async function getGameSummary(
         clocks,
         recentJournal: compactJournal,
       }),
+      ...(startup ? { startup } : {}),
     };
 
     return ok(json(payload));

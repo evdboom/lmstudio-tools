@@ -89,6 +89,14 @@ Write `30-runtime/state.json`:
   "closed_quests": [],
   "flags": {},
   "open_loops": [],
+  "player_setup": {
+    "protagonist_premise": "Who the player is in this campaign, including fixed facts.",
+    "fixed_facts": ["Campaign-specific protagonist facts the player should not have to choose."],
+    "ask_fields": ["name", "one or two campaign-specific identity details"],
+    "optional_fields": [],
+    "avoid_fields": ["race", "ancestry", "class"],
+    "guidance": "Ask only questions that fit this premise. Do not use generic fantasy character creation unless the campaign explicitly needs it."
+  },
   "play_style": "<pacing: fast procedural | balanced | immersive roleplay>",
   "choice_mode": "<open | closed>",
   "scene_scale": "procedural",
@@ -217,16 +225,18 @@ NPC shape:
 - Inventory: only starting durable items, usually none.
 - Clocks: 0 to 2 starting pressures, only if they matter immediately.
 - Runtime JSON files: keep compact. The game runtime must be able to return small scene packets.
+- `player_setup`: tailor protagonist questions to the campaign. For a magic academy, prefer fields like name, pronouns, magical focus, scholarship reason, dorm/house preference, or family tie. Do not ask for race/ancestry/class unless those are real campaign concepts.
 
 ## Opening Scene
 
 Match choice_mode.
 
 Open mode:
-- No A/B/C, numbers, menu, `choose`, `option`, `What do you do?`, `Your choice`, spotlight prompt.
+- No A/B/C, numbers, menu, `choose`, `option`, `What do you do?`, `Your choice`, spotlight prompt, direct question ending.
 - No labels like `Focus:` or `(Romance route)`.
 - End on live scene facts. Weave possible paths into prose.
 - Player agency is implied.
+- Write final player-facing prose only. Do not include `Possible Paths`, `Live Scene Facts`, `Opening Line`, bullet lists, or authoring scaffold in `opening-scene.md`.
 
 Closed mode:
 - End with 2 to 4 short A/B/C choices.

@@ -100,7 +100,7 @@ hand, and keep the full server disabled unless you are debugging.
 | Server | Use | Tools |
 | ------ | --- | ----- |
 | `lmstudio-game-creator` | Campaign creation | `create_quest`, `create_npc`, `create_location`, `add_item`, `create_clock`, `verify_campaign` |
-| `lmstudio-game-player` | Actual play | Save slots, scene summaries/context, selected quest/NPC/location reads, durable creation, updates, movement, inventory changes, clocks, turn commits |
+| `lmstudio-game-player` | Actual play | Save slots, opening scene/startup, scene summaries/context, selected quest/NPC/location reads, durable creation, updates, movement, inventory changes, clocks, turn commits |
 | `lmstudio-game` | Full/debug surface | All game runtime tools |
 
 The full game surface is:
@@ -109,7 +109,7 @@ The full game surface is:
 | --------- | ----------------------------------------------------------------------------------------------------------- |
 | Verify    | `verify_campaign`                                                                                          |
 | Saves     | `create_save_slot`, `list_save_slots`                                                                       |
-| Scene     | `get_game_summary`, `get_scene_context`, `commit_turn`, `get_recent_journal`                                |
+| Scene     | `get_opening_scene`, `get_game_summary`, `get_scene_context`, `commit_turn`, `get_recent_journal`             |
 | Quests    | `get_potential_quests`, `get_quest_runtime`, `create_quest`, `update_quest`, `advance_quest`                |
 | NPCs      | `get_present_npcs`, `get_npc_runtime`, `create_npc`, `update_npc`, `move_npc`                               |
 | Locations | `get_location_runtime`, `create_location`, `update_location`, `move_party`                                  |
@@ -145,8 +145,8 @@ New story campaigns use structured runtime files:
 `30-runtime/` is the reusable campaign template. Starting an adventure should
 call `create_save_slot`, which copies that template into
 `40-saves/<slot>/30-runtime/`. Normal play tools accept optional `save_slot` and
-then read/write that slot instead of the template. This lets the same backdrop be
-played as a dwarf warrior, an elven mage, or multiple divergent runs.
+then read/write that slot instead of the template. This lets the same backdrop
+support multiple divergent runs without consuming the reusable campaign template.
 
 Indexes are intentionally compact. Full quest, NPC, and location detail lives in
 one JSON file per durable entity inside the active runtime. This keeps the
@@ -169,17 +169,31 @@ The same rule applies to other domains:
 - Use `add_item` only for items the player can keep, spend, inspect, trade, or use later.
 - Use `create_clock` only for pressure that can advance over turns or scenes.
 
-When a player starts a new run, call `create_save_slot` first. When a player
-returns to an existing run, call `list_save_slots` if the slot is unknown, then
-`get_game_summary` with `save_slot` and use its `recap_lines` to give a short
-spoiler-light recap. During active play, call `get_scene_context` with the same
-`save_slot` first. Then load individual runtime records only when they matter:
-`get_quest_runtime`, `get_npc_runtime`, or `get_location_runtime`.
+Campaigns can define `state.player_setup` to describe the protagonist premise,
+fixed facts, and the short fields needed before play starts. For example, a
+magic-academy campaign can mark the protagonist as a first-year student and ask
+for name, pronouns, and magical focus instead of generic fantasy race/class
+fields.
+
+When a player starts a new run, inspect `player_setup` if character details are
+missing, call `create_save_slot`, then call `get_opening_scene` with the same
+`save_slot`. The opening scene is returned by the game runtime so the player
+model does not need file tools. If a model calls `get_game_summary` on a fresh
+slot instead, the summary returns `summary_type: "new_game_start"` with a
+`startup.text` opening scene payload.
+When a player returns to an existing run, call `list_save_slots` if the slot is
+unknown, then `get_game_summary` with `save_slot` and use its `recap_lines` to
+give a short spoiler-light recap. During active play, call `get_scene_context`
+with the same `save_slot` first. Then load individual runtime records only when
+they matter: `get_quest_runtime`, `get_npc_runtime`, or
+`get_location_runtime`.
 
 Campaign creation should end with `verify_campaign`. It checks required files,
 JSON object/array fields, empty or very short text files, and technical runtime
-counts such as quests, locations, NPCs, inventory, clocks, and save slots. Fix
-all reported errors before handing the campaign to the user.
+counts such as quests, locations, NPCs, inventory, clocks, and save slots. It
+also warns when `player_setup` is missing or uses generic protagonist fields
+like race/class without a campaign reason. Fix all reported errors before
+handing the campaign to the user.
 
 ## Requirements
 

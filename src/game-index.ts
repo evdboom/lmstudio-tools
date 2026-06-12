@@ -20,6 +20,7 @@ import {
   getInventory,
   getLocationRuntime,
   getNpcRuntime,
+  getOpeningScene,
   getPotentialQuests,
   getPresentNpcs,
   getQuestRuntime,
@@ -60,6 +61,7 @@ const CREATOR_TOOLS = new Set([
 const PLAYER_TOOLS = new Set([
   "create_save_slot",
   "list_save_slots",
+  "get_opening_scene",
   "get_game_summary",
   "get_scene_context",
   "get_quest_runtime",
@@ -205,12 +207,12 @@ export function registerGameTools(
         .string()
         .min(1)
         .optional()
-        .describe("Save slot id, e.g. dwarf-warrior or elven-mage. Generated from label/character if omitted."),
+        .describe("Save slot id, e.g. student-name or run-1. Generated from label/character if omitted."),
       label: z.string().optional().describe("Human-readable save label."),
       character: z
         .record(z.unknown())
         .optional()
-        .describe("Player character metadata for this playthrough, e.g. name, ancestry, class, notes."),
+        .describe("Campaign-specific protagonist metadata for this playthrough. Use fields from player_setup; do not invent generic race/class fields."),
       state_patch: z
         .record(z.unknown())
         .optional()
@@ -254,7 +256,7 @@ export function registerGameTools(
 
   server.tool(
     "get_game_summary",
-    "Return a compact spoiler-light recap for a returning player: current state, location, present NPCs, active threads, nearby hooks, inventory, clocks, recent journal beats, and ready-to-say recap lines.",
+    "Return a compact spoiler-light recap and player_setup for campaign-grounded protagonist questions. If state.turn is 0 with an empty journal, also includes startup opening-scene text for first play.",
     {
       campaign_path: campaignPath,
       save_slot: saveSlot,
@@ -280,6 +282,23 @@ export function registerGameTools(
           campaignPath: runtimeCampaignPath(campaign_path, save_slot),
           questLimit: quest_limit,
           journalLimit: journal_limit,
+        }),
+      log
+    )
+  );
+
+  server.tool(
+    "get_opening_scene",
+    "Return the first-scene startup payload and player_setup for a new save slot. Call after creating or selecting a slot whose state.turn is 0; do not dump the packet, transform startup.text into player-facing prose.",
+    {
+      campaign_path: campaignPath,
+      save_slot: saveSlot,
+    },
+    wrap(
+      "get_opening_scene",
+      ({ campaign_path, save_slot }) =>
+        getOpeningScene(root, {
+          campaignPath: runtimeCampaignPath(campaign_path, save_slot),
         }),
       log
     )

@@ -204,6 +204,7 @@ describe("MCP integration over stdio", () => {
         "create_quest",
         "create_save_slot",
         "get_game_summary",
+        "get_opening_scene",
         "get_location_runtime",
         "get_npc_runtime",
         "get_quest_runtime",

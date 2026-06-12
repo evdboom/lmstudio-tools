@@ -15,6 +15,7 @@ import {
   getInventory,
   getLocationRuntime,
   getNpcRuntime,
+  getOpeningScene,
   getPotentialQuests,
   getPresentNpcs,
   getQuestRuntime,
@@ -185,6 +186,12 @@ describe("game runtime", () => {
       closed_quests: [],
       flags: {},
       open_loops: [],
+      player_setup: {
+        protagonist_premise: "The player is a first-year magic student at the academy.",
+        fixed_facts: ["first-year magic student"],
+        ask_fields: ["name", "pronouns", "magical focus"],
+        avoid_fields: ["race", "ancestry", "class"],
+      },
       play_style: "balanced",
       choice_mode: "open",
       scene_scale: "procedural",
@@ -271,8 +278,18 @@ describe("game runtime", () => {
     await fs.mkdir(path.join(root, brokenCampaign, "00-meta"), { recursive: true });
     await fs.mkdir(path.join(root, brokenCampaign, "30-runtime", "quests"), { recursive: true });
     await writeText(path.join(brokenCampaign, "00-meta", "campaign-brief.md"), "tiny");
+    await writeText(
+      path.join(brokenCampaign, "20-story", "opening-scene.md"),
+      [
+        "# Opening Scene",
+        "## Possible Paths",
+        "- **The House Representatives** wait nearby.",
+        "What do you do? Do you speak to someone or walk somewhere?",
+      ].join("\n")
+    );
     await writeJson(path.join(brokenCampaign, "30-runtime", "state.json"), {
       location: "missing-start",
+      choice_mode: "open",
     });
     await writeJson(path.join(brokenCampaign, "30-runtime", "quests", "index.json"), {
       quests: [],
@@ -293,6 +310,10 @@ describe("game runtime", () => {
     expect(payload.issues.map((issue) => issue.code)).toContain("missing_file");
     expect(payload.issues.map((issue) => issue.code)).toContain("thin_file");
     expect(payload.issues.map((issue) => issue.code)).toContain("missing_json_field");
+    expect(payload.issues.map((issue) => issue.code)).toContain("missing_player_setup");
+    expect(payload.issues.map((issue) => issue.code)).toContain("opening_scene_forbidden_prompt");
+    expect(payload.issues.map((issue) => issue.code)).toContain("opening_scene_scaffold");
+    expect(payload.issues.map((issue) => issue.code)).toContain("opening_scene_bullets");
   });
 
   it("returns only active or currently relevant quests", async () => {
@@ -490,55 +511,55 @@ describe("game runtime", () => {
       exits: ["market"],
     });
 
-    const dwarf = await createSaveSlot(root, campaignPath, {
-      slotId: "dwarf-warrior",
-      label: "Dwarf Warrior",
-      character: { name: "Bruni", ancestry: "dwarf", class: "warrior" },
+    const bruni = await createSaveSlot(root, campaignPath, {
+      slotId: "bruni-ward",
+      label: "Bruni Ward",
+      character: { name: "Bruni", role: "first-year student", focus: "protective wards" },
     });
-    const mage = await createSaveSlot(root, campaignPath, {
-      slotId: "elven-mage",
-      label: "Elven Mage",
-      character: { name: "Vael", ancestry: "elf", class: "mage" },
+    const vael = await createSaveSlot(root, campaignPath, {
+      slotId: "vael-lantern",
+      label: "Vael Lantern",
+      character: { name: "Vael", role: "first-year student", focus: "lantern magic" },
     });
-    expect(dwarf.ok).toBe(true);
-    expect(mage.ok).toBe(true);
+    expect(bruni.ok).toBe(true);
+    expect(vael.ok).toBe(true);
 
-    const dwarfPath = runtimeCampaignPath(campaignPath, "dwarf-warrior");
-    const magePath = runtimeCampaignPath(campaignPath, "elven-mage");
-    await commitTurn(root, dwarfPath, {
+    const bruniPath = runtimeCampaignPath(campaignPath, "bruni-ward");
+    const vaelPath = runtimeCampaignPath(campaignPath, "vael-lantern");
+    await commitTurn(root, bruniPath, {
       location: "alley",
       last_summary: "Bruni shouldered through the smoke into Spice Alley.",
       journal_entry: { action: "entered the alley", outcome: "found a second trail" },
     });
-    await createQuest(root, dwarfPath, {
-      id: "q-dwarf-oath",
-      title: "Dwarf Oath",
+    await createQuest(root, bruniPath, {
+      id: "q-bruni-oath",
+      title: "Bruni's Oath",
       status: "active",
       locations: ["alley"],
       stages: ["act1"],
       summary: "Bruni swore to find the hand behind the smoke.",
     });
 
-    const dwarfSummary = await getGameSummary(root, { campaignPath: dwarfPath });
-    const mageSummary = await getGameSummary(root, { campaignPath: magePath });
-    expect(dwarfSummary.ok).toBe(true);
-    expect(mageSummary.ok).toBe(true);
-    if (!dwarfSummary.ok || !mageSummary.ok) return;
+    const bruniSummary = await getGameSummary(root, { campaignPath: bruniPath });
+    const vaelSummary = await getGameSummary(root, { campaignPath: vaelPath });
+    expect(bruniSummary.ok).toBe(true);
+    expect(vaelSummary.ok).toBe(true);
+    if (!bruniSummary.ok || !vaelSummary.ok) return;
 
-    const dwarfPayload = JSON.parse(dwarfSummary.text) as {
+    const bruniPayload = JSON.parse(bruniSummary.text) as {
       state: { location: string; turn: number };
       active_quests: Array<{ id: string }>;
     };
-    const magePayload = JSON.parse(mageSummary.text) as {
+    const vaelPayload = JSON.parse(vaelSummary.text) as {
       state: { location: string; turn: number };
       active_quests: Array<{ id: string }>;
     };
-    expect(dwarfPayload.state.location).toBe("alley");
-    expect(dwarfPayload.state.turn).toBe(3);
-    expect(dwarfPayload.active_quests.map((quest) => quest.id)).toContain("q-dwarf-oath");
-    expect(magePayload.state.location).toBe("market");
-    expect(magePayload.state.turn).toBe(2);
-    expect(magePayload.active_quests.map((quest) => quest.id)).not.toContain("q-dwarf-oath");
+    expect(bruniPayload.state.location).toBe("alley");
+    expect(bruniPayload.state.turn).toBe(3);
+    expect(bruniPayload.active_quests.map((quest) => quest.id)).toContain("q-bruni-oath");
+    expect(vaelPayload.state.location).toBe("market");
+    expect(vaelPayload.state.turn).toBe(2);
+    expect(vaelPayload.active_quests.map((quest) => quest.id)).not.toContain("q-bruni-oath");
 
     const templateState = JSON.parse(
       await fs.readFile(path.join(root, campaignPath, "30-runtime", "state.json"), "utf8")
@@ -551,9 +572,79 @@ describe("game runtime", () => {
     if (!slots.ok) return;
     const slotPayload = JSON.parse(slots.text) as { slots: Array<{ id: string; label: string }> };
     expect(slotPayload.slots).toEqual([
-      expect.objectContaining({ id: "dwarf-warrior", label: "Dwarf Warrior" }),
-      expect.objectContaining({ id: "elven-mage", label: "Elven Mage" }),
+      expect.objectContaining({ id: "bruni-ward", label: "Bruni Ward" }),
+      expect.objectContaining({ id: "vael-lantern", label: "Vael Lantern" }),
     ]);
+  });
+
+  it("returns opening scene startup payload for fresh save slots", async () => {
+    const openingText = "Rain ticks against the observatory glass while the brass moon-map waits under your hands.";
+    await writeText(path.join(campaignPath, "20-story", "opening-scene.md"), openingText);
+    await writeJson(path.join(campaignPath, "30-runtime", "state.json"), {
+      campaign_id: campaignPath,
+      turn: 0,
+      in_game_day: 1,
+      time_of_day: "dawn",
+      location: "market",
+      game_stage: 1,
+      act: "act1",
+      party: [],
+      active_quests: [],
+      completed_quests: [],
+      closed_quests: [],
+      flags: {},
+      player_setup: {
+        protagonist_premise: "The player is a first-year magic student at the academy.",
+        fixed_facts: ["first-year magic student"],
+        ask_fields: ["name", "pronouns", "magical focus"],
+        avoid_fields: ["race", "ancestry", "class"],
+      },
+      play_style: "balanced",
+      choice_mode: "open",
+      scene_scale: "procedural",
+      last_summary: "Campaign initialized.",
+    });
+
+    const created = await createSaveSlot(root, campaignPath, {
+      slotId: "fresh-run",
+      label: "Fresh Run",
+    });
+    expect(created.ok).toBe(true);
+
+    const slotPath = runtimeCampaignPath(campaignPath, "fresh-run");
+    const opening = await getOpeningScene(root, { campaignPath: slotPath });
+    const summary = await getGameSummary(root, { campaignPath: slotPath });
+    expect(opening.ok).toBe(true);
+    expect(summary.ok).toBe(true);
+    if (!opening.ok || !summary.ok) return;
+
+    const openingPayload = JSON.parse(opening.text) as {
+      summary_type: string;
+      startup: {
+        source_path: string;
+        text: string;
+        narrator_instruction: string;
+        player_setup: { ask_fields: string[]; avoid_fields: string[] };
+      };
+    };
+    expect(openingPayload.summary_type).toBe("new_game_opening");
+    expect(openingPayload.startup.source_path).toBe("campaign-test/20-story/opening-scene.md");
+    expect(openingPayload.startup.text).toContain("observatory glass");
+    expect(openingPayload.startup.narrator_instruction).toContain("Do not dump this packet");
+    expect(openingPayload.startup.player_setup.ask_fields).toEqual(["name", "pronouns", "magical focus"]);
+    expect(openingPayload.startup.player_setup.avoid_fields).toContain("class");
+
+    const summaryPayload = JSON.parse(summary.text) as {
+      summary_type: string;
+      state: { turn: number };
+      player_setup: { ask_fields: string[]; avoid_fields: string[] };
+      startup?: { text: string };
+    };
+    expect(summaryPayload.summary_type).toBe("new_game_start");
+    expect(summaryPayload.state.turn).toBe(0);
+    expect(summaryPayload.player_setup.ask_fields).toEqual(["name", "pronouns", "magical focus"]);
+    expect(summaryPayload.player_setup.avoid_fields).toContain("race");
+    expect(summaryPayload.startup?.text).toContain("observatory glass");
   });
 
   it("blocks save slot ids that could escape the sandbox", async () => {

@@ -12,14 +12,18 @@ Tools only: list_files, list_folders, read_file, read_json, add_folder, add_file
 
 ## Ask
 
-Ask once for: tone, setting, power level, limits, length, play_style, choice_mode.
+Ask once for: tone, setting, power level, limits, length, pacing, choice_mode.
 
 Defaults:
-- play_style: balanced
+- pacing: balanced
 - choice_mode: open
 - safe content limits
 
-choice_mode:
+Field meanings:
+- pacing: fast procedural | balanced | immersive roleplay. Controls scene detail and dialogue zoom.
+- choice_mode: open | closed. Controls interface.
+
+choice_mode values:
 - open: no menus; player writes free actions
 - closed: A/B/C choices allowed
 
@@ -71,7 +75,7 @@ Write `30-runtime/state.json`:
   "completed_quests": [],
   "flags": {},
   "open_loops": [],
-  "play_style": "<fast procedural | balanced | immersive roleplay>",
+  "play_style": "<pacing: fast procedural | balanced | immersive roleplay>",
   "choice_mode": "<open | closed>",
   "scene_scale": "procedural",
   "last_summary": "Campaign initialized."
@@ -80,7 +84,7 @@ Write `30-runtime/state.json`:
 
 ## File Rules
 
-- `campaign-brief.md`: include play_style and choice_mode.
+- `campaign-brief.md`: include pacing/play_style and choice_mode.
 - `table-rules.md`: include Story Control and Narrative Scale.
 - `plot-spine.md`: 3 acts or 5 beats max.
 - `key-events.md`: triggers + outcomes, not prose scenes.

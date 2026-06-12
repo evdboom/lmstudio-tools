@@ -158,6 +158,12 @@ Quest statuses are conventionally `available`, `active`, `completed`, `failed`,
 the party has moved away from the quest's start location, and filters out
 completed, failed, closed, and hidden quests by default.
 
+Quest `current_step` must match an id in that quest's `steps` array. If play
+discovers a new step, add it with `update_quest` or include it in
+`advance_quest.fields.steps` before advancing to it. Location changes are also
+strict: create a new location with `create_location` before `move_party` or
+`commit_turn` can set the party there.
+
 Open RPG play can create quests through `create_quest`. Use this for durable new
 threads created by the player's actions, not for every clue or temporary
 obstacle.
@@ -174,6 +180,24 @@ fixed facts, and the short fields needed before play starts. For example, a
 magic-academy campaign can mark the protagonist as a first-year student and ask
 for name, pronouns, and magical focus instead of generic fantasy race/class
 fields.
+
+For older campaigns, add `player_setup` manually to
+`<campaign>/30-runtime/state.json`. Future save slots copy it from there. If a
+save slot already exists, also add the same block to
+`<campaign>/40-saves/<slot>/30-runtime/state.json`, or recreate the slot.
+
+```json
+"player_setup": {
+  "setup_intro": "You are a first-year student arriving at Arcanum Academy, where the three houses are already watching for signs of who you might become.",
+  "protagonist_premise": "The player is a first-year magic student at Arcanum Academy.",
+  "fixed_facts": ["first-year magic student", "new arrival at the academy"],
+  "ask_fields": ["name", "pronouns", "magical focus", "private worry from home"],
+  "optional_fields": ["family tie", "dorm preference"],
+  "example_answers": ["garden charms", "mirror-light", "storm dreams", "not belonging", "family pressure", "a debt"],
+  "avoid_fields": ["race", "ancestry", "class"],
+  "guidance": "Give the setup_intro first, then ask plain in-world questions. Do not say campaign-appropriate or use generic fantasy character creation."
+}
+```
 
 When a player starts a new run, inspect `player_setup` if character details are
 missing, call `create_save_slot`, then call `get_opening_scene` with the same

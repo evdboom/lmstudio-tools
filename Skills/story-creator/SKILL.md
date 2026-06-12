@@ -90,12 +90,14 @@ Write `30-runtime/state.json`:
   "flags": {},
   "open_loops": [],
   "player_setup": {
+    "setup_intro": "1 to 2 player-facing sentences explaining what the player already knows before choosing protagonist details.",
     "protagonist_premise": "Who the player is in this campaign, including fixed facts.",
     "fixed_facts": ["Campaign-specific protagonist facts the player should not have to choose."],
-    "ask_fields": ["name", "one or two campaign-specific identity details"],
+    "ask_fields": ["name", "one or two premise-specific identity details"],
     "optional_fields": [],
+    "example_answers": ["Short in-world example answers for the requested details."],
     "avoid_fields": ["race", "ancestry", "class"],
-    "guidance": "Ask only questions that fit this premise. Do not use generic fantasy character creation unless the campaign explicitly needs it."
+    "guidance": "Ask plain player-facing questions. Do not say campaign-appropriate or use generic fantasy character creation unless the campaign explicitly needs it."
   },
   "play_style": "<pacing: fast procedural | balanced | immersive roleplay>",
   "choice_mode": "<open | closed>",
@@ -225,7 +227,7 @@ NPC shape:
 - Inventory: only starting durable items, usually none.
 - Clocks: 0 to 2 starting pressures, only if they matter immediately.
 - Runtime JSON files: keep compact. The game runtime must be able to return small scene packets.
-- `player_setup`: tailor protagonist questions to the campaign. For a magic academy, prefer fields like name, pronouns, magical focus, scholarship reason, dorm/house preference, or family tie. Do not ask for race/ancestry/class unless those are real campaign concepts.
+- `player_setup`: tailor protagonist questions to the campaign. Include `setup_intro` so a new player understands the premise before answering. For a magic academy, prefer fields like name, pronouns, magical focus, scholarship reason, dorm/house preference, or family tie. Include short example answers. Do not ask for race/ancestry/class unless those are real campaign concepts.
 
 ## Opening Scene
 

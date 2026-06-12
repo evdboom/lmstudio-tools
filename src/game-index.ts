@@ -431,7 +431,7 @@ export function registerGameTools(
 
   server.tool(
     "update_quest",
-    "Patch any fields on one quest and refresh its index entry. Use for controlled quest edits during play or refinement.",
+    "Patch any fields on one quest and refresh its index entry. If setting current_step, that id must already exist in steps or be added in the same patch.",
     {
       campaign_path: campaignPath,
       save_slot: saveSlot,
@@ -448,7 +448,7 @@ export function registerGameTools(
 
   server.tool(
     "advance_quest",
-    "Advance a quest's status, current step, fields, and progress note. Also keeps active/completed/closed quest references in state.json aligned.",
+    "Advance a quest's status, current step, fields, and progress note. current_step must match an existing step id; add the step in fields.steps before or during the same call.",
     {
       campaign_path: campaignPath,
       save_slot: saveSlot,
@@ -457,7 +457,7 @@ export function registerGameTools(
         .string()
         .optional()
         .describe("New quest status, e.g. available, active, completed, failed, closed."),
-      current_step: z.string().optional().describe("New current step id."),
+      current_step: z.string().optional().describe("New current step id. Must exist in quest.steps after fields are merged."),
       progress_note: z.string().optional().describe("Short progress note to append."),
       fields: z
         .record(z.unknown())
@@ -752,7 +752,7 @@ export function registerGameTools(
 
   server.tool(
     "commit_turn",
-    "Commit the meaningful state changes at the end of a player turn. Updates state.json, appends a journal entry, and can advance multiple quests in one call.",
+    "Commit meaningful state changes at the end of a player turn. Location changes must target an existing location; create_location first for new places. Quest current_step updates must target existing steps.",
     {
       campaign_path: campaignPath,
       save_slot: saveSlot,
@@ -760,7 +760,7 @@ export function registerGameTools(
         .boolean()
         .default(true)
         .describe("If true, increment state.turn by one."),
-      location: z.string().optional().describe("New current location."),
+      location: z.string().optional().describe("New current location id. Must already exist; call create_location first for a new place."),
       game_stage: z.number().optional().describe("New numeric game stage."),
       act: z.string().optional().describe("New act/stage label."),
       last_summary: z.string().optional().describe("Compact new last_summary."),

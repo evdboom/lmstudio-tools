@@ -299,7 +299,22 @@ describe("game runtime", () => {
       choice_mode: "open",
     });
     await writeJson(path.join(brokenCampaign, "30-runtime", "quests", "index.json"), {
-      quests: [],
+      quests: [
+        {
+          id: "q-bad-step",
+          title: "Bad Step",
+          status: "active",
+          summary: "A quest points to a step that does not exist.",
+        },
+      ],
+    });
+    await writeJson(path.join(brokenCampaign, "30-runtime", "quests", "q-bad-step.json"), {
+      id: "q-bad-step",
+      title: "Bad Step",
+      status: "active",
+      summary: "A quest points to a step that does not exist.",
+      current_step: "missing-step",
+      steps: [{ id: "start", result: "Begin the malformed quest." }],
     });
 
     const result = await verifyCampaign(root, brokenCampaign);
@@ -317,6 +332,7 @@ describe("game runtime", () => {
     expect(payload.issues.map((issue) => issue.code)).toContain("missing_file");
     expect(payload.issues.map((issue) => issue.code)).toContain("thin_file");
     expect(payload.issues.map((issue) => issue.code)).toContain("missing_json_field");
+    expect(payload.issues.map((issue) => issue.code)).toContain("invalid_quest_step");
     expect(payload.issues.map((issue) => issue.code)).toContain("missing_player_setup");
     expect(payload.issues.map((issue) => issue.code)).toContain("opening_scene_forbidden_prompt");
     expect(payload.issues.map((issue) => issue.code)).toContain("opening_scene_scaffold");
@@ -375,6 +391,11 @@ describe("game runtime", () => {
   });
 
   it("commits a turn, journal entry, and quest advancement", async () => {
+    await createLocation(root, campaignPath, {
+      id: "alley",
+      name: "Spice Alley",
+      exits: ["market"],
+    });
     const result = await commitTurn(root, campaignPath, {
       location: "alley",
       last_summary: "The player followed the smoke into the alley.",
@@ -387,6 +408,20 @@ describe("game runtime", () => {
           id: "q-market",
           status: "active",
           current_step: "trace-residue",
+          fields: {
+            steps: [
+              {
+                id: "notice-smoke",
+                at: ["market"],
+                result: "The player can trace the smoke to blue salt residue.",
+              },
+              {
+                id: "trace-residue",
+                at: ["alley"],
+                result: "The residue points toward the alley stairs.",
+              },
+            ],
+          },
           progress_note: "The residue points toward the alley.",
         },
       ],
@@ -405,6 +440,57 @@ describe("game runtime", () => {
       "utf8"
     );
     expect(journal).toContain("followed smoke");
+  });
+
+  it("rejects quest advancement to a missing step", async () => {
+    const result = await advanceQuest(root, campaignPath, "q-market", {
+      current_step: "missing-step",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("current_step must match an existing step id");
+
+    const questFile = JSON.parse(
+      await fs.readFile(path.join(root, campaignPath, "30-runtime", "quests", "q-market.json"), "utf8")
+    ) as { current_step: string };
+    expect(questFile.current_step).toBe("notice-smoke");
+  });
+
+  it("rejects turn commits with quest updates to missing steps", async () => {
+    const result = await commitTurn(root, campaignPath, {
+      last_summary: "The house choice moved to a non-existent quest step.",
+      quest_updates: [
+        {
+          id: "q-market",
+          current_step: "missing-step",
+        },
+      ],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("current_step must match an existing step id");
+
+    const state = JSON.parse(
+      await fs.readFile(path.join(root, campaignPath, "30-runtime", "state.json"), "utf8")
+    ) as { turn: number; last_summary: string };
+    expect(state.turn).toBe(2);
+    expect(state.last_summary).toBe("The player noticed smoke curling from the spice stall.");
+  });
+
+  it("rejects turn commits that move to an uncreated location", async () => {
+    const result = await commitTurn(root, campaignPath, {
+      location: "tower-that-does-not-exist",
+      last_summary: "The player headed for a newly invented tower.",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("Create the location with create_location before committing a turn there");
+
+    const state = JSON.parse(
+      await fs.readFile(path.join(root, campaignPath, "30-runtime", "state.json"), "utf8")
+    ) as { location: string; turn: number };
+    expect(state.location).toBe("market");
+    expect(state.turn).toBe(2);
   });
 
   it("builds scene context from state, location, npcs, quests, and journal", async () => {

@@ -819,6 +819,13 @@ export async function verifyCampaign(
       if (questRecord && questRecord.id !== questId) {
         addIssue(issues, "error", "id_mismatch", questFile, `Quest file id does not match index id ${questId}.`);
       }
+      if (questRecord) {
+        try {
+          validateQuestCurrentStep(questRecord, questId);
+        } catch (e) {
+          addIssue(issues, "error", "invalid_quest_step", questFile, toError(e));
+        }
+      }
     }
     if (questIndexEntries.length < 2) {
       addIssue(issues, "warning", "low_runtime_count", "30-runtime/quests/index.json", "Expected at least 2 starter quests.");
@@ -1337,10 +1344,17 @@ function compactStateForSummary(state: JsonRecord, location?: string, gameStage?
 function playerSetupForSummary(state: JsonRecord): JsonRecord | null {
   if (isRecord(state.player_setup)) return state.player_setup;
   return {
-    protagonist_premise: "Use the campaign premise from state, opening scene, and current location.",
-    ask_fields: ["name", "one campaign-appropriate personal detail"],
+    setup_intro: "Before play begins, choose only the small details the protagonist would know about themself. Use the current location, opening scene, and visible premise to phrase this in-world.",
+    protagonist_premise: "The player is the protagonist of this campaign. Infer only spoiler-light fixed facts from the current state and opening scene.",
+    ask_fields: ["name", "personal hook"],
+    example_answers: [
+      "someone here already knows me",
+      "I am worried I do not belong",
+      "my family expects this to change everything",
+      "I am drawn to a strange part of this place",
+    ],
     avoid_fields: ["race", "ancestry", "class"],
-    guidance: "Ask only for details that fit this campaign. Do not invent generic fantasy ancestry/class prompts.",
+    guidance: "Give a 1-2 sentence spoiler-light premise before asking. Ask plain in-world questions. Do not say campaign-appropriate, character setup required, or invent generic fantasy ancestry/class prompts.",
   };
 }
 
@@ -1488,11 +1502,45 @@ async function updateQuestCore(
   }
   const updated = deepMerge(quest, patch);
   if (!isRecord(updated)) throw new Error("Quest update must produce an object.");
+  validateQuestCurrentStep(updated, questId);
   await writeJsonFile(root, questFileRel(campaignPath, questId), updated);
   await reindexQuest(root, campaignPath, updated);
   const status = asString(updated.status);
   if (status) await updateQuestRefsInState(root, campaignPath, questId, status);
   return updated;
+}
+
+function validateQuestCurrentStep(quest: JsonRecord, questId: string): void {
+  const currentStep = asString(quest.current_step);
+  if (!currentStep) return;
+  const steps = Array.isArray(quest.steps) ? quest.steps.filter(isRecord) : [];
+  const stepIds = steps.map((step) => asString(step.id)).filter(Boolean);
+  if (!stepIds.includes(currentStep)) {
+    throw new Error(
+      `Quest ${questId} current_step must match an existing step id. `
+      + `Missing step: ${currentStep}. Add the step before advancing to it.`
+    );
+  }
+}
+
+function questAdvancePatch(update: JsonRecord): JsonRecord {
+  const patch: JsonRecord = {};
+  if (typeof update.status === "string") patch.status = update.status;
+  if (typeof update.current_step === "string") patch.current_step = update.current_step;
+  if (isRecord(update.fields)) Object.assign(patch, update.fields);
+  return patch;
+}
+
+async function validateQuestAdvanceUpdate(
+  root: string,
+  campaignPath: string,
+  questId: string,
+  update: JsonRecord
+): Promise<void> {
+  const quest = await readQuestRecord(root, campaignPath, questId);
+  const updated = deepMerge(quest, questAdvancePatch(update));
+  if (!isRecord(updated)) throw new Error("Quest update must produce an object.");
+  validateQuestCurrentStep(updated, questId);
 }
 
 export async function getPotentialQuests(
@@ -1568,6 +1616,7 @@ export async function createQuest(
         quest.current_step = firstStep.id;
       }
     }
+    validateQuestCurrentStep(quest, id);
     await writeJsonFile(root, questFileRel(campaignPath, id), quest, "wx");
     index.quests.push(compactQuest(quest));
     await writeJsonFile(root, questIndexRel(campaignPath), index);
@@ -1604,10 +1653,7 @@ export async function advanceQuest(
   try {
     await ensureCampaignFolder(root, campaignPath);
     if (!isRecord(update)) throw new Error("update must be a JSON object");
-    const patch: JsonRecord = {};
-    if (typeof update.status === "string") patch.status = update.status;
-    if (typeof update.current_step === "string") patch.current_step = update.current_step;
-    if (isRecord(update.fields)) Object.assign(patch, update.fields);
+    const patch = questAdvancePatch(update);
 
     if (typeof update.progress_note === "string") {
       const quest = await readQuestRecord(root, campaignPath, questId);
@@ -2138,6 +2184,7 @@ export async function commitTurn(
     await ensureCampaignFolder(root, campaignPath);
     if (!isRecord(update)) throw new Error("turn update must be a JSON object");
     let state = await readState(root, campaignPath);
+    const previousLocation = asString(state.location);
     const incrementTurn = update.increment_turn !== false;
     if (incrementTurn) state.turn = (asNumber(state.turn) ?? 0) + 1;
     if (typeof update.location === "string") state.location = update.location;
@@ -2149,15 +2196,30 @@ export async function commitTurn(
       if (!isRecord(merged)) throw new Error("state_patch must keep state as an object");
       state = merged;
     }
+    const nextLocation = asString(state.location);
+    if (nextLocation && nextLocation !== previousLocation) {
+      await readLocationRecord(root, campaignPath, nextLocation).catch((e) => {
+        throw new Error(
+          `${toError(e)}. Create the location with create_location before committing a turn there.`
+        );
+      });
+    }
+    const questUpdates = Array.isArray(update.quest_updates) ? update.quest_updates.filter(isRecord) : [];
+    for (const questUpdate of questUpdates) {
+      const id = asString(questUpdate.id);
+      if (!id) continue;
+      await validateQuestAdvanceUpdate(root, campaignPath, id, questUpdate);
+    }
+
     await writeState(root, campaignPath, state);
 
-    const questUpdates = Array.isArray(update.quest_updates) ? update.quest_updates.filter(isRecord) : [];
     const questResults: unknown[] = [];
     for (const questUpdate of questUpdates) {
       const id = asString(questUpdate.id);
       if (!id) continue;
       const result = await advanceQuest(root, campaignPath, id, questUpdate);
-      questResults.push(result.ok ? JSON.parse(result.text) : { id, error: result.error });
+      if (!result.ok) throw new Error(result.error);
+      questResults.push(JSON.parse(result.text));
     }
 
     if (isRecord(update.journal_entry)) {

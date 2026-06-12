@@ -102,26 +102,42 @@ export function registerTools(
 ): void {
   server.tool(
     "list_files",
-    "List files (not folders) inside a directory relative to the sandbox root.",
+    "List files (not folders) inside a directory relative to the sandbox root. Set recursive=true to return files in all nested folders as paths relative to the requested directory.",
     {
       path: z
         .string()
         .default(".")
         .describe("Directory path relative to root. Defaults to '.'."),
+      recursive: z
+        .boolean()
+        .default(false)
+        .describe("If true, include files in nested folders."),
     },
-    wrap("list_files", ({ path: rel }) => listFiles(root, rel), log)
+    wrap(
+      "list_files",
+      ({ path: rel, recursive }) => listFiles(root, rel, recursive),
+      log
+    )
   );
 
   server.tool(
     "list_folders",
-    "List subfolders (not files) inside a directory relative to the sandbox root.",
+    "List subfolders (not files) inside a directory relative to the sandbox root. Set recursive=true to return all nested folders as paths relative to the requested directory.",
     {
       path: z
         .string()
         .default(".")
         .describe("Directory path relative to root. Defaults to '.'."),
+      recursive: z
+        .boolean()
+        .default(false)
+        .describe("If true, include nested folders."),
     },
-    wrap("list_folders", ({ path: rel }) => listFolders(root, rel), log)
+    wrap(
+      "list_folders",
+      ({ path: rel, recursive }) => listFolders(root, rel, recursive),
+      log
+    )
   );
 
   server.tool(

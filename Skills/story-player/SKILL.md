@@ -40,7 +40,7 @@ Reference files (read only when needed):
 ## Startup
 
 1. Ask for campaign folder path.
-2. Confirm required runtime files exist.
+2. Confirm required runtime files exist with list_files on the campaign folder using recursive=true.
 3. If missing files are detected, bootstrap minimal defaults and tell the user what was created.
 4. Read state.json first. Avoid reading all lore files unless needed for continuity.
 5. If turn is 0 and the user has not given a player action yet, read opening-scene.md and present it as the start of play.

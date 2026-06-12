@@ -166,11 +166,62 @@ async function writeJsonDocument(abs: string, data: unknown): Promise<void> {
   await fs.writeFile(abs, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 }
 
+function normalizeRelForOutput(rel: string): string {
+  const normalized = rel.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/$/, "");
+  return normalized.length === 0 ? "." : normalized;
+}
+
+function joinRel(parentRel: string, name: string): string {
+  const parent = normalizeRelForOutput(parentRel);
+  return parent === "." ? name : `${parent}/${name}`;
+}
+
+function outputRel(baseRel: string, childRel: string): string {
+  const base = normalizeRelForOutput(baseRel);
+  const child = normalizeRelForOutput(childRel);
+  if (base === ".") return child;
+  if (child.startsWith(`${base}/`)) return child.slice(base.length + 1);
+  return path.posix.relative(base, child);
+}
+
+async function listRecursive(
+  root: string,
+  baseRel: string,
+  kind: "file" | "folder"
+): Promise<string[]> {
+  const results: string[] = [];
+  const pending = [normalizeRelForOutput(baseRel)];
+
+  while (pending.length > 0) {
+    const dirRel = pending.shift()!;
+    const abs = await safeResolve(root, dirRel);
+    const entries = (await fs.readdir(abs, { withFileTypes: true })).sort((a, b) =>
+      a.name.localeCompare(b.name)
+    );
+
+    for (const entry of entries) {
+      const childRel = joinRel(dirRel, entry.name);
+      if (entry.isDirectory()) {
+        if (kind === "folder") results.push(outputRel(baseRel, childRel));
+        pending.push(childRel);
+      } else if (entry.isFile() && kind === "file") {
+        results.push(outputRel(baseRel, childRel));
+      }
+    }
+  }
+
+  return results.sort();
+}
+
 export async function listFiles(
   root: string,
-  rel: string = "."
+  rel: string = ".",
+  recursive: boolean = false
 ): Promise<ToolResult> {
   try {
+    if (recursive) {
+      return ok(JSON.stringify(await listRecursive(root, rel, "file"), null, 2));
+    }
     const abs = await safeResolve(root, rel);
     const entries = await fs.readdir(abs, { withFileTypes: true });
     const files = entries
@@ -185,9 +236,13 @@ export async function listFiles(
 
 export async function listFolders(
   root: string,
-  rel: string = "."
+  rel: string = ".",
+  recursive: boolean = false
 ): Promise<ToolResult> {
   try {
+    if (recursive) {
+      return ok(JSON.stringify(await listRecursive(root, rel, "folder"), null, 2));
+    }
     const abs = await safeResolve(root, rel);
     const entries = await fs.readdir(abs, { withFileTypes: true });
     const folders = entries

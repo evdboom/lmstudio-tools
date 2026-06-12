@@ -219,6 +219,24 @@ describe("list_files / list_folders", () => {
     }
   });
 
+  it("lists files recursively relative to the requested directory", async () => {
+    await fs.mkdir(path.join(root, "campaign", "10-world"), { recursive: true });
+    await fs.mkdir(path.join(root, "campaign", "20-story"), { recursive: true });
+    await fs.writeFile(path.join(root, "campaign", "root.md"), "", "utf8");
+    await fs.writeFile(path.join(root, "campaign", "10-world", "world.md"), "", "utf8");
+    await fs.writeFile(path.join(root, "campaign", "20-story", "plot.md"), "", "utf8");
+
+    const r = await listFiles(root, "campaign", true);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(JSON.parse(r.text)).toEqual([
+        "10-world/world.md",
+        "20-story/plot.md",
+        "root.md",
+      ]);
+    }
+  });
+
   it("lists only folders in a directory", async () => {
     await fs.writeFile(path.join(root, "file"), "", "utf8");
     await fs.mkdir(path.join(root, "d1"));
@@ -228,6 +246,24 @@ describe("list_files / list_folders", () => {
     if (r.ok) {
       const arr = JSON.parse(r.text);
       expect(arr).toEqual(["d1", "d2"]);
+    }
+  });
+
+  it("lists folders recursively relative to the requested directory", async () => {
+    await fs.mkdir(path.join(root, "campaign", "10-world", "regions"), {
+      recursive: true,
+    });
+    await fs.mkdir(path.join(root, "campaign", "20-story"), { recursive: true });
+    await fs.writeFile(path.join(root, "campaign", "20-story", "plot.md"), "", "utf8");
+
+    const r = await listFolders(root, "campaign", true);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(JSON.parse(r.text)).toEqual([
+        "10-world",
+        "10-world/regions",
+        "20-story",
+      ]);
     }
   });
 

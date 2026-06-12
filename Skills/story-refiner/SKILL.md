@@ -46,7 +46,8 @@ If the user does not specify a mode, choose "balanced polish".
 - If the user says "improve everything", run balanced polish across public story files.
 
 2. Inspect safely
-- Use list_files on each campaign folder to confirm structure.
+- Use list_files on the campaign folder with recursive=true to confirm the full file structure in one call.
+- Use list_folders on the campaign folder with recursive=true only if folder structure needs separate verification.
 - Use read_json for state.json fields such as turn, location, play_style, scene_scale, last_summary, active_quests, completed_quests, flags, and open_loops.
 - Use read_file on only the story/world files needed for the requested pass.
 - Read secrets.md only when refining hidden plot, key events, mystery logic, or full-campaign continuity.

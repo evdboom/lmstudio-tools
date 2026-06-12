@@ -12,8 +12,8 @@ Both speak **stdio** and plug into LM Studio's built-in MCP client.
 
 | Tool            | Purpose                                                                 |
 | --------------- | ----------------------------------------------------------------------- |
-| `list_files`    | List files (non-recursive) in a directory.                              |
-| `list_folders`  | List subfolders (non-recursive) in a directory.                         |
+| `list_files`    | List files in a directory. Set `recursive: true` for nested files.      |
+| `list_folders`  | List subfolders. Set `recursive: true` for nested folders.              |
 | `read_file`     | Read the UTF-8 contents of a file.                                      |
 | `read_json`     | Read one property from a JSON file.                                     |
 | `add_json`      | Add one new property to a JSON file. **Fails if it already exists.**    |
@@ -27,6 +27,21 @@ Both speak **stdio** and plug into LM Studio's built-in MCP client.
 
 All paths are **relative to the sandbox root**. Absolute paths and any path that
 resolves outside the root (including via symlinks) are rejected.
+
+### Recursive listing
+
+`list_files` and `list_folders` are non-recursive by default. Set
+`recursive: true` to inspect a full tree in one call. Recursive results are
+returned as paths relative to the requested directory.
+
+Examples:
+
+- `list_files(path="campaign-arcane-academy", recursive=true)`
+- `list_folders(path="campaign-arcane-academy", recursive=true)`
+
+For campaign verification, prefer one recursive `list_files` call at the
+campaign folder over separate calls for `00-meta`, `10-world`, `20-story`, and
+`30-runtime`.
 
 ### JSON property tools
 

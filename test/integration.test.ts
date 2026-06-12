@@ -214,6 +214,26 @@ describe("MCP integration over stdio", () => {
     expect(read.content[0].text).toBe("world");
   });
 
+  it("list_files supports recursive campaign-level inspection", async () => {
+    await fs.mkdir(path.join(root, "campaign", "10-world"), { recursive: true });
+    await fs.mkdir(path.join(root, "campaign", "30-runtime"), { recursive: true });
+    await fs.writeFile(path.join(root, "campaign", "10-world", "world.md"), "", "utf8");
+    await fs.writeFile(path.join(root, "campaign", "30-runtime", "state.json"), "{}", "utf8");
+
+    const result = unwrapToolResult(
+      await client.request("tools/call", {
+        name: "list_files",
+        arguments: { path: "campaign", recursive: true },
+      })
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(JSON.parse(result.content[0].text)).toEqual([
+      "10-world/world.md",
+      "30-runtime/state.json",
+    ]);
+  });
+
   it("rejects path escaping the sandbox", async () => {
     const result = unwrapToolResult(
       await client.request("tools/call", {

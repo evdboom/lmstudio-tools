@@ -14,7 +14,8 @@ Use these tools only: list_files, list_folders, read_file, read_json, add_folder
 
 ## Output Contract
 
-Create one campaign folder per run under the user-selected base path.
+Create one campaign folder per run under the user-selected base path. The folder name should be
+linked to campaign setting. So no `campaign-high-epic`, but specific like `campaign-sylvan-academy` or `campaign-asteris-colony`.
 
 Suggested folder name: campaign-<slug>
 
@@ -96,7 +97,8 @@ Required files:
 - npcs.md: include 3 to 5 named NPC seeds with role and motive.
 
 6. Verify before finishing
-- Use list_files on each folder and confirm all required files exist.
+- Use list_files on the campaign folder with recursive=true and confirm all required files exist.
+- Use list_folders on the campaign folder with recursive=true only if folder structure needs separate verification.
 - Use read_json on state.json fields such as campaign_id, turn, location, play_style, and scene_scale.
 - Use read_file on opening-scene.md for a quick sanity check.
 

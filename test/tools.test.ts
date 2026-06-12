@@ -4,13 +4,16 @@ import * as path from "node:path";
 import {
   addFile,
   addFolder,
+  addJson,
   appendFile,
   listFiles,
   listFolders,
   readFile,
+  readJson,
   removeFile,
   removeFolder,
   replaceFile,
+  updateJson,
 } from "../src/tools.js";
 import { makeSandbox, trySymlink } from "./helpers.js";
 
@@ -84,6 +87,78 @@ describe("read_file", () => {
   it("blocks escape via ../", async () => {
     const r = await readFile(root, "../../etc/passwd");
     expect(r.ok).toBe(false);
+  });
+});
+
+describe("json property tools", () => {
+  beforeEach(async () => {
+    await fs.writeFile(
+      path.join(root, "state.json"),
+      JSON.stringify(
+        {
+          turn: 1,
+          location: "Quad",
+          party: [{ name: "Player", hp: 10 }],
+          flags: {},
+          open_loops: [],
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+  });
+
+  it("reads a nested JSON property", async () => {
+    const r = await readJson(root, "state.json", "party[0].hp");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.text).toBe("10");
+  });
+
+  it("updates an existing nested JSON property", async () => {
+    const r = await updateJson(root, "state.json", "party[0].hp", 5);
+    expect(r.ok).toBe(true);
+    const data = JSON.parse(
+      await fs.readFile(path.join(root, "state.json"), "utf8")
+    );
+    expect(data.party[0].hp).toBe(5);
+  });
+
+  it("adds a new object property", async () => {
+    const r = await addJson(root, "state.json", "flags.met_sage", true);
+    expect(r.ok).toBe(true);
+    const data = JSON.parse(
+      await fs.readFile(path.join(root, "state.json"), "utf8")
+    );
+    expect(data.flags.met_sage).toBe(true);
+  });
+
+  it("adds a new array item at the next index", async () => {
+    const r = await addJson(root, "state.json", "open_loops[0]", "Find the bell");
+    expect(r.ok).toBe(true);
+    const data = JSON.parse(
+      await fs.readFile(path.join(root, "state.json"), "utf8")
+    );
+    expect(data.open_loops).toEqual(["Find the bell"]);
+  });
+
+  it("does not add an existing property", async () => {
+    const r = await addJson(root, "state.json", "turn", 2);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/already exists/i);
+  });
+
+  it("does not update a missing property", async () => {
+    const r = await updateJson(root, "state.json", "flags.missing", true);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/does not exist/i);
+  });
+
+  it("rejects non-json files", async () => {
+    await fs.writeFile(path.join(root, "state.txt"), "{}", "utf8");
+    const r = await readJson(root, "state.txt", "turn");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/json/i);
   });
 });
 

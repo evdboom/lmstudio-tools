@@ -15,6 +15,9 @@ Both speak **stdio** and plug into LM Studio's built-in MCP client.
 | `list_files`    | List files (non-recursive) in a directory.                              |
 | `list_folders`  | List subfolders (non-recursive) in a directory.                         |
 | `read_file`     | Read the UTF-8 contents of a file.                                      |
+| `read_json`     | Read one property from a JSON file.                                     |
+| `add_json`      | Add one new property to a JSON file. **Fails if it already exists.**    |
+| `update_json`   | Update one existing property in a JSON file. **Fails if missing.**      |
 | `add_file`      | Create a new file. **Fails if the file already exists.**                |
 | `replace_file`  | Overwrite an existing file's contents. **Fails if it does not exist.**  |
 | `append_file`   | Append text to a file. Creates the file if missing.                     |
@@ -24,6 +27,29 @@ Both speak **stdio** and plug into LM Studio's built-in MCP client.
 
 All paths are **relative to the sandbox root**. Absolute paths and any path that
 resolves outside the root (including via symlinks) are rejected.
+
+### JSON property tools
+
+Use `read_json`, `add_json`, and `update_json` for small state changes instead
+of reading and replacing an entire JSON file. This is especially useful for
+local models managing RPG runtime files such as `30-runtime/state.json`.
+
+Property paths support dot notation and array indexes:
+
+```json
+{ "path": "30-runtime/state.json", "property": "party[0].hp", "value": 5 }
+```
+
+Examples:
+
+- `read_json(path="30-runtime/state.json", property="location")`
+- `update_json(path="30-runtime/state.json", property="party[0].hp", value=5)`
+- `add_json(path="30-runtime/state.json", property="flags.met_sage", value=true)`
+- `add_json(path="30-runtime/state.json", property="open_loops[0]", value="Find the bell")`
+
+`add_json` only adds missing properties. `update_json` only changes existing
+properties. Use `replace_file` for JSON only when repairing invalid JSON or
+performing a deliberate whole-file rewrite.
 
 ### `read_file` size + binary guards
 
@@ -53,7 +79,7 @@ in `src/io.ts` and rebuild.
 ## Install
 
 ```powershell
-cd C:\repo\LmStudioTools
+cd [lm studio tools folder]
 npm install
 npm run build
 ```
@@ -87,7 +113,7 @@ stderr. The server reads MCP JSON-RPC over stdin; press `Ctrl+C` to exit.
     "lmstudio-tools": {
       "command": "node",
       "args": [
-        "C:\\repo\\LmStudioTools\\dist\\index.js",
+        "[lm studio tools folder]\\dist\\index.js",
         "--root",
         "C:\\path\\to\\your\\sandbox"
       ]
@@ -107,7 +133,7 @@ stderr. The server reads MCP JSON-RPC over stdin; press `Ctrl+C` to exit.
   "mcpServers": {
     "lmstudio-tools": {
       "command": "node",
-      "args": ["C:\\repo\\LmStudioTools\\dist\\index.js"],
+      "args": ["[lm studio tools folder]\\dist\\index.js"],
       "env": {
         "MCP_ROOT": "C:\\path\\to\\your\\sandbox"
       }
@@ -129,11 +155,11 @@ a distinct key:
   "mcpServers": {
     "lmstudio-tools-projects": {
       "command": "node",
-      "args": ["C:\\repo\\LmStudioTools\\dist\\index.js", "--root", "C:\\Projects"]
+      "args": ["[lm studio tools folder]\\dist\\index.js", "--root", "C:\\Projects"]
     },
     "lmstudio-tools-scratch": {
       "command": "node",
-      "args": ["C:\\repo\\LmStudioTools\\dist\\index.js", "--root", "C:\\Scratch"]
+      "args": ["[lm studio tools folder]\\dist\\index.js", "--root", "C:\\Scratch"]
     }
   }
 }
@@ -209,6 +235,19 @@ review them, and drop the resulting folder into the skills root. Add skills by
 **plain folder copy** or `git clone <repo> <skills-root>/<name>` — there is no
 registry, install command, or skill-creator tool in this project.
 
+#### Bundled story skills
+
+The `Skills/` folder includes a small RPG workflow:
+
+- `story-creator`: create a campaign folder with world, plot, and runtime files.
+- `story-player`: run open-ended RPG play with procedural turns, roleplay exchanges, and JSON state updates.
+- `story-refiner`: improve or expand an existing campaign after generation.
+- `story-verbose`: add richer prose during play.
+- `compact-mode`: keep model output short.
+
+For RPG runtime state, story skills should prefer `read_json`, `add_json`, and
+`update_json` from the tools server instead of replacing all of `state.json`.
+
 ### Tools exposed
 
 | Tool              | Purpose                                                                |
@@ -228,7 +267,7 @@ Skill names must match `^[a-z0-9][a-z0-9_-]{0,63}$`. Anything else (including
     "lmstudio-skills": {
       "command": "node",
       "args": [
-        "C:\\repo\\LmStudioTools\\dist\\skills-index.js",
+        "[lm studio tools folder]\\dist\\skills-index.js",
         "--root",
         "C:\\path\\to\\your\\skills"
       ]
@@ -247,9 +286,10 @@ model knows skills exist:
 ```text
 You have access to a skills framework via the `lmstudio-skills` MCP server.
 At the start of any non-trivial task, call `list_skills` to see which skills
-are available. If a skill's `when_to_use` matches the user's request, call
-`load_skill` with that skill's name and follow the instructions in its body
-exactly. Use `read_skill_file` to fetch referenced support files when needed.
+are available. If a skill's `when_to_use` matches the user's request, or the 
+user types /[skill name], call `load_skill` with that skill's name and follow 
+the instructions in its body exactly. Use `read_skill_file` to fetch referenced 
+support files when needed.
 ```
 
 ### Running the skills server side-by-side

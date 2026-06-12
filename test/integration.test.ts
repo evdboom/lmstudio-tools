@@ -141,7 +141,7 @@ describe("MCP integration over stdio", () => {
     await cleanup();
   });
 
-  it("tools/list returns all 9 tools", async () => {
+  it("tools/list returns all 12 tools", async () => {
     const resp = await client.request("tools/list");
     const result = resp.result as { tools: Array<{ name: string }> };
     const names = result.tools.map((t) => t.name).sort();
@@ -149,15 +149,50 @@ describe("MCP integration over stdio", () => {
       [
         "add_file",
         "add_folder",
+        "add_json",
         "append_file",
         "list_files",
         "list_folders",
         "read_file",
+        "read_json",
         "remove_file",
         "remove_folder",
         "replace_file",
+        "update_json",
       ].sort()
     );
+  });
+
+  it("json tools update a state property without replacing the whole file", async () => {
+    await fs.writeFile(
+      path.join(root, "state.json"),
+      JSON.stringify({ party: [{ name: "Player", hp: 10 }], flags: {} }),
+      "utf8"
+    );
+
+    const update = unwrapToolResult(
+      await client.request("tools/call", {
+        name: "update_json",
+        arguments: { path: "state.json", property: "party[0].hp", value: 5 },
+      })
+    );
+    expect(update.isError).toBeFalsy();
+
+    const read = unwrapToolResult(
+      await client.request("tools/call", {
+        name: "read_json",
+        arguments: { path: "state.json", property: "party[0].hp" },
+      })
+    );
+    expect(read.content[0].text).toBe("5");
+
+    const add = unwrapToolResult(
+      await client.request("tools/call", {
+        name: "add_json",
+        arguments: { path: "state.json", property: "flags.met_sage", value: true },
+      })
+    );
+    expect(add.isError).toBeFalsy();
   });
 
   it("add_file then read_file round-trips content", async () => {

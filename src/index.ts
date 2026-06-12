@@ -8,13 +8,16 @@ import * as process from "node:process";
 import {
   addFile,
   addFolder,
+  addJson,
   appendFile,
   listFiles,
   listFolders,
   readFile,
+  readJson,
   removeFile,
   removeFolder,
   replaceFile,
+  updateJson,
   type ToolResult,
 } from "./tools.js";
 import { DEFAULT_MAX_BYTES } from "./io.js";
@@ -136,6 +139,59 @@ export function registerTools(
     wrap(
       "read_file",
       ({ path: rel, maxBytes }) => readFile(root, rel, maxBytes),
+      log
+    )
+  );
+
+  server.tool(
+    "read_json",
+    "Read one property from a JSON file without loading the whole file into chat. Use for state.json and other compact runtime JSON. Property paths support dots and array indexes, e.g. 'party[0].hp'.",
+    {
+      path: z.string().min(1).describe("JSON file path relative to root."),
+      property: z
+        .string()
+        .min(1)
+        .describe("Property path such as 'turn', 'flags.met_sage', or 'party[0].hp'."),
+    },
+    wrap(
+      "read_json",
+      ({ path: rel, property }) => readJson(root, rel, property),
+      log
+    )
+  );
+
+  server.tool(
+    "add_json",
+    "Add a new property to a JSON file. Fails if the property already exists. Use for adding state flags, runtime fields, or array items without replacing the whole file.",
+    {
+      path: z.string().min(1).describe("JSON file path relative to root."),
+      property: z
+        .string()
+        .min(1)
+        .describe("Property path such as 'flags.met_sage' or 'open_loops[0]'."),
+      value: z.unknown().describe("JSON value to add."),
+    },
+    wrap(
+      "add_json",
+      ({ path: rel, property, value }) => addJson(root, rel, property, value),
+      log
+    )
+  );
+
+  server.tool(
+    "update_json",
+    "Update an existing property in a JSON file. Fails if the property does not exist. Prefer this over replace_file for state.json changes such as update_json(path='state.json', property='party[0].hp', value=5).",
+    {
+      path: z.string().min(1).describe("JSON file path relative to root."),
+      property: z
+        .string()
+        .min(1)
+        .describe("Existing property path such as 'turn', 'location', or 'party[0].hp'."),
+      value: z.unknown().describe("New JSON value."),
+    },
+    wrap(
+      "update_json",
+      ({ path: rel, property, value }) => updateJson(root, rel, property, value),
       log
     )
   );

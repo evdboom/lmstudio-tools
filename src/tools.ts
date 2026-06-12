@@ -6,6 +6,7 @@ import { readTextFile, ReadError, DEFAULT_MAX_BYTES } from "./io.js";
 export type ToolOk = { ok: true; text: string };
 export type ToolErr = { ok: false; error: string };
 export type ToolResult = ToolOk | ToolErr;
+type JsonPathSegment = string | number;
 
 function ok(text: string): ToolOk {
   return { ok: true, text };
@@ -28,6 +29,141 @@ async function exists(p: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function safeResolveNoFollowFinal(
+  root: string,
+  rel: string
+): Promise<string> {
+  if (typeof rel !== "string" || rel.length === 0) {
+    throw new SandboxError("path is required");
+  }
+  if (rel.includes("\0")) {
+    throw new SandboxError("path contains NUL byte");
+  }
+  if (path.isAbsolute(rel)) {
+    throw new SandboxError("path must be relative to root");
+  }
+
+  const joined = path.resolve(root, rel);
+  const relCheck = path.relative(root, joined);
+  if (
+    relCheck === ".." ||
+    relCheck.startsWith(".." + path.sep) ||
+    path.isAbsolute(relCheck)
+  ) {
+    throw new SandboxError("path escapes sandbox root");
+  }
+
+  const parentRel = path.relative(root, path.dirname(joined)) || ".";
+  const parentAbs = await safeResolve(root, parentRel);
+  return path.join(parentAbs, path.basename(joined));
+}
+
+function parseJsonPath(property: string): JsonPathSegment[] {
+  if (typeof property !== "string" || property.trim().length === 0) {
+    throw new Error("property is required");
+  }
+
+  const segments: JsonPathSegment[] = [];
+  for (const rawPart of property.split(".")) {
+    if (!rawPart) throw new Error(`Invalid JSON property path: ${property}`);
+
+    let part = rawPart;
+    const keyMatch = part.match(/^[^\[\]]+/);
+    if (keyMatch) {
+      segments.push(keyMatch[0]);
+      part = part.slice(keyMatch[0].length);
+    }
+
+    while (part.length > 0) {
+      const indexMatch = part.match(/^\[(\d+)\]/);
+      if (!indexMatch) {
+        throw new Error(`Invalid JSON property path: ${property}`);
+      }
+      segments.push(Number(indexMatch[1]));
+      part = part.slice(indexMatch[0].length);
+    }
+  }
+
+  if (segments.length === 0) {
+    throw new Error(`Invalid JSON property path: ${property}`);
+  }
+  return segments;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function formatJsonValue(value: unknown): string {
+  return JSON.stringify(value, null, 2);
+}
+
+async function readJsonDocument(
+  root: string,
+  rel: string
+): Promise<{ abs: string; data: unknown }> {
+  const abs = await safeResolve(root, rel);
+  const st = await fs.stat(abs);
+  if (!st.isFile()) throw new Error(`Not a file: ${rel}`);
+  if (path.extname(abs).toLowerCase() !== ".json") {
+    throw new Error(`Not a JSON file: ${rel}`);
+  }
+
+  const r = await readTextFile(abs);
+  if (r.truncated) {
+    throw new Error(`JSON file is too large to edit safely: ${rel}`);
+  }
+
+  try {
+    return { abs, data: JSON.parse(r.text) as unknown };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    throw new Error(`Invalid JSON in ${rel}: ${message}`);
+  }
+}
+
+function getJsonValue(data: unknown, segments: JsonPathSegment[]): unknown {
+  let current = data;
+  for (const segment of segments) {
+    if (typeof segment === "number") {
+      if (!Array.isArray(current) || segment >= current.length) {
+        throw new Error(`JSON property does not exist: ${segmentsToPath(segments)}`);
+      }
+      current = current[segment];
+    } else {
+      if (!isRecord(current) || !(segment in current)) {
+        throw new Error(`JSON property does not exist: ${segmentsToPath(segments)}`);
+      }
+      current = current[segment];
+    }
+  }
+  return current;
+}
+
+function segmentsToPath(segments: JsonPathSegment[]): string {
+  return segments
+    .map((segment, index) => {
+      if (typeof segment === "number") return `[${segment}]`;
+      return index === 0 ? segment : `.${segment}`;
+    })
+    .join("");
+}
+
+function getJsonParent(
+  data: unknown,
+  segments: JsonPathSegment[]
+): { parent: unknown; key: JsonPathSegment } {
+  const key = segments.at(-1);
+  if (key === undefined) throw new Error("property is required");
+  const parentSegments = segments.slice(0, -1);
+  const parent = parentSegments.length > 0 ? getJsonValue(data, parentSegments) : data;
+  return { parent, key };
+}
+
+async function writeJsonDocument(abs: string, data: unknown): Promise<void> {
+  await fs.writeFile(abs, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 }
 
 export async function listFiles(
@@ -80,6 +216,89 @@ export async function readFile(
       );
     }
     return ok(r.text);
+  } catch (e) {
+    return err(toError(e));
+  }
+}
+
+export async function readJson(
+  root: string,
+  rel: string,
+  property: string
+): Promise<ToolResult> {
+  try {
+    const { data } = await readJsonDocument(root, rel);
+    const segments = parseJsonPath(property);
+    return ok(formatJsonValue(getJsonValue(data, segments)));
+  } catch (e) {
+    return err(toError(e));
+  }
+}
+
+export async function addJson(
+  root: string,
+  rel: string,
+  property: string,
+  value: unknown
+): Promise<ToolResult> {
+  try {
+    const { abs, data } = await readJsonDocument(root, rel);
+    const segments = parseJsonPath(property);
+    const { parent, key } = getJsonParent(data, segments);
+
+    if (typeof key === "number") {
+      if (!Array.isArray(parent)) {
+        return err(`JSON parent is not an array: ${property}`);
+      }
+      if (key < parent.length) {
+        return err(`JSON property already exists: ${property}`);
+      }
+      if (key > parent.length) {
+        return err(`Array index is out of range: ${property}`);
+      }
+      parent.push(value);
+    } else {
+      if (!isRecord(parent)) {
+        return err(`JSON parent is not an object: ${property}`);
+      }
+      if (key in parent) {
+        return err(`JSON property already exists: ${property}`);
+      }
+      parent[key] = value;
+    }
+
+    await writeJsonDocument(abs, data);
+    return ok(`Added ${property} in ${rel}`);
+  } catch (e) {
+    return err(toError(e));
+  }
+}
+
+export async function updateJson(
+  root: string,
+  rel: string,
+  property: string,
+  value: unknown
+): Promise<ToolResult> {
+  try {
+    const { abs, data } = await readJsonDocument(root, rel);
+    const segments = parseJsonPath(property);
+    const { parent, key } = getJsonParent(data, segments);
+
+    if (typeof key === "number") {
+      if (!Array.isArray(parent) || key >= parent.length) {
+        return err(`JSON property does not exist: ${property}`);
+      }
+      parent[key] = value;
+    } else {
+      if (!isRecord(parent) || !(key in parent)) {
+        return err(`JSON property does not exist: ${property}`);
+      }
+      parent[key] = value;
+    }
+
+    await writeJsonDocument(abs, data);
+    return ok(`Updated ${property} in ${rel}`);
   } catch (e) {
     return err(toError(e));
   }
@@ -164,7 +383,7 @@ export async function removeFile(
   rel: string
 ): Promise<ToolResult> {
   try {
-    const abs = await safeResolve(root, rel);
+    const abs = await safeResolveNoFollowFinal(root, rel);
     // Use lstat: refuse to follow a symlink and delete its target.
     const st = await fs.lstat(abs).catch(() => null);
     if (!st) return err(`Path does not exist: ${rel}`);
@@ -187,7 +406,7 @@ export async function removeFolder(
   recursive: boolean = false
 ): Promise<ToolResult> {
   try {
-    const abs = await safeResolve(root, rel);
+    const abs = await safeResolveNoFollowFinal(root, rel);
     if (abs === root) {
       return err("Refusing to delete sandbox root");
     }

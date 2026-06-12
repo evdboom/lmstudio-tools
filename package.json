@@ -5,6 +5,7 @@
   "type": "module",
   "bin": {
     "lmstudio-tools": "dist/index.js",
+    "lmstudio-game": "dist/game-index.js",
     "lmstudio-skills": "dist/skills-index.js"
   },
   "main": "dist/index.js",

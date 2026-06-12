@@ -1,14 +1,16 @@
 # lmstudio-tools
 
-Two local **MCP (Model Context Protocol)** servers for LM Studio:
+Three local **MCP (Model Context Protocol)** servers for LM Studio:
 
 - **`lmstudio-tools`** — sandboxed filesystem tools scoped to a folder you choose.
 - **`lmstudio-skills`** — a Claude-Code-style "skills" framework: drop
   `SKILL.md` files into a folder, the model lists/loads them on demand.
+- **`lmstudio-game`** — a structured RPG runtime surface for scene context,
+  quests, NPCs, locations, inventory, clocks, turn commits, and compact journals.
 
-Both speak **stdio** and plug into LM Studio's built-in MCP client.
+All speak **stdio** and plug into LM Studio's built-in MCP client.
 
-## Tools exposed
+## File tools exposed
 
 | Tool            | Purpose                                                                 |
 | --------------- | ----------------------------------------------------------------------- |
@@ -85,6 +87,65 @@ can decide whether to ask for more.
 The list is hard-coded in v1. To extend or trim it, edit `BLOCKED_EXTENSIONS`
 in `src/io.ts` and rebuild.
 
+## The game runtime server (`lmstudio-game`)
+
+`lmstudio-game` is the actual play surface for RPG campaigns. It is designed so
+the playing model asks for a compact scene packet instead of reading large lore
+or quest files into context.
+
+| Domain    | Tools                                                                                                       |
+| --------- | ----------------------------------------------------------------------------------------------------------- |
+| Scene     | `get_scene_context`, `commit_turn`, `get_recent_journal`                                                    |
+| Quests    | `get_potential_quests`, `get_quest_runtime`, `create_quest`, `update_quest`, `advance_quest`                |
+| NPCs      | `get_present_npcs`, `get_npc_runtime`, `create_npc`, `update_npc`, `move_npc`                               |
+| Locations | `get_location_runtime`, `create_location`, `update_location`, `move_party`                                  |
+| Inventory | `get_inventory`, `add_item`, `update_item`, `remove_item`                                                   |
+| Clocks    | `get_clocks`, `create_clock`, `update_clock`, `tick_clock`                                                  |
+
+### Campaign runtime layout
+
+New story campaigns use structured runtime files:
+
+```text
+30-runtime/
+  state.json
+  journal.jsonl
+  inventory.json
+  clocks.json
+  quests/
+    index.json
+    q-example.json
+  locations/
+    index.json
+    loc-example.json
+  npcs/
+    index.json
+```
+
+Indexes are intentionally compact. Full quest, NPC, and location detail lives in
+one JSON file per durable entity. This keeps the playing model from flooding
+context with unrelated quests, cast members, or map detail.
+
+Quest statuses are conventionally `available`, `active`, `completed`, `failed`,
+`closed`, or `hidden`. `get_potential_quests` returns active quests even when
+the party has moved away from the quest's start location, and filters out
+completed, failed, closed, and hidden quests by default.
+
+Open RPG play can create quests through `create_quest`. Use this for durable new
+threads created by the player's actions, not for every clue or temporary
+obstacle.
+
+The same rule applies to other domains:
+
+- Use `create_npc` only for named or recurring NPCs likely to matter again.
+- Use `create_location` only for places the party can revisit, search, travel to, or track.
+- Use `add_item` only for items the player can keep, spend, inspect, trade, or use later.
+- Use `create_clock` only for pressure that can advance over turns or scenes.
+
+During play, call `get_scene_context` first. Then load individual runtime records
+only when they matter: `get_quest_runtime`, `get_npc_runtime`, or
+`get_location_runtime`.
+
 ## Requirements
 
 - **Node.js 18.17+** (Node 20 LTS or newer recommended)
@@ -99,8 +160,9 @@ npm install
 npm run build
 ```
 
-This produces `dist/index.js` (file-tools server) and `dist/skills-index.js`
-(skills server). Both are used by LM Studio.
+This produces `dist/index.js` (file-tools server), `dist/skills-index.js`
+(skills server), and `dist/game-index.js` (game runtime server). These are used
+by LM Studio.
 
 ### Quick sanity check (optional)
 
@@ -132,6 +194,14 @@ stderr. The server reads MCP JSON-RPC over stdin; press `Ctrl+C` to exit.
         "--root",
         "C:\\path\\to\\your\\sandbox"
       ]
+    },
+    "lmstudio-game": {
+      "command": "node",
+      "args": [
+        "[lm studio tools folder]\\dist\\game-index.js",
+        "--root",
+        "C:\\path\\to\\your\\sandbox"
+      ]
     }
   }
 }
@@ -158,6 +228,9 @@ stderr. The server reads MCP JSON-RPC over stdin; press `Ctrl+C` to exit.
 ```
 
 `--root` wins if both are set.
+
+`lmstudio-game` also accepts `MCP_GAME_ROOT`. If omitted, it falls back to
+`MCP_ROOT`.
 
 ### One server, one root
 
@@ -191,7 +264,7 @@ Every tool call writes one JSON line to **stderr** by default:
 {"ts":"2026-06-11T19:34:09.412Z","server":"lmstudio-tools","tool":"add_file","args":{"path":"a.txt","content":"…"},"ok":true,"durMs":3}
 ```
 
-Disable with `--quiet` (or `-q`) in the `args` array. The flag works on both
+Disable with `--quiet` (or `-q`) in the `args` array. The flag works on all
 servers. LM Studio shows server stderr in its MCP log panel — useful for
 debugging tool calls.
 
@@ -254,15 +327,16 @@ registry, install command, or skill-creator tool in this project.
 
 The `Skills/` folder includes a small RPG workflow:
 
-- `story-creator`: create a campaign folder with world, plot, and runtime files.
-- `story-player`: run open-mode RPG play with free player actions, roleplay exchanges, and JSON state updates.
-- `story-player-closed`: run closed-mode RPG play with explicit A/B/C choices.
+- `story-creator`: create a campaign folder with world, plot, structured game runtime files, and compact starter quests.
+- `story-player`: run open-mode RPG play with free player actions, scene context, quest creation, and turn commits.
+- `story-player-closed`: run closed-mode RPG play with explicit A/B/C choices through the game runtime.
 - `story-refiner`: improve or expand an existing campaign after generation.
 - `story-verbose`: add richer prose during play.
 - `compact-mode`: keep model output short.
 
-For RPG runtime state, story skills should prefer `read_json`, `add_json`, and
-`update_json` from the tools server instead of replacing all of `state.json`.
+For RPG runtime state, playing skills should prefer `lmstudio-game` tools over
+raw file reads. Use `get_scene_context` at the start of each turn and
+`commit_turn` for meaningful state changes.
 
 ### Tools exposed
 
@@ -310,13 +384,13 @@ support files when needed.
 
 ### Running the skills server side-by-side
 
-You can register both servers in `mcp.json`. They are independent processes;
-the model sees `list_skills`, `load_skill`, `read_skill_file` alongside the
-file-edit tools and decides which to call.
+You can register all three servers in `mcp.json`. They are independent
+processes; the model sees skill tools, file-edit tools, and game-runtime tools
+side by side and decides which to call.
 
 ## Sandboxing
 
-Both servers share `src/sandbox.ts`:
+All servers share `src/sandbox.ts`:
 
 - All input paths must be **relative** to the configured root.
 - Paths are resolved with `path.resolve` then verified to remain inside the
@@ -338,9 +412,15 @@ Run from source without building:
 npm run dev -- --root C:\tmp\mcp-sandbox
 ```
 
+For the game runtime server from source:
+
+```powershell
+npx tsx src/game-index.ts --root C:\tmp\mcp-sandbox
+```
+
 Edit `src/*.ts`, then `npm run build` and restart LM Studio's MCP server
-entry (toggle it off/on in `mcp.json`, or restart LM Studio) so the new
-`dist/index.js` is loaded.
+entry (toggle it off/on in `mcp.json`, or restart LM Studio) so the new `dist/*`
+files are loaded.
 
 ## Tests
 
@@ -351,6 +431,7 @@ The project ships a `vitest` suite covering three layers:
 | `test/sandbox.test.ts`        | `safeResolve`: `..` traversal, absolute paths, NUL bytes, symlink escape. |
 | `test/io.test.ts`             | Size cap, truncation, binary-extension blocklist, NUL-byte refusal.  |
 | `test/tools.test.ts`          | Each file tool: happy path + error paths + escape attempts.          |
+| `test/game.test.ts`           | Game runtime: quests, NPCs, locations, inventory, clocks, scene context, turn commits. |
 | `test/skills.test.ts`         | Skill name validation, frontmatter parse, list/load/read + escapes.  |
 | `test/integration.test.ts`    | Spawn the server, do MCP handshake, exercise the tools over stdio.   |
 
@@ -376,6 +457,8 @@ src/io.ts                # readTextFile: size cap + binary blocklist
 src/log.ts               # structured stderr logger (toggle with --quiet)
 src/tools.ts             # filesystem operations (pure async fns)
 src/index.ts             # MCP server wiring + CLI entry (file tools)
+src/game.ts              # RPG runtime operations (pure async fns)
+src/game-index.ts        # MCP server wiring + CLI entry (game runtime)
 src/skills.ts            # skill list/load/read implementations
 src/skills-index.ts      # MCP server wiring + CLI entry (skills)
 test/                    # vitest suites + helpers

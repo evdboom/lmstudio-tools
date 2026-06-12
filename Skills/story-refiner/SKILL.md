@@ -8,7 +8,7 @@ allow_scripts: false
 
 Improve an existing campaign. Do not start play. Do not reveal secrets.
 
-Tools only: list_folders, list_files, read_file, read_json, add_json, update_json, replace_file, append_file.
+Tools only: list_folders, list_files, read_file, read_json, add_json, update_json, replace_file, append_file, get_scene_context, get_quest_runtime, create_quest, update_quest, advance_quest, get_present_npcs, get_npc_runtime, create_npc, update_npc, move_npc, get_location_runtime, create_location, update_location, move_party, get_inventory, add_item, update_item, remove_item, get_clocks, create_clock, update_clock, tick_clock.
 
 ## Modes
 
@@ -24,10 +24,11 @@ Default: balanced polish.
 
 1. Ask folder path if missing. Ask one scope question only if needed.
 2. `list_files(<campaign>, recursive=true)`.
-3. read_json: turn, location, play_style, choice_mode, scene_scale, last_summary, quests, flags, loops.
+3. Call `get_scene_context` if game runtime tools are available; otherwise read_json: turn, location, game_stage, act, play_style, choice_mode, scene_scale, last_summary, flags, loops.
 4. Read only needed files. Read `secrets.md` only for hidden plot/continuity.
 5. Preserve runtime facts unless user asks repair.
-6. Use update_json/add_json for small state edits. Do not rewrite session-log; append repair note only if needed.
+6. Use runtime tools for entity changes: quests, NPCs, locations, inventory, and clocks. Use `view="full"` only for the specific entity being refined.
+7. Use update_json/add_json for small state edits. Do not rewrite `journal.jsonl`; append repair note only if needed.
 
 ## Improve
 
@@ -35,11 +36,16 @@ Use replace_file for markdown rewrites.
 
 Keep files local-model friendly: short headings, bullets, concrete nouns.
 
+Do not create or restore `30-runtime/quests.md`, `30-runtime/npcs.md`, or one giant location file. Keep runtime indexes compact and use one JSON file per durable quest, NPC, and location.
+
 Strengthen:
 - NPC: motive, pressure, contradiction, voice cue
 - faction: desire, method, public face, hidden pressure, conflict
 - location: sensory identity, tension, clue, roleplay hook
 - key event: trigger, outcome, fallback consequence
+- quest: clear status, locations, stages, current_step, visible hook, one actionable next step
+- clock: clear pressure, value/max, consequence, when it ticks
+- inventory: concrete item identity, quantity, state, tags
 - opening scene: obey choice_mode
 
 choice_mode:
@@ -50,6 +56,7 @@ choice_mode:
 
 - Re-read changed files.
 - read_json changed state fields.
+- For runtime edits, use the matching summary/runtime read tool or read the relevant compact index entry.
 - Check opening matches choice_mode.
 - Keep secrets out of final response.
 

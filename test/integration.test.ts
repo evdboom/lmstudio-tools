@@ -180,6 +180,7 @@ describe("MCP integration over stdio", () => {
         "create_location",
         "create_npc",
         "create_quest",
+        "verify_campaign",
       ].sort()
     );
   });

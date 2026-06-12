@@ -26,6 +26,7 @@ import {
   runtimeCampaignPath,
   tickClock,
   updateItem,
+  verifyCampaign,
 } from "../src/game.js";
 import { makeSandbox } from "./helpers.js";
 
@@ -39,9 +40,38 @@ async function writeJson(rel: string, data: unknown): Promise<void> {
   await fs.writeFile(abs, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 }
 
+async function writeText(rel: string, text: string): Promise<void> {
+  const abs = path.join(root, rel);
+  await fs.mkdir(path.dirname(abs), { recursive: true });
+  await fs.writeFile(abs, text, "utf8");
+}
+
+async function writeRequiredCampaignText(campaign = campaignPath): Promise<void> {
+  const enough = "Concrete detail, playable pressure, and local texture for verification. ";
+  await writeText(path.join(campaign, "00-meta", "campaign-brief.md"), enough.repeat(3));
+  await writeText(path.join(campaign, "00-meta", "table-rules.md"), enough.repeat(2));
+  await writeText(path.join(campaign, "10-world", "world.md"), enough.repeat(4));
+  await writeText(path.join(campaign, "10-world", "factions.md"), enough.repeat(3));
+  await writeText(path.join(campaign, "10-world", "locations.md"), enough.repeat(3));
+  await writeText(path.join(campaign, "20-story", "plot-spine.md"), enough.repeat(3));
+  await writeText(path.join(campaign, "20-story", "key-events.md"), enough.repeat(3));
+  await writeText(path.join(campaign, "20-story", "themes.md"), enough.repeat(2));
+  await writeText(path.join(campaign, "20-story", "secrets.md"), enough.repeat(2));
+  await writeText(path.join(campaign, "20-story", "opening-scene.md"), enough.repeat(3));
+}
+
 beforeEach(async () => {
   ({ root, cleanup } = await makeSandbox());
   await fs.mkdir(path.join(root, campaignPath, "30-runtime", "quests"), {
+    recursive: true,
+  });
+  await fs.mkdir(path.join(root, campaignPath, "30-runtime", "locations"), {
+    recursive: true,
+  });
+  await fs.mkdir(path.join(root, campaignPath, "30-runtime", "npcs"), {
+    recursive: true,
+  });
+  await fs.mkdir(path.join(root, campaignPath, "40-saves"), {
     recursive: true,
   });
   await writeJson(path.join(campaignPath, "30-runtime", "state.json"), {
@@ -122,6 +152,13 @@ beforeEach(async () => {
       },
     ],
   });
+  await writeJson(path.join(campaignPath, "30-runtime", "inventory.json"), {
+    items: [],
+  });
+  await writeJson(path.join(campaignPath, "30-runtime", "clocks.json"), {
+    clocks: [],
+  });
+  await writeText(path.join(campaignPath, "30-runtime", "journal.jsonl"), "");
 });
 
 afterEach(async () => {
@@ -129,6 +166,135 @@ afterEach(async () => {
 });
 
 describe("game runtime", () => {
+  it("verifies a technically healthy generated campaign", async () => {
+    await writeRequiredCampaignText();
+    await writeJson(path.join(campaignPath, "30-runtime", "state.json"), {
+      campaign_id: campaignPath,
+      turn: 0,
+      in_game_day: 1,
+      time_of_day: "morning",
+      location: "market",
+      game_stage: 1,
+      act: "act1",
+      party: [{ name: "Player", hp: 10, max_hp: 10, status: [] }],
+      inventory: [],
+      present_npcs: [],
+      known_npcs: [],
+      active_quests: [],
+      completed_quests: [],
+      closed_quests: [],
+      flags: {},
+      open_loops: [],
+      play_style: "balanced",
+      choice_mode: "open",
+      scene_scale: "procedural",
+      last_summary: "Campaign initialized.",
+    });
+    await writeJson(path.join(campaignPath, "30-runtime", "quests", "index.json"), {
+      version: 1,
+      quests: [],
+    });
+    await createQuest(root, campaignPath, {
+      id: "q-first-thread",
+      title: "First Thread",
+      status: "available",
+      locations: ["market"],
+      stages: ["act1"],
+      summary: "The first starter thread rises from smoke at the sealed stall.",
+    });
+    await createQuest(root, campaignPath, {
+      id: "q-second-thread",
+      title: "Second Thread",
+      status: "available",
+      locations: ["market"],
+      stages: ["act1"],
+      summary: "A second starter thread points toward the harbor bell.",
+    });
+    await createLocation(root, campaignPath, {
+      id: "market",
+      name: "Salt Market",
+      summary: "A public square where spice smoke curls around locked stalls.",
+      exits: ["alley"],
+    });
+    await createLocation(root, campaignPath, {
+      id: "alley",
+      name: "Spice Alley",
+      summary: "A narrow alley marked by blue salt and watch patrols.",
+      exits: ["market"],
+    });
+    await createNpc(root, campaignPath, {
+      id: "npc-nira",
+      name: "Captain Nira",
+      role: "watch captain",
+      location: "market",
+      summary: "A wary officer trying to keep the market from boiling over.",
+    });
+    await createNpc(root, campaignPath, {
+      id: "npc-seller",
+      name: "Maro",
+      role: "spice seller",
+      location: "market",
+      summary: "A nervous seller with debts and a missing lock key.",
+    });
+    await createNpc(root, campaignPath, {
+      id: "npc-runner",
+      name: "Tess",
+      role: "runner",
+      location: "alley",
+      summary: "A quick courier who saw someone leave by the old stairs.",
+    });
+
+    const result = await verifyCampaign(root, campaignPath);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const payload = JSON.parse(result.text) as {
+      ok: boolean;
+      issue_counts: { errors: number };
+      technical_summary: {
+        quests: { indexed: number };
+        locations: { indexed: number; full_files_present: number };
+        npcs: { indexed: number; full_files_present: number };
+      };
+    };
+    expect(payload.ok).toBe(true);
+    expect(payload.issue_counts.errors).toBe(0);
+    expect(payload.technical_summary.quests.indexed).toBeGreaterThanOrEqual(2);
+    expect(payload.technical_summary.locations.indexed).toBeGreaterThanOrEqual(2);
+    expect(payload.technical_summary.locations.full_files_present).toBeGreaterThanOrEqual(2);
+    expect(payload.technical_summary.npcs.indexed).toBeGreaterThanOrEqual(3);
+    expect(payload.technical_summary.npcs.full_files_present).toBeGreaterThanOrEqual(3);
+  });
+
+  it("reports missing files, thin files, and malformed runtime JSON", async () => {
+    const brokenCampaign = "campaign-broken";
+    await fs.mkdir(path.join(root, brokenCampaign, "00-meta"), { recursive: true });
+    await fs.mkdir(path.join(root, brokenCampaign, "30-runtime", "quests"), { recursive: true });
+    await writeText(path.join(brokenCampaign, "00-meta", "campaign-brief.md"), "tiny");
+    await writeJson(path.join(brokenCampaign, "30-runtime", "state.json"), {
+      location: "missing-start",
+    });
+    await writeJson(path.join(brokenCampaign, "30-runtime", "quests", "index.json"), {
+      quests: [],
+    });
+
+    const result = await verifyCampaign(root, brokenCampaign);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const payload = JSON.parse(result.text) as {
+      ok: boolean;
+      issue_counts: { errors: number; warnings: number };
+      issues: Array<{ code: string; path: string }>;
+    };
+    expect(payload.ok).toBe(false);
+    expect(payload.issue_counts.errors).toBeGreaterThan(0);
+    expect(payload.issue_counts.warnings).toBeGreaterThan(0);
+    expect(payload.issues.map((issue) => issue.code)).toContain("missing_file");
+    expect(payload.issues.map((issue) => issue.code)).toContain("thin_file");
+    expect(payload.issues.map((issue) => issue.code)).toContain("missing_json_field");
+  });
+
   it("returns only active or currently relevant quests", async () => {
     const result = await getPotentialQuests(root, { campaignPath });
     expect(result.ok).toBe(true);

@@ -99,7 +99,7 @@ hand, and keep the full server disabled unless you are debugging.
 
 | Server | Use | Tools |
 | ------ | --- | ----- |
-| `lmstudio-game-creator` | Campaign creation | `create_quest`, `create_npc`, `create_location`, `add_item`, `create_clock` |
+| `lmstudio-game-creator` | Campaign creation | `create_quest`, `create_npc`, `create_location`, `add_item`, `create_clock`, `verify_campaign` |
 | `lmstudio-game-player` | Actual play | Save slots, scene summaries/context, selected quest/NPC/location reads, durable creation, updates, movement, inventory changes, clocks, turn commits |
 | `lmstudio-game` | Full/debug surface | All game runtime tools |
 
@@ -107,6 +107,7 @@ The full game surface is:
 
 | Domain    | Tools                                                                                                       |
 | --------- | ----------------------------------------------------------------------------------------------------------- |
+| Verify    | `verify_campaign`                                                                                          |
 | Saves     | `create_save_slot`, `list_save_slots`                                                                       |
 | Scene     | `get_game_summary`, `get_scene_context`, `commit_turn`, `get_recent_journal`                                |
 | Quests    | `get_potential_quests`, `get_quest_runtime`, `create_quest`, `update_quest`, `advance_quest`                |
@@ -174,6 +175,11 @@ returns to an existing run, call `list_save_slots` if the slot is unknown, then
 spoiler-light recap. During active play, call `get_scene_context` with the same
 `save_slot` first. Then load individual runtime records only when they matter:
 `get_quest_runtime`, `get_npc_runtime`, or `get_location_runtime`.
+
+Campaign creation should end with `verify_campaign`. It checks required files,
+JSON object/array fields, empty or very short text files, and technical runtime
+counts such as quests, locations, NPCs, inventory, clocks, and save slots. Fix
+all reported errors before handing the campaign to the user.
 
 ## Requirements
 

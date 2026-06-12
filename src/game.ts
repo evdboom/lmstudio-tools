@@ -33,6 +33,13 @@ interface PotentialQuest extends QuestIndexEntry {
   why_relevant: string[];
 }
 
+interface VerifyIssue {
+  severity: "error" | "warning";
+  code: string;
+  path: string;
+  message: string;
+}
+
 export interface PotentialQuestOptions {
   campaignPath: string;
   location?: string;
@@ -99,6 +106,10 @@ function asNumber(value: unknown): number | undefined {
 function asStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string");
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function uniqueStrings(values: string[]): string[] {
@@ -275,6 +286,135 @@ async function statOptional(root: string, fileRel: string): Promise<import("node
   }
 }
 
+async function readTextOptional(root: string, fileRel: string): Promise<string | undefined> {
+  try {
+    return await fs.readFile(await safeResolve(root, fileRel), "utf8");
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException)?.code;
+    if (code === "ENOENT") return undefined;
+    throw e;
+  }
+}
+
+function addIssue(
+  issues: VerifyIssue[],
+  severity: VerifyIssue["severity"],
+  code: string,
+  filePath: string,
+  message: string
+): void {
+  issues.push({ severity, code, path: filePath.replace(/\\/g, "/"), message });
+}
+
+async function verifyRequiredDirectory(
+  root: string,
+  dirRel: string,
+  issues: VerifyIssue[]
+): Promise<void> {
+  const stat = await statOptional(root, dirRel);
+  if (!stat) {
+    addIssue(issues, "error", "missing_directory", dirRel, "Required directory is missing.");
+  } else if (!stat.isDirectory()) {
+    addIssue(issues, "error", "not_directory", dirRel, "Expected a directory.");
+  }
+}
+
+async function verifyRequiredTextFile(
+  root: string,
+  fileRel: string,
+  minChars: number,
+  issues: VerifyIssue[]
+): Promise<{ exists: boolean; chars: number; words: number }> {
+  const stat = await statOptional(root, fileRel);
+  if (!stat) {
+    addIssue(issues, "error", "missing_file", fileRel, "Required file is missing.");
+    return { exists: false, chars: 0, words: 0 };
+  }
+  if (!stat.isFile()) {
+    addIssue(issues, "error", "not_file", fileRel, "Expected a file.");
+    return { exists: false, chars: 0, words: 0 };
+  }
+  const text = (await readTextOptional(root, fileRel)) ?? "";
+  const chars = text.trim().length;
+  const words = text.trim().split(/\s+/).filter(Boolean).length;
+  if (chars === 0) {
+    addIssue(issues, "error", "empty_file", fileRel, "File is empty.");
+  } else if (chars < minChars) {
+    addIssue(issues, "warning", "thin_file", fileRel, `File is very short (${chars} chars).`);
+  }
+  return { exists: true, chars, words };
+}
+
+async function verifyJsonRecordFile(
+  root: string,
+  fileRel: string,
+  issues: VerifyIssue[]
+): Promise<JsonRecord | undefined> {
+  const stat = await statOptional(root, fileRel);
+  if (!stat) {
+    addIssue(issues, "error", "missing_file", fileRel, "Required JSON file is missing.");
+    return undefined;
+  }
+  if (!stat.isFile()) {
+    addIssue(issues, "error", "not_file", fileRel, "Expected a JSON file.");
+    return undefined;
+  }
+  try {
+    const value = await readJsonFile(root, fileRel);
+    if (!isRecord(value)) {
+      addIssue(issues, "error", "invalid_json_shape", fileRel, "Expected a JSON object.");
+      return undefined;
+    }
+    return value;
+  } catch (e) {
+    addIssue(issues, "error", "invalid_json", fileRel, toError(e));
+    return undefined;
+  }
+}
+
+function requireFields(
+  record: JsonRecord | undefined,
+  fileRel: string,
+  fields: string[],
+  issues: VerifyIssue[]
+): void {
+  if (!record) return;
+  for (const field of fields) {
+    if (!(field in record)) {
+      addIssue(issues, "error", "missing_json_field", fileRel, `Missing required field: ${field}.`);
+    } else if (record[field] === null || record[field] === undefined || record[field] === "") {
+      addIssue(issues, "warning", "empty_json_field", fileRel, `Field is empty: ${field}.`);
+    }
+  }
+}
+
+function verifyArrayField(
+  record: JsonRecord | undefined,
+  fileRel: string,
+  field: string,
+  issues: VerifyIssue[]
+): unknown[] {
+  if (!record) return [];
+  if (!Array.isArray(record[field])) {
+    addIssue(issues, "error", "invalid_json_field", fileRel, `Expected array field: ${field}.`);
+    return [];
+  }
+  return record[field];
+}
+
+function verifyCompactRecord(
+  record: JsonRecord,
+  fileRel: string,
+  fields: string[],
+  issues: VerifyIssue[]
+): void {
+  for (const field of fields) {
+    if (!isNonEmptyString(record[field])) {
+      addIssue(issues, "warning", "thin_runtime_record", fileRel, `Record has missing or empty ${field}.`);
+    }
+  }
+}
+
 function defaultSlotId(options: SaveSlotOptions): string {
   if (options.slotId) return options.slotId;
   if (isRecord(options.character)) {
@@ -399,6 +539,223 @@ export async function listSaveSlots(
 
     slots.sort((a, b) => asString(a.id).localeCompare(asString(b.id)));
     return ok(json({ campaign_path: campaignPath, slots }));
+  } catch (e) {
+    return err(toError(e));
+  }
+}
+
+export async function verifyCampaign(
+  root: string,
+  campaignPath: string
+): Promise<ToolResult> {
+  try {
+    await ensureCampaignFolder(root, campaignPath);
+    const issues: VerifyIssue[] = [];
+    const textHealth: JsonRecord[] = [];
+
+    const requiredDirs = [
+      "00-meta",
+      "10-world",
+      "20-story",
+      "30-runtime",
+      "30-runtime/quests",
+      "30-runtime/locations",
+      "30-runtime/npcs",
+      "40-saves",
+    ];
+    for (const dir of requiredDirs) {
+      await verifyRequiredDirectory(root, rel(campaignPath, dir), issues);
+    }
+
+    const requiredTextFiles = [
+      ["00-meta/campaign-brief.md", 120],
+      ["00-meta/table-rules.md", 80],
+      ["10-world/world.md", 160],
+      ["10-world/factions.md", 100],
+      ["10-world/locations.md", 120],
+      ["20-story/plot-spine.md", 120],
+      ["20-story/key-events.md", 100],
+      ["20-story/themes.md", 60],
+      ["20-story/secrets.md", 80],
+      ["20-story/opening-scene.md", 120],
+    ] as const;
+    for (const [fileRel, minChars] of requiredTextFiles) {
+      const health = await verifyRequiredTextFile(root, rel(campaignPath, fileRel), minChars, issues);
+      textHealth.push({ path: fileRel, ...health });
+    }
+
+    const state = await verifyJsonRecordFile(root, stateRel(campaignPath), issues);
+    requireFields(
+      state,
+      "30-runtime/state.json",
+      [
+        "campaign_id",
+        "turn",
+        "location",
+        "game_stage",
+        "act",
+        "party",
+        "active_quests",
+        "completed_quests",
+        "closed_quests",
+        "flags",
+        "play_style",
+        "choice_mode",
+        "scene_scale",
+        "last_summary",
+      ],
+      issues
+    );
+    verifyArrayField(state, "30-runtime/state.json", "party", issues);
+    verifyArrayField(state, "30-runtime/state.json", "active_quests", issues);
+    verifyArrayField(state, "30-runtime/state.json", "completed_quests", issues);
+    verifyArrayField(state, "30-runtime/state.json", "closed_quests", issues);
+    if (state && !isRecord(state.flags)) {
+      addIssue(issues, "error", "invalid_json_field", "30-runtime/state.json", "Expected object field: flags.");
+    }
+
+    const journal = await readTextOptional(root, journalRel(campaignPath));
+    if (journal === undefined) {
+      addIssue(issues, "error", "missing_file", "30-runtime/journal.jsonl", "Required journal file is missing.");
+    }
+
+    const inventory = await verifyJsonRecordFile(root, inventoryRel(campaignPath), issues);
+    const inventoryItems = verifyArrayField(inventory, "30-runtime/inventory.json", "items", issues);
+
+    const clocks = await verifyJsonRecordFile(root, clocksRel(campaignPath), issues);
+    const clockEntries = verifyArrayField(clocks, "30-runtime/clocks.json", "clocks", issues).filter(isRecord);
+    for (const clock of clockEntries) {
+      verifyCompactRecord(clock, "30-runtime/clocks.json", ["id", "title"], issues);
+      if (asNumber(clock.max) === undefined) {
+        addIssue(issues, "warning", "thin_runtime_record", "30-runtime/clocks.json", `Clock ${asString(clock.id, "<unknown>")} has no numeric max.`);
+      }
+    }
+
+    const questIndex = await verifyJsonRecordFile(root, questIndexRel(campaignPath), issues);
+    const questIndexEntries = verifyArrayField(questIndex, "30-runtime/quests/index.json", "quests", issues).filter(isRecord);
+    const questIds = new Set<string>();
+    let availableQuestCount = 0;
+    let hiddenQuestCount = 0;
+    for (const quest of questIndexEntries) {
+      const questId = asString(quest.id);
+      if (!questId || !QUEST_ID_RE.test(questId)) {
+        addIssue(issues, "error", "invalid_id", "30-runtime/quests/index.json", `Invalid quest id: ${questId || "<missing>"}.`);
+        continue;
+      }
+      questIds.add(questId);
+      if (asString(quest.status, "available") === "available") availableQuestCount++;
+      if (asString(quest.status) === "hidden") hiddenQuestCount++;
+      verifyCompactRecord(quest, "30-runtime/quests/index.json", ["id", "title", "summary"], issues);
+      const questFile = questFileRel(campaignPath, questId);
+      const questRecord = await verifyJsonRecordFile(root, questFile, issues);
+      requireFields(questRecord, questFile, ["id", "title", "status", "summary"], issues);
+      if (questRecord && questRecord.id !== questId) {
+        addIssue(issues, "error", "id_mismatch", questFile, `Quest file id does not match index id ${questId}.`);
+      }
+    }
+    if (questIndexEntries.length < 2) {
+      addIssue(issues, "warning", "low_runtime_count", "30-runtime/quests/index.json", "Expected at least 2 starter quests.");
+    }
+
+    const locationIndex = await verifyJsonRecordFile(root, locationIndexRel(campaignPath), issues);
+    const locationIndexEntries = verifyArrayField(locationIndex, "30-runtime/locations/index.json", "locations", issues).filter(isRecord);
+    const locationIds = new Set<string>();
+    let fullLocationFileCount = 0;
+    for (const location of locationIndexEntries) {
+      const locationId = asString(location.id);
+      if (!locationId || !ENTITY_ID_RE.test(locationId)) {
+        addIssue(issues, "error", "invalid_id", "30-runtime/locations/index.json", `Invalid location id: ${locationId || "<missing>"}.`);
+        continue;
+      }
+      locationIds.add(locationId);
+      verifyCompactRecord(location, "30-runtime/locations/index.json", ["id", "name", "summary"], issues);
+      const locationFile = locationFileRel(campaignPath, locationId);
+      const locationRecord = await readOptionalRecord(root, locationFile);
+      if (locationRecord) {
+        fullLocationFileCount++;
+        requireFields(locationRecord, locationFile, ["id", "name", "summary"], issues);
+        verifyArrayField(locationRecord, locationFile, "exits", issues);
+        if (locationRecord.id !== locationId) {
+          addIssue(issues, "error", "id_mismatch", locationFile, `Location file id does not match index id ${locationId}.`);
+        }
+      }
+    }
+    if (locationIndexEntries.length < 2) {
+      addIssue(issues, "warning", "low_runtime_count", "30-runtime/locations/index.json", "Expected at least 2 locations.");
+    }
+    const stateLocation = asString(state?.location);
+    if (stateLocation) {
+      const startLocationFile = locationFileRel(campaignPath, stateLocation);
+      if (!(await statOptional(root, startLocationFile))) {
+        addIssue(issues, "error", "missing_start_location", startLocationFile, "State location should have a full location JSON file.");
+      }
+    }
+
+    const npcIndex = await verifyJsonRecordFile(root, npcIndexRel(campaignPath), issues);
+    const npcIndexEntries = verifyArrayField(npcIndex, "30-runtime/npcs/index.json", "npcs", issues).filter(isRecord);
+    const npcIds = new Set<string>();
+    let fullNpcFileCount = 0;
+    for (const npc of npcIndexEntries) {
+      const npcId = asString(npc.id);
+      if (!npcId || !ENTITY_ID_RE.test(npcId)) {
+        addIssue(issues, "error", "invalid_id", "30-runtime/npcs/index.json", `Invalid NPC id: ${npcId || "<missing>"}.`);
+        continue;
+      }
+      npcIds.add(npcId);
+      verifyCompactRecord(npc, "30-runtime/npcs/index.json", ["id", "name", "role", "summary"], issues);
+      const npcFile = npcFileRel(campaignPath, npcId);
+      const npcRecord = await readOptionalRecord(root, npcFile);
+      if (npcRecord) {
+        fullNpcFileCount++;
+        requireFields(npcRecord, npcFile, ["id", "name", "role", "summary"], issues);
+        if (npcRecord.id !== npcId) {
+          addIssue(issues, "error", "id_mismatch", npcFile, `NPC file id does not match index id ${npcId}.`);
+        }
+      }
+    }
+    if (npcIndexEntries.length < 3) {
+      addIssue(issues, "warning", "low_runtime_count", "30-runtime/npcs/index.json", "Expected at least 3 named NPCs.");
+    }
+
+    const saves = await listSaveSlots(root, campaignPath);
+    const saveCount = saves.ok ? (JSON.parse(saves.text) as { slots?: unknown[] }).slots?.length ?? 0 : 0;
+    const errorCount = issues.filter((issue) => issue.severity === "error").length;
+    const warningCount = issues.filter((issue) => issue.severity === "warning").length;
+
+    return ok(json({
+      ok: errorCount === 0,
+      issue_counts: { errors: errorCount, warnings: warningCount },
+      issues,
+      file_health: {
+        text_files: textHealth,
+      },
+      technical_summary: {
+        quests: {
+          indexed: questIndexEntries.length,
+          full_files_checked: questIds.size,
+          available: availableQuestCount,
+          hidden: hiddenQuestCount,
+        },
+        locations: {
+          indexed: locationIndexEntries.length,
+          full_files_present: fullLocationFileCount,
+          state_location: stateLocation || null,
+        },
+        npcs: {
+          indexed: npcIndexEntries.length,
+          full_files_present: fullNpcFileCount,
+        },
+        inventory: {
+          items: inventoryItems.length,
+        },
+        clocks: {
+          count: clockEntries.length,
+        },
+        saves: {
+          count: saveCount,
+        },
+      },
+    }));
   } catch (e) {
     return err(toError(e));
   }

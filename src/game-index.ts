@@ -36,6 +36,7 @@ import {
   updateLocation,
   updateNpc,
   updateQuest,
+  verifyCampaign,
 } from "./game.js";
 import { type ToolResult } from "./tools.js";
 import { makeLogger, type Logger } from "./log.js";
@@ -48,6 +49,7 @@ interface CliArgs {
 export type GameToolMode = "full" | "creator" | "player";
 
 const CREATOR_TOOLS = new Set([
+  "verify_campaign",
   "create_quest",
   "create_npc",
   "create_location",
@@ -180,6 +182,19 @@ export function registerGameTools(
     if (!shouldRegisterTool(mode, name)) return undefined;
     return originalTool(name, ...args);
   };
+
+  server.tool(
+    "verify_campaign",
+    "Verify a generated campaign folder for required files, JSON structure, thin/empty files, and technical runtime counts. Call at the end of campaign creation before responding to the user.",
+    {
+      campaign_path: campaignPath,
+    },
+    wrap(
+      "verify_campaign",
+      ({ campaign_path }) => verifyCampaign(root, campaign_path),
+      log
+    )
+  );
 
   server.tool(
     "create_save_slot",

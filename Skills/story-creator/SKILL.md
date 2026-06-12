@@ -8,7 +8,7 @@ allow_scripts: false
 
 Create a campaign folder. Do not start play.
 
-Tools only: list_files, list_folders, read_file, read_json, add_folder, add_file, replace_file, append_file, create_quest, create_npc, create_location, add_item, create_clock.
+Tools only: list_files, list_folders, read_file, read_json, add_folder, add_file, replace_file, append_file, create_quest, create_npc, create_location, add_item, create_clock, verify_campaign.
 
 Use `lmstudio-game-creator` runtime create tools if available after the campaign folder exists. Otherwise write JSON files with `add_file`.
 
@@ -235,16 +235,17 @@ Closed mode:
 
 ## Verify
 
-- `list_files(<campaign>, recursive=true)` once. Confirm required files.
-- `read_json`: campaign_id, turn, location, game_stage, act, play_style, choice_mode, scene_scale.
-- `read_json`: quests/index.json `quests[0].id`.
-- `read_file`: opening-scene.md.
+- Call `verify_campaign(campaign_path=<campaign>)` after all files and runtime entities are created.
+- If `ok=false`, fix every `severity="error"` and rerun `verify_campaign`.
+- Warnings for thin files or low counts should be fixed unless the campaign brief explicitly justifies them.
+- Do not give the final response until `verify_campaign` has no errors.
 
 ## Final Response
 
 Return only:
 - Campaign folder path
 - Spoiler-light pitch
+- Verify summary: errors, warnings, quest/location/NPC counts
 - Open mode: start new chat with story-player + folder path + character/save slot concept
 - Closed mode: start new chat with story-player-closed + folder path + character/save slot concept
 

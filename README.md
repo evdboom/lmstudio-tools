@@ -255,7 +255,8 @@ registry, install command, or skill-creator tool in this project.
 The `Skills/` folder includes a small RPG workflow:
 
 - `story-creator`: create a campaign folder with world, plot, and runtime files.
-- `story-player`: run open-ended RPG play with procedural turns, roleplay exchanges, and JSON state updates.
+- `story-player`: run open-mode RPG play with free player actions, roleplay exchanges, and JSON state updates.
+- `story-player-closed`: run closed-mode RPG play with explicit A/B/C choices.
 - `story-refiner`: improve or expand an existing campaign after generation.
 - `story-verbose`: add richer prose during play.
 - `compact-mode`: keep model output short.

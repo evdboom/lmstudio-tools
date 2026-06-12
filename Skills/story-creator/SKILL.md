@@ -231,9 +231,12 @@ NPC shape:
 
 Match choice_mode.
 
+Use plain prose, not Markdown styling. Player input reserves `*text*` for private thought and `**text**` for no-play/OOC questions, so opening scenes should not use italics or bold for emphasis.
+
 Open mode:
 - No A/B/C, numbers, menu, `choose`, `option`, `What do you do?`, `Your choice`, spotlight prompt, direct question ending.
 - No labels like `Focus:` or `(Romance route)`.
+- First establish the current state in the setting: where the protagonist is, what situation is happening now, what visible pressure or decision is present, and who is waiting or acting. Then describe people and atmosphere.
 - End on live scene facts. Weave possible paths into prose.
 - Player agency is implied.
 - Write final player-facing prose only. Do not include `Possible Paths`, `Live Scene Facts`, `Opening Line`, bullet lists, or authoring scaffold in `opening-scene.md`.
@@ -241,6 +244,7 @@ Open mode:
 Closed mode:
 - End with 2 to 4 short A/B/C choices.
 - No hidden labels like `Focus:` or `(Social route)`.
+- First establish the current state and immediate decision before listing choices.
 - Final line: `Choose one, or describe a different action.`
 
 ## Verify

@@ -181,6 +181,12 @@ missing, call `create_save_slot`, then call `get_opening_scene` with the same
 model does not need file tools. If a model calls `get_game_summary` on a fresh
 slot instead, the summary returns `summary_type: "new_game_start"` with a
 `startup.text` opening scene payload.
+
+Player input uses a small Markdown-like syntax during play: `*text*` is private
+protagonist thought or intent, `"text"` is spoken dialogue, plain text is visible
+action when phrased as action, and `**text**` is a no-play/OOC question or
+instruction to the narrator/model. Narrator output and opening scenes should
+avoid decorative Markdown italics/bold so those channels stay unambiguous.
 When a player returns to an existing run, call `list_save_slots` if the slot is
 unknown, then `get_game_summary` with `save_slot` and use its `recap_lines` to
 give a short spoiler-light recap. During active play, call `get_scene_context`

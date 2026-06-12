@@ -58,7 +58,14 @@ async function writeRequiredCampaignText(campaign = campaignPath): Promise<void>
   await writeText(path.join(campaign, "20-story", "key-events.md"), enough.repeat(3));
   await writeText(path.join(campaign, "20-story", "themes.md"), enough.repeat(2));
   await writeText(path.join(campaign, "20-story", "secrets.md"), enough.repeat(2));
-  await writeText(path.join(campaign, "20-story", "opening-scene.md"), enough.repeat(3));
+  await writeText(
+    path.join(campaign, "20-story", "opening-scene.md"),
+    [
+      "You stand in the Salt Market as morning bells shake dust from the awnings.",
+      "Captain Nira and Maro are waiting beside the sealed spice stall, and the warm lock makes the next decision visible before anyone explains it.",
+      "Smoke threads through blue salt on the stones while the alley mouth stays open behind the crowd.",
+    ].join("\n\n")
+  );
 }
 
 beforeEach(async () => {
@@ -314,6 +321,7 @@ describe("game runtime", () => {
     expect(payload.issues.map((issue) => issue.code)).toContain("opening_scene_forbidden_prompt");
     expect(payload.issues.map((issue) => issue.code)).toContain("opening_scene_scaffold");
     expect(payload.issues.map((issue) => issue.code)).toContain("opening_scene_bullets");
+    expect(payload.issues.map((issue) => issue.code)).toContain("opening_scene_markdown_emphasis");
   });
 
   it("returns only active or currently relevant quests", async () => {

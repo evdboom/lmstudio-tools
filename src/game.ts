@@ -503,6 +503,28 @@ function verifyOpeningSceneText(
       "Opening scene contains bullet-list presentation. Prefer prose for open-mode startup."
     );
   }
+  if (/\*\*[^*\n]+\*\*/.test(text) || /(^|[^*])\*[^*\n][^*\n]{2,}\*(?!\*)/.test(text)) {
+    addIssue(
+      issues,
+      "warning",
+      "opening_scene_markdown_emphasis",
+      fileRel,
+      "Opening scene uses Markdown emphasis. Reserve *thought* and **no-play/OOC** syntax for player input."
+    );
+  }
+  if (isOpenMode) {
+    const hasPlayerAnchor = /\byou\b/i.test(text);
+    const hasSituationPressure = /\b(waiting|watching|expects?|choice|choose|decision|pressure|must|now|today|before you|around you|representatives?|gathered|present)\b/i.test(text);
+    if (!hasPlayerAnchor || !hasSituationPressure) {
+      addIssue(
+        issues,
+        "warning",
+        "opening_scene_weak_situation",
+        fileRel,
+        "Opening scene should establish the protagonist's current state, immediate situation, visible pressure/decision, and who is waiting or acting."
+      );
+    }
+  }
 }
 
 function verifyPlayerSetup(state: JsonRecord | undefined, issues: VerifyIssue[]): void {

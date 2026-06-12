@@ -1,12 +1,16 @@
 # lmstudio-tools
 
-Three local **MCP (Model Context Protocol)** servers for LM Studio:
+Local **MCP (Model Context Protocol)** servers for LM Studio:
 
 - **`lmstudio-tools`** — sandboxed filesystem tools scoped to a folder you choose.
 - **`lmstudio-skills`** — a Claude-Code-style "skills" framework: drop
   `SKILL.md` files into a folder, the model lists/loads them on demand.
-- **`lmstudio-game`** — a structured RPG runtime surface for scene context,
-  quests, NPCs, locations, inventory, clocks, turn commits, and compact journals.
+- **`lmstudio-game-creator`** — a slim RPG creation surface for adding starter
+  quests, NPCs, locations, items, and clocks.
+- **`lmstudio-game-player`** — a slim RPG play surface for save slots, scene
+  context, turn commits, and playthrough changes.
+- **`lmstudio-game`** — the full RPG runtime surface, useful for development or
+  debugging when context budget is less important.
 
 All speak **stdio** and plug into LM Studio's built-in MCP client.
 
@@ -87,15 +91,24 @@ can decide whether to ask for more.
 The list is hard-coded in v1. To extend or trim it, edit `BLOCKED_EXTENSIONS`
 in `src/io.ts` and rebuild.
 
-## The game runtime server (`lmstudio-game`)
+## The game runtime servers
 
-`lmstudio-game` is the actual play surface for RPG campaigns. It is designed so
-the playing model asks for a compact scene packet instead of reading large lore
-or quest files into context.
+The game runtime is split into smaller MCP servers so local models do not have
+to carry every possible game tool in context. Use the slim server for the job at
+hand, and keep the full server disabled unless you are debugging.
+
+| Server | Use | Tools |
+| ------ | --- | ----- |
+| `lmstudio-game-creator` | Campaign creation | `create_quest`, `create_npc`, `create_location`, `add_item`, `create_clock` |
+| `lmstudio-game-player` | Actual play | Save slots, scene summaries/context, selected quest/NPC/location reads, durable creation, updates, movement, inventory changes, clocks, turn commits |
+| `lmstudio-game` | Full/debug surface | All game runtime tools |
+
+The full game surface is:
 
 | Domain    | Tools                                                                                                       |
 | --------- | ----------------------------------------------------------------------------------------------------------- |
-| Scene     | `get_scene_context`, `commit_turn`, `get_recent_journal`                                                    |
+| Saves     | `create_save_slot`, `list_save_slots`                                                                       |
+| Scene     | `get_game_summary`, `get_scene_context`, `commit_turn`, `get_recent_journal`                                |
 | Quests    | `get_potential_quests`, `get_quest_runtime`, `create_quest`, `update_quest`, `advance_quest`                |
 | NPCs      | `get_present_npcs`, `get_npc_runtime`, `create_npc`, `update_npc`, `move_npc`                               |
 | Locations | `get_location_runtime`, `create_location`, `update_location`, `move_party`                                  |
@@ -120,11 +133,24 @@ New story campaigns use structured runtime files:
     loc-example.json
   npcs/
     index.json
+40-saves/
+  dwarf-warrior/
+    save.json
+    30-runtime/
+      state.json
+      journal.jsonl
 ```
 
+`30-runtime/` is the reusable campaign template. Starting an adventure should
+call `create_save_slot`, which copies that template into
+`40-saves/<slot>/30-runtime/`. Normal play tools accept optional `save_slot` and
+then read/write that slot instead of the template. This lets the same backdrop be
+played as a dwarf warrior, an elven mage, or multiple divergent runs.
+
 Indexes are intentionally compact. Full quest, NPC, and location detail lives in
-one JSON file per durable entity. This keeps the playing model from flooding
-context with unrelated quests, cast members, or map detail.
+one JSON file per durable entity inside the active runtime. This keeps the
+playing model from flooding context with unrelated quests, cast members, or map
+detail.
 
 Quest statuses are conventionally `available`, `active`, `completed`, `failed`,
 `closed`, or `hidden`. `get_potential_quests` returns active quests even when
@@ -142,9 +168,12 @@ The same rule applies to other domains:
 - Use `add_item` only for items the player can keep, spend, inspect, trade, or use later.
 - Use `create_clock` only for pressure that can advance over turns or scenes.
 
-During play, call `get_scene_context` first. Then load individual runtime records
-only when they matter: `get_quest_runtime`, `get_npc_runtime`, or
-`get_location_runtime`.
+When a player starts a new run, call `create_save_slot` first. When a player
+returns to an existing run, call `list_save_slots` if the slot is unknown, then
+`get_game_summary` with `save_slot` and use its `recap_lines` to give a short
+spoiler-light recap. During active play, call `get_scene_context` with the same
+`save_slot` first. Then load individual runtime records only when they matter:
+`get_quest_runtime`, `get_npc_runtime`, or `get_location_runtime`.
 
 ## Requirements
 
@@ -161,8 +190,8 @@ npm run build
 ```
 
 This produces `dist/index.js` (file-tools server), `dist/skills-index.js`
-(skills server), and `dist/game-index.js` (game runtime server). These are used
-by LM Studio.
+(skills server), `dist/game-creator-index.js`, `dist/game-player-index.js`, and
+`dist/game-index.js` (full game runtime server). These are used by LM Studio.
 
 ### Quick sanity check (optional)
 
@@ -195,10 +224,18 @@ stderr. The server reads MCP JSON-RPC over stdin; press `Ctrl+C` to exit.
         "C:\\path\\to\\your\\sandbox"
       ]
     },
-    "lmstudio-game": {
+    "lmstudio-game-creator": {
       "command": "node",
       "args": [
-        "[lm studio tools folder]\\dist\\game-index.js",
+        "[lm studio tools folder]\\dist\\game-creator-index.js",
+        "--root",
+        "C:\\path\\to\\your\\sandbox"
+      ]
+    },
+    "lmstudio-game-player": {
+      "command": "node",
+      "args": [
+        "[lm studio tools folder]\\dist\\game-player-index.js",
         "--root",
         "C:\\path\\to\\your\\sandbox"
       ]
@@ -229,8 +266,13 @@ stderr. The server reads MCP JSON-RPC over stdin; press `Ctrl+C` to exit.
 
 `--root` wins if both are set.
 
-`lmstudio-game` also accepts `MCP_GAME_ROOT`. If omitted, it falls back to
+Game servers also accept `MCP_GAME_ROOT`. If omitted, they fall back to
 `MCP_ROOT`.
+
+For local models, enable only the game server you need for the current chat:
+`lmstudio-game-creator` while generating a campaign, then
+`lmstudio-game-player` while playing. Leave `lmstudio-game` disabled unless you
+want the full/debug tool surface.
 
 ### One server, one root
 
@@ -334,9 +376,10 @@ The `Skills/` folder includes a small RPG workflow:
 - `story-verbose`: add richer prose during play.
 - `compact-mode`: keep model output short.
 
-For RPG runtime state, playing skills should prefer `lmstudio-game` tools over
-raw file reads. Use `get_scene_context` at the start of each turn and
-`commit_turn` for meaningful state changes.
+For RPG runtime state, campaign creation should use `lmstudio-game-creator` and
+play should use `lmstudio-game-player` over raw file reads. Use
+`get_scene_context` at the start of each turn and `commit_turn` for meaningful
+state changes.
 
 ### Tools exposed
 
@@ -384,9 +427,9 @@ support files when needed.
 
 ### Running the skills server side-by-side
 
-You can register all three servers in `mcp.json`. They are independent
-processes; the model sees skill tools, file-edit tools, and game-runtime tools
-side by side and decides which to call.
+You can register the file, skills, and slim game servers in `mcp.json`. They are
+independent processes; for local models, enable only the game profile needed for
+the current task to save context.
 
 ## Sandboxing
 
@@ -412,10 +455,12 @@ Run from source without building:
 npm run dev -- --root C:\tmp\mcp-sandbox
 ```
 
-For the game runtime server from source:
+For game runtime servers from source:
 
 ```powershell
 npx tsx src/game-index.ts --root C:\tmp\mcp-sandbox
+npx tsx src/game-creator-index.ts --root C:\tmp\mcp-sandbox
+npx tsx src/game-player-index.ts --root C:\tmp\mcp-sandbox
 ```
 
 Edit `src/*.ts`, then `npm run build` and restart LM Studio's MCP server
@@ -458,11 +503,16 @@ src/log.ts               # structured stderr logger (toggle with --quiet)
 src/tools.ts             # filesystem operations (pure async fns)
 src/index.ts             # MCP server wiring + CLI entry (file tools)
 src/game.ts              # RPG runtime operations (pure async fns)
-src/game-index.ts        # MCP server wiring + CLI entry (game runtime)
+src/game-index.ts        # MCP server wiring + CLI entry (full game runtime)
+src/game-creator-index.ts # CLI entry (slim creator game runtime)
+src/game-player-index.ts # CLI entry (slim player game runtime)
 src/skills.ts            # skill list/load/read implementations
 src/skills-index.ts      # MCP server wiring + CLI entry (skills)
 test/                    # vitest suites + helpers
 dist/index.js            # built file-tools entry point
+dist/game-creator-index.js # built creator game entry point
+dist/game-player-index.js # built player game entry point
+dist/game-index.js       # built full game entry point
 dist/skills-index.js     # built skills entry point
 ```
 

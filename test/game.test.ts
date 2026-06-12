@@ -9,7 +9,9 @@ import {
   createLocation,
   createNpc,
   createQuest,
+  createSaveSlot,
   getClocks,
+  getGameSummary,
   getInventory,
   getLocationRuntime,
   getNpcRuntime,
@@ -17,9 +19,11 @@ import {
   getPresentNpcs,
   getQuestRuntime,
   getSceneContext,
+  listSaveSlots,
   moveNpc,
   moveParty,
   removeItem,
+  runtimeCampaignPath,
   tickClock,
   updateItem,
 } from "../src/game.js";
@@ -45,6 +49,8 @@ beforeEach(async () => {
     location: "market",
     game_stage: 1,
     act: "act1",
+    time_of_day: "morning",
+    last_summary: "The player noticed smoke curling from the spice stall.",
     active_quests: ["q-active"],
     completed_quests: [],
     closed_quests: [],
@@ -245,6 +251,148 @@ describe("game runtime", () => {
     ]);
     expect(payload.quests.map((quest) => quest.id)).toContain("q-market");
     expect(payload.recent_journal).toHaveLength(1);
+  });
+
+  it("returns a compact returning-player summary", async () => {
+    await writeJson(path.join(campaignPath, "30-runtime", "locations", "market.json"), {
+      id: "market",
+      name: "Salt Market",
+      present_npcs: ["npc-captain"],
+      exits: ["alley"],
+    });
+    await writeJson(path.join(campaignPath, "30-runtime", "npcs", "index.json"), {
+      npcs: [
+        {
+          id: "npc-captain",
+          name: "Captain Nira",
+          role: "watch captain",
+          location: "market",
+          visible_mood: "wary",
+        },
+      ],
+    });
+    await writeJson(path.join(campaignPath, "30-runtime", "inventory.json"), {
+      items: [{ id: "item-blue-salt", name: "Blue Salt", quantity: 2 }],
+    });
+    await writeJson(path.join(campaignPath, "30-runtime", "clocks.json"), {
+      clocks: [
+        {
+          id: "clock-watch-arrives",
+          title: "Watch Arrives",
+          value: 1,
+          max: 3,
+          status: "active",
+        },
+      ],
+    });
+    await fs.appendFile(
+      path.join(root, campaignPath, "30-runtime", "journal.jsonl"),
+      `${JSON.stringify({ turn: 2, action: "watched the stall", outcome: "smoke noticed" })}\n`,
+      "utf8"
+    );
+
+    const result = await getGameSummary(root, { campaignPath });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const payload = JSON.parse(result.text) as {
+      summary_type: string;
+      current_location: { name: string };
+      active_quests: Array<{ id: string }>;
+      relevant_hooks: Array<{ id: string }>;
+      present_npcs: Array<{ id: string }>;
+      inventory: Array<{ id: string }>;
+      clocks: Array<{ id: string }>;
+      recent_journal: unknown[];
+      recap_lines: string[];
+    };
+    expect(payload.summary_type).toBe("returning_player");
+    expect(payload.current_location.name).toBe("Salt Market");
+    expect(payload.active_quests.map((quest) => quest.id)).toContain("q-active");
+    expect(payload.relevant_hooks.map((quest) => quest.id)).toContain("q-market");
+    expect(payload.present_npcs).toEqual([expect.objectContaining({ id: "npc-captain" })]);
+    expect(payload.inventory).toEqual([expect.objectContaining({ id: "item-blue-salt" })]);
+    expect(payload.clocks).toEqual([expect.objectContaining({ id: "clock-watch-arrives" })]);
+    expect(payload.recent_journal).toHaveLength(1);
+    expect(payload.recap_lines.join("\n")).toContain("Last time");
+  });
+
+  it("creates independent save slots from the campaign runtime template", async () => {
+    await createLocation(root, campaignPath, {
+      id: "alley",
+      name: "Spice Alley",
+      exits: ["market"],
+    });
+
+    const dwarf = await createSaveSlot(root, campaignPath, {
+      slotId: "dwarf-warrior",
+      label: "Dwarf Warrior",
+      character: { name: "Bruni", ancestry: "dwarf", class: "warrior" },
+    });
+    const mage = await createSaveSlot(root, campaignPath, {
+      slotId: "elven-mage",
+      label: "Elven Mage",
+      character: { name: "Vael", ancestry: "elf", class: "mage" },
+    });
+    expect(dwarf.ok).toBe(true);
+    expect(mage.ok).toBe(true);
+
+    const dwarfPath = runtimeCampaignPath(campaignPath, "dwarf-warrior");
+    const magePath = runtimeCampaignPath(campaignPath, "elven-mage");
+    await commitTurn(root, dwarfPath, {
+      location: "alley",
+      last_summary: "Bruni shouldered through the smoke into Spice Alley.",
+      journal_entry: { action: "entered the alley", outcome: "found a second trail" },
+    });
+    await createQuest(root, dwarfPath, {
+      id: "q-dwarf-oath",
+      title: "Dwarf Oath",
+      status: "active",
+      locations: ["alley"],
+      stages: ["act1"],
+      summary: "Bruni swore to find the hand behind the smoke.",
+    });
+
+    const dwarfSummary = await getGameSummary(root, { campaignPath: dwarfPath });
+    const mageSummary = await getGameSummary(root, { campaignPath: magePath });
+    expect(dwarfSummary.ok).toBe(true);
+    expect(mageSummary.ok).toBe(true);
+    if (!dwarfSummary.ok || !mageSummary.ok) return;
+
+    const dwarfPayload = JSON.parse(dwarfSummary.text) as {
+      state: { location: string; turn: number };
+      active_quests: Array<{ id: string }>;
+    };
+    const magePayload = JSON.parse(mageSummary.text) as {
+      state: { location: string; turn: number };
+      active_quests: Array<{ id: string }>;
+    };
+    expect(dwarfPayload.state.location).toBe("alley");
+    expect(dwarfPayload.state.turn).toBe(3);
+    expect(dwarfPayload.active_quests.map((quest) => quest.id)).toContain("q-dwarf-oath");
+    expect(magePayload.state.location).toBe("market");
+    expect(magePayload.state.turn).toBe(2);
+    expect(magePayload.active_quests.map((quest) => quest.id)).not.toContain("q-dwarf-oath");
+
+    const templateState = JSON.parse(
+      await fs.readFile(path.join(root, campaignPath, "30-runtime", "state.json"), "utf8")
+    ) as { location: string; turn: number };
+    expect(templateState.location).toBe("market");
+    expect(templateState.turn).toBe(2);
+
+    const slots = await listSaveSlots(root, campaignPath);
+    expect(slots.ok).toBe(true);
+    if (!slots.ok) return;
+    const slotPayload = JSON.parse(slots.text) as { slots: Array<{ id: string; label: string }> };
+    expect(slotPayload.slots).toEqual([
+      expect.objectContaining({ id: "dwarf-warrior", label: "Dwarf Warrior" }),
+      expect.objectContaining({ id: "elven-mage", label: "Elven Mage" }),
+    ]);
+  });
+
+  it("blocks save slot ids that could escape the sandbox", async () => {
+    const result = await createSaveSlot(root, campaignPath, { slotId: "../escape" });
+    expect(result.ok).toBe(false);
   });
 
   it("blocks quest ids that could escape the sandbox", async () => {

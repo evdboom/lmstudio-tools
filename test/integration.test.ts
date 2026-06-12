@@ -9,6 +9,8 @@ import { makeSandbox } from "./helpers.js";
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), "..");
 const entry = path.join(repoRoot, "src", "index.ts");
+const gameCreatorEntry = path.join(repoRoot, "src", "game-creator-index.ts");
+const gamePlayerEntry = path.join(repoRoot, "src", "game-player-index.ts");
 
 interface JsonRpcResponse {
   jsonrpc: "2.0";
@@ -82,7 +84,7 @@ class McpClient {
   }
 }
 
-function spawnServer(root: string): McpClient {
+function spawnServer(root: string, serverEntry = entry): McpClient {
   // Run tsx via Node directly to avoid the Windows .cmd shell-spawn pitfall.
   const tsxCli = path.join(
     repoRoot,
@@ -93,7 +95,7 @@ function spawnServer(root: string): McpClient {
   );
   const child = spawn(
     process.execPath,
-    [tsxCli, entry, "--root", root],
+    [tsxCli, serverEntry, "--root", root],
     {
       cwd: repoRoot,
       stdio: ["pipe", "pipe", "pipe"],
@@ -161,6 +163,66 @@ describe("MCP integration over stdio", () => {
         "update_json",
       ].sort()
     );
+  });
+
+  it("game creator server exposes only creation tools", async () => {
+    await client.close();
+    client = spawnServer(root, gameCreatorEntry);
+    await handshake(client);
+
+    const resp = await client.request("tools/list");
+    const result = resp.result as { tools: Array<{ name: string }> };
+    const names = result.tools.map((t) => t.name).sort();
+    expect(names).toEqual(
+      [
+        "add_item",
+        "create_clock",
+        "create_location",
+        "create_npc",
+        "create_quest",
+      ].sort()
+    );
+  });
+
+  it("game player server exposes a slim play surface", async () => {
+    await client.close();
+    client = spawnServer(root, gamePlayerEntry);
+    await handshake(client);
+
+    const resp = await client.request("tools/list");
+    const result = resp.result as { tools: Array<{ name: string }> };
+    const names = result.tools.map((t) => t.name).sort();
+    expect(names).toEqual(
+      [
+        "add_item",
+        "advance_quest",
+        "commit_turn",
+        "create_clock",
+        "create_location",
+        "create_npc",
+        "create_quest",
+        "create_save_slot",
+        "get_game_summary",
+        "get_location_runtime",
+        "get_npc_runtime",
+        "get_quest_runtime",
+        "get_recent_journal",
+        "get_scene_context",
+        "list_save_slots",
+        "move_npc",
+        "move_party",
+        "remove_item",
+        "tick_clock",
+        "update_clock",
+        "update_item",
+        "update_location",
+        "update_npc",
+        "update_quest",
+      ].sort()
+    );
+    expect(names).not.toContain("get_potential_quests");
+    expect(names).not.toContain("get_inventory");
+    expect(names).not.toContain("get_clocks");
   });
 
   it("json tools update a state property without replacing the whole file", async () => {

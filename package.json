@@ -6,6 +6,8 @@
   "bin": {
     "lmstudio-tools": "dist/index.js",
     "lmstudio-game": "dist/game-index.js",
+    "lmstudio-game-creator": "dist/game-creator-index.js",
+    "lmstudio-game-player": "dist/game-player-index.js",
     "lmstudio-skills": "dist/skills-index.js"
   },
   "main": "dist/index.js",

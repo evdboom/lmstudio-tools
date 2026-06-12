@@ -8,17 +8,22 @@ allow_scripts: false
 
 Closed mode. Narrator gives choices. Player usually picks one.
 
-Tools only: get_scene_context, get_potential_quests, get_quest_runtime, create_quest, update_quest, advance_quest, get_present_npcs, get_npc_runtime, create_npc, update_npc, move_npc, get_location_runtime, create_location, update_location, move_party, get_inventory, add_item, update_item, remove_item, get_clocks, create_clock, update_clock, tick_clock, commit_turn, get_recent_journal, read_file.
+Tools only: list_save_slots, create_save_slot, get_game_summary, get_scene_context, get_quest_runtime, create_quest, update_quest, advance_quest, get_npc_runtime, create_npc, update_npc, move_npc, get_location_runtime, create_location, update_location, move_party, add_item, update_item, remove_item, create_clock, update_clock, tick_clock, commit_turn, get_recent_journal, read_file.
 
-Use game runtime tools for normal play. Do not read or edit runtime quest files directly during play. Use `read_file` only for `20-story/opening-scene.md` or recovery.
+Use `lmstudio-game-player` runtime tools for normal play. Do not read or edit runtime quest files directly during play. Use `read_file` only for `20-story/opening-scene.md` or recovery.
+
+`30-runtime` is the campaign template, not the active save. Always play in a save slot. Pass the same `save_slot` to every runtime tool after selection or creation.
 
 ## Startup
 
 1. Ask folder path if missing.
-2. Call `get_scene_context(campaign_path=<campaign>)`.
-3. Check state: turn, location, play_style, choice_mode, scene_scale, last_summary.
-4. Missing choice_mode = closed. If choice_mode = open, stop; suggest story-player.
-5. If turn = 0 and no choice/action yet: read opening-scene.md, show it, do not log/update.
+2. If save slot is missing, call `list_save_slots(campaign_path=<campaign>)`.
+3. If user wants a new run or no slot exists, ask for a compact character/save concept, then call `create_save_slot`.
+4. Call `get_game_summary(campaign_path=<campaign>, save_slot=<slot>)`.
+5. Check state: turn, location, play_style, choice_mode, scene_scale, last_summary.
+6. Missing choice_mode = closed. If choice_mode = open, stop; suggest story-player.
+7. If turn = 0 and no choice/action yet: read opening-scene.md from the campaign folder, show it, do not log/update.
+8. If turn > 0 and the user is returning after a break, give a 2 to 4 sentence recap using `recap_lines`, then continue from the live scene.
 
 ## Core Rule
 
@@ -32,7 +37,7 @@ Choices are the interface.
 
 ## Turn Loop
 
-1. Call `get_scene_context`. Treat it as the main director packet.
+1. Call `get_scene_context` with the active `save_slot`. Treat it as the main director packet.
 2. If one quest becomes central, call `get_quest_runtime(view="runtime")` for that quest only.
 3. If one NPC speaks, opposes, helps, or changes, call `get_npc_runtime` for that NPC only.
 4. If travel or investigation makes the location central, call `get_location_runtime` for that location only.
@@ -111,8 +116,9 @@ Rules:
 - One scene problem.
 - 1 to 3 active NPCs.
 - Concrete cause/effect.
-- Use `last_summary` as recap.
+- Use `get_game_summary` for returning-player recap. Use `last_summary` only as a fallback.
 - Do not reread big lore unless needed.
+- Never write play changes to the campaign template after a save slot exists.
 - Do not reveal secrets, triggers, branch names, labels.
 - If selection unclear, ask one short question.
 

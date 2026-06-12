@@ -10,7 +10,7 @@ Create a campaign folder. Do not start play.
 
 Tools only: list_files, list_folders, read_file, read_json, add_folder, add_file, replace_file, append_file, create_quest, create_npc, create_location, add_item, create_clock.
 
-Use game runtime create tools if available after the campaign folder exists. Otherwise write JSON files with `add_file`.
+Use `lmstudio-game-creator` runtime create tools if available after the campaign folder exists. Otherwise write JSON files with `add_file`.
 
 ## Ask
 
@@ -41,6 +41,7 @@ Required folders:
 - `30-runtime/quests/`
 - `30-runtime/locations/`
 - `30-runtime/npcs/`
+- `40-saves/`
 
 Required files:
 - `00-meta/campaign-brief.md`
@@ -244,7 +245,7 @@ Closed mode:
 Return only:
 - Campaign folder path
 - Spoiler-light pitch
-- Open mode: start new chat with story-player + folder path
-- Closed mode: start new chat with story-player-closed + folder path
+- Open mode: start new chat with story-player + folder path + character/save slot concept
+- Closed mode: start new chat with story-player-closed + folder path + character/save slot concept
 
 Do not reveal secrets. Do not narrate opening scene. Do not ask for first action.

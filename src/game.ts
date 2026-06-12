@@ -8,6 +8,7 @@ type JsonRecord = Record<string, unknown>;
 const CLOSED_STATUSES = new Set(["completed", "failed", "closed"]);
 const QUEST_ID_RE = /^[a-z0-9][a-z0-9_-]{1,80}$/;
 const ENTITY_ID_RE = /^[a-z0-9][a-z0-9_-]{1,80}$/;
+const SAVE_SLOT_ID_RE = /^[a-z0-9][a-z0-9_-]{1,80}$/;
 
 interface QuestIndexEntry {
   id: string;
@@ -48,6 +49,21 @@ export interface SceneContextOptions {
   act?: string;
   questLimit?: number;
   journalLimit?: number;
+}
+
+export interface GameSummaryOptions {
+  campaignPath: string;
+  questLimit?: number;
+  journalLimit?: number;
+}
+
+export interface SaveSlotOptions {
+  slotId?: string;
+  label?: string;
+  character?: unknown;
+  statePatch?: unknown;
+  resetJournal?: boolean;
+  overwrite?: boolean;
 }
 
 function ok(text: string): ToolResult {
@@ -91,6 +107,12 @@ function uniqueStrings(values: string[]): string[] {
 
 function rel(...parts: string[]): string {
   return path.join(...parts);
+}
+
+export function runtimeCampaignPath(campaignPath: string, saveSlot?: string): string {
+  if (!saveSlot) return campaignPath;
+  assertSaveSlotId(saveSlot);
+  return rel(campaignPath, "40-saves", saveSlot);
 }
 
 function questsDir(campaignPath: string): string {
@@ -163,6 +185,14 @@ function slugifyEntity(prefix: string, title: string): string {
   return `${prefix}-${slug || "untitled"}`;
 }
 
+function slugifyBare(title: string, fallback: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60) || fallback;
+}
+
 function assertQuestId(id: string): void {
   if (!QUEST_ID_RE.test(id)) {
     throw new Error(
@@ -175,6 +205,14 @@ function assertEntityId(id: string, label: string): void {
   if (!ENTITY_ID_RE.test(id)) {
     throw new Error(
       `${label} id must be 2-81 chars and contain only lowercase letters, numbers, hyphens, or underscores.`
+    );
+  }
+}
+
+function assertSaveSlotId(id: string): void {
+  if (!SAVE_SLOT_ID_RE.test(id)) {
+    throw new Error(
+      "Save slot id must be 2-81 chars and contain only lowercase letters, numbers, hyphens, or underscores."
     );
   }
 }
@@ -225,6 +263,145 @@ async function writeJsonFile(
     encoding: "utf8",
     flag,
   });
+}
+
+async function statOptional(root: string, fileRel: string): Promise<import("node:fs").Stats | undefined> {
+  try {
+    return await fs.stat(await safeResolve(root, fileRel));
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException)?.code;
+    if (code === "ENOENT") return undefined;
+    throw e;
+  }
+}
+
+function defaultSlotId(options: SaveSlotOptions): string {
+  if (options.slotId) return options.slotId;
+  if (isRecord(options.character)) {
+    const characterName = asString(options.character.name);
+    const characterRole = asString(options.character.role) || asString(options.character.class);
+    const characterAncestry = asString(options.character.ancestry) || asString(options.character.race);
+    const source = [characterAncestry, characterRole, characterName].filter(Boolean).join(" ");
+    if (source) return slugifyBare(source, "slot-1");
+  }
+  return slugifyBare(options.label ?? "slot-1", "slot-1");
+}
+
+export async function createSaveSlot(
+  root: string,
+  campaignPath: string,
+  optionsInput: unknown = {}
+): Promise<ToolResult> {
+  try {
+    await ensureCampaignFolder(root, campaignPath);
+    if (!isRecord(optionsInput)) throw new Error("save slot options must be a JSON object");
+    const options = optionsInput as SaveSlotOptions;
+    const slotId = defaultSlotId(options);
+    assertSaveSlotId(slotId);
+
+    const sourceRuntimeRel = rel(campaignPath, "30-runtime");
+    const sourceRuntimeAbs = await safeResolve(root, sourceRuntimeRel);
+    const sourceStat = await fs.stat(sourceRuntimeAbs);
+    if (!sourceStat.isDirectory()) throw new Error(`Runtime template not found: ${sourceRuntimeRel}`);
+
+    const slotCampaignPath = runtimeCampaignPath(campaignPath, slotId);
+    const slotStat = await statOptional(root, slotCampaignPath);
+    if (slotStat && !options.overwrite) {
+      throw new Error(`Save slot already exists: ${slotId}`);
+    }
+    if (slotStat && options.overwrite) {
+      await fs.rm(await safeResolve(root, slotCampaignPath), { recursive: true, force: true });
+    }
+
+    const slotRuntimeRel = rel(slotCampaignPath, "30-runtime");
+    await fs.mkdir(await safeResolve(root, slotCampaignPath), { recursive: true });
+    await fs.cp(sourceRuntimeAbs, await safeResolve(root, slotRuntimeRel), {
+      recursive: true,
+      errorOnExist: true,
+      force: false,
+    });
+
+    const now = new Date().toISOString();
+    const meta: JsonRecord = {
+      version: 1,
+      id: slotId,
+      label: options.label ?? slotId,
+      character: options.character ?? null,
+      created_at: now,
+      source_runtime: "30-runtime",
+    };
+    await writeJsonFile(root, rel(slotCampaignPath, "save.json"), meta, "wx");
+
+    const state = await readState(root, slotCampaignPath);
+    state.save_slot = slotId;
+    state.save_label = meta.label;
+    if (options.character !== undefined) state.player_character = options.character;
+    if (isRecord(options.statePatch)) {
+      const merged = deepMerge(state, options.statePatch);
+      if (!isRecord(merged)) throw new Error("state_patch must keep state as an object");
+      await writeState(root, slotCampaignPath, merged);
+    } else {
+      await writeState(root, slotCampaignPath, state);
+    }
+
+    if (options.resetJournal !== false) {
+      const journalAbs = await safeResolve(root, journalRel(slotCampaignPath));
+      await fs.mkdir(path.dirname(journalAbs), { recursive: true });
+      await fs.writeFile(journalAbs, "", "utf8");
+    }
+
+    return ok(json({
+      created: true,
+      save_slot: slotId,
+      campaign_path: campaignPath,
+      runtime_path: slotCampaignPath,
+      metadata: meta,
+    }));
+  } catch (e) {
+    return err(toError(e));
+  }
+}
+
+export async function listSaveSlots(
+  root: string,
+  campaignPath: string
+): Promise<ToolResult> {
+  try {
+    await ensureCampaignFolder(root, campaignPath);
+    const savesRel = rel(campaignPath, "40-saves");
+    const savesAbs = await safeResolve(root, savesRel);
+    let entries: import("node:fs").Dirent[] = [];
+    try {
+      entries = await fs.readdir(savesAbs, { withFileTypes: true });
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException)?.code;
+      if (code !== "ENOENT") throw e;
+    }
+
+    const slots: JsonRecord[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !SAVE_SLOT_ID_RE.test(entry.name)) continue;
+      const slotCampaignPath = runtimeCampaignPath(campaignPath, entry.name);
+      const metadata = await readOptionalRecord(root, rel(slotCampaignPath, "save.json"));
+      const state = await readState(root, slotCampaignPath);
+      const stateStat = await statOptional(root, stateRel(slotCampaignPath));
+      slots.push({
+        id: entry.name,
+        label: metadata?.label ?? entry.name,
+        character: metadata?.character ?? state.player_character,
+        created_at: metadata?.created_at,
+        updated_at: stateStat?.mtime.toISOString(),
+        turn: state.turn ?? 0,
+        location: state.location,
+        last_summary: state.last_summary,
+      });
+    }
+
+    slots.sort((a, b) => asString(a.id).localeCompare(asString(b.id)));
+    return ok(json({ campaign_path: campaignPath, slots }));
+  } catch (e) {
+    return err(toError(e));
+  }
 }
 
 async function ensureQuestIndex(
@@ -523,6 +700,97 @@ function locationRuntimeView(location: JsonRecord): JsonRecord {
     local_rules: Array.isArray(location.local_rules) ? location.local_rules : [],
     hooks: Array.isArray(location.hooks) ? location.hooks : [],
   };
+}
+
+function itemSummary(item: JsonRecord): JsonRecord {
+  return {
+    id: item.id,
+    name: item.name,
+    quantity: item.quantity ?? 1,
+    summary: item.summary ?? item.description,
+    state: item.state,
+    tags: Array.isArray(item.tags) ? item.tags : [],
+  };
+}
+
+function clockSummary(clock: JsonRecord): JsonRecord {
+  return {
+    id: clock.id,
+    title: clock.title,
+    value: clock.value ?? 0,
+    max: clock.max ?? 6,
+    status: clock.status ?? "active",
+    summary: clock.summary,
+    consequence: clock.consequence,
+    tags: Array.isArray(clock.tags) ? clock.tags : [],
+  };
+}
+
+function compactJournalEntry(entry: unknown): unknown {
+  if (!isRecord(entry)) return entry;
+  return {
+    turn: entry.turn,
+    action: entry.action,
+    outcome: entry.outcome,
+    consequence: entry.consequence ?? entry.consequences,
+    hooks: entry.hooks,
+    summary: entry.summary,
+  };
+}
+
+function recapLines(input: {
+  state: JsonRecord;
+  location?: JsonRecord;
+  activeQuests: QuestIndexEntry[];
+  relevantQuests: PotentialQuest[];
+  npcs: JsonRecord[];
+  inventoryItems: JsonRecord[];
+  clocks: JsonRecord[];
+  recentJournal: unknown[];
+}): string[] {
+  const lines: string[] = [];
+  const turn = asNumber(input.state.turn) ?? 0;
+  const locationName = asString(input.location?.name, asString(input.state.location, "unknown"));
+  const day = input.state.in_game_day ? `day ${input.state.in_game_day}` : undefined;
+  const time = asString(input.state.time_of_day);
+  const when = [day, time].filter(Boolean).join(", ");
+  lines.push(`Turn ${turn}: the party is at ${locationName}${when ? ` (${when})` : ""}.`);
+
+  const lastSummary = asString(input.state.last_summary);
+  if (lastSummary) lines.push(`Last time: ${lastSummary}`);
+
+  const latestJournal = [...input.recentJournal]
+    .reverse()
+    .find((entry): entry is JsonRecord => isRecord(entry));
+  const journalSummary = asString(latestJournal?.summary) || asString(latestJournal?.outcome);
+  if (journalSummary && journalSummary !== lastSummary) {
+    lines.push(`Most recent beat: ${journalSummary}`);
+  }
+
+  const activeTitles = input.activeQuests.map((quest) => quest.title).filter(Boolean).slice(0, 3);
+  if (activeTitles.length > 0) lines.push(`Active threads: ${activeTitles.join("; ")}.`);
+
+  const nearbyHooks = input.relevantQuests
+    .filter((quest) => quest.status !== "active")
+    .map((quest) => quest.title)
+    .filter(Boolean)
+    .slice(0, 3);
+  if (nearbyHooks.length > 0) lines.push(`Available hooks nearby: ${nearbyHooks.join("; ")}.`);
+
+  const npcNames = input.npcs.map((npc) => asString(npc.name)).filter(Boolean).slice(0, 4);
+  if (npcNames.length > 0) lines.push(`Present NPCs: ${npcNames.join(", ")}.`);
+
+  const itemNames = input.inventoryItems.map((item) => asString(item.name)).filter(Boolean).slice(0, 5);
+  if (itemNames.length > 0) lines.push(`Notable inventory: ${itemNames.join(", ")}.`);
+
+  const activeClockTitles = input.clocks
+    .filter((clock) => asString(clock.status, "active") !== "complete")
+    .map((clock) => asString(clock.title))
+    .filter(Boolean)
+    .slice(0, 3);
+  if (activeClockTitles.length > 0) lines.push(`Pressures in motion: ${activeClockTitles.join("; ")}.`);
+
+  return lines;
 }
 
 async function readNpcIndex(root: string, campaignPath: string): Promise<JsonRecord[]> {
@@ -844,6 +1112,85 @@ export async function getSceneContext(
         recent_journal: journal,
       })
     );
+  } catch (e) {
+    return err(toError(e));
+  }
+}
+
+export async function getGameSummary(
+  root: string,
+  options: GameSummaryOptions
+): Promise<ToolResult> {
+  try {
+    await ensureCampaignFolder(root, options.campaignPath);
+    const state = await readState(root, options.campaignPath);
+    const location = asString(state.location) || undefined;
+    const gameStage = asNumber(state.game_stage);
+    const act = asString(state.act) || undefined;
+    const questIndex = await readQuestIndex(root, options.campaignPath);
+    const locationData = await readLocationRuntime(root, options.campaignPath, location);
+    const locationRecord = isRecord(locationData) ? locationData : undefined;
+    const relevantQuests = potentialQuestsFromIndex(questIndex, {
+      location,
+      gameStage,
+      act,
+      limit: options.questLimit ?? 8,
+    });
+    const activeQuests = questIndex.quests
+      .filter((quest) => quest.status === "active")
+      .sort((a, b) => b.priority - a.priority || a.title.localeCompare(b.title))
+      .slice(0, Math.max(1, Math.min(options.questLimit ?? 8, 25)));
+    const presentNpcs = await readNpcSummaries(root, options.campaignPath, state, locationData);
+    const inventory = await readInventory(root, options.campaignPath);
+    const inventoryItems = Array.isArray(inventory.items)
+      ? inventory.items.filter(isRecord).map(itemSummary)
+      : [];
+    const clocksRecord = await readClocks(root, options.campaignPath);
+    const clocks = Array.isArray(clocksRecord.clocks)
+      ? clocksRecord.clocks.filter(isRecord).map(clockSummary)
+      : [];
+    const recentJournal = await recentJournalEntries(
+      root,
+      options.campaignPath,
+      options.journalLimit ?? 5
+    );
+    const compactJournal = recentJournal.map(compactJournalEntry);
+
+    const payload = {
+      summary_type: "returning_player",
+      player_facing: true,
+      state: {
+        turn: state.turn ?? 0,
+        in_game_day: state.in_game_day,
+        time_of_day: state.time_of_day,
+        location,
+        game_stage: gameStage,
+        act,
+        scene_scale: state.scene_scale,
+        play_style: state.play_style,
+        choice_mode: state.choice_mode,
+        last_summary: state.last_summary,
+      },
+      current_location: locationRecord ? compactLocation(locationRecord) : null,
+      present_npcs: presentNpcs,
+      active_quests: activeQuests,
+      relevant_hooks: relevantQuests.filter((quest) => quest.status !== "active"),
+      inventory: inventoryItems,
+      clocks,
+      recent_journal: compactJournal,
+      recap_lines: recapLines({
+        state,
+        location: locationRecord,
+        activeQuests,
+        relevantQuests,
+        npcs: presentNpcs,
+        inventoryItems,
+        clocks,
+        recentJournal: compactJournal,
+      }),
+    };
+
+    return ok(json(payload));
   } catch (e) {
     return err(toError(e));
   }

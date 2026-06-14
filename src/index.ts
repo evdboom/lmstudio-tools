@@ -5,6 +5,7 @@ import { z } from "zod";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import * as process from "node:process";
+import { pathToFileURL } from "node:url";
 import {
   addFile,
   addFolder,
@@ -316,7 +317,9 @@ async function main() {
   );
 }
 
-main().catch((e) => {
-  console.error("Fatal:", e?.message ?? e);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((e) => {
+    console.error("Fatal:", e?.message ?? e);
+    process.exit(1);
+  });
+}

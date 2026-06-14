@@ -5,10 +5,11 @@ Local **MCP (Model Context Protocol)** servers for LM Studio:
 - **`lmstudio-tools`** — sandboxed filesystem tools scoped to a folder you choose.
 - **`lmstudio-skills`** — a Claude-Code-style "skills" framework: drop
   `SKILL.md` files into a folder, the model lists/loads them on demand.
-- **`lmstudio-game-creator`** — a slim RPG creation surface for adding starter
-  quests, NPCs, locations, items, and clocks.
-- **`lmstudio-game-player`** — a slim RPG play surface for save slots, scene
-  context, turn commits, and playthrough changes.
+- **`lmstudio-game-creator`** — an RPG authoring surface: the file tools plus
+  typed helpers and a `verify_campaign` harness for building schema-flexible games.
+- **`lmstudio-game-player`** — a slim play surface of eight generic verbs
+  (`game_open`, `game_scene`, `game_read`, `game_write`, `game_commit`,
+  `game_roll`, `game_rewind`, `game_save`) driven by each game's own `PLAY.md`.
 - **`lmstudio-game`** — the full RPG runtime surface, useful for development or
   debugging when context budget is less important.
 
@@ -93,130 +94,72 @@ in `src/io.ts` and rebuild.
 
 ## The game runtime servers
 
-The game runtime is split into smaller MCP servers so local models do not have
-to carry every possible game tool in context. Use the slim server for the job at
-hand, and keep the full server disabled unless you are debugging.
+The game runtime is split into smaller MCP servers so a small local model carries only the tools it needs. Use the slim server for the job; keep the full server disabled unless debugging.
 
 | Server | Use | Tools |
 | ------ | --- | ----- |
-| `lmstudio-game-creator` | Campaign creation | `create_quest`, `create_npc`, `create_location`, `add_item`, `create_clock`, `verify_campaign` |
-| `lmstudio-game-player` | Actual play | Save slots, opening scene/startup, scene summaries/context, selected quest/NPC/location reads, durable creation, updates, movement, inventory changes, clocks, turn commits |
-| `lmstudio-game` | Full/debug surface | All game runtime tools |
+| `lmstudio-game-creator` | Build games | The 12 file tools, plus `create_quest`, `create_npc`, `create_location`, `add_item`, `create_clock`, and `verify_campaign` |
+| `lmstudio-game-player` | Play games | `game_open`, `game_scene`, `game_read`, `game_write`, `game_commit`, `game_roll`, `game_rewind`, `game_save` |
+| `lmstudio-game` | Full/debug | File tools + creator helpers + player verbs |
 
-The full game surface is:
+The playing model only ever sees eight generic verbs. What each game does with them is described in that game's own `PLAY.md` (returned by `game_open`), not baked into the tool surface.
 
-| Domain    | Tools                                                                                                       |
-| --------- | ----------------------------------------------------------------------------------------------------------- |
-| Verify    | `verify_campaign`                                                                                          |
-| Saves     | `create_save_slot`, `list_save_slots`                                                                       |
-| Scene     | `get_game_summary`, `get_scene_context`, `commit_turn`, `get_recent_journal`             |
-| Quests    | `get_potential_quests`, `get_quest_runtime`, `create_quest`, `update_quest`, `advance_quest`                |
-| NPCs      | `get_present_npcs`, `get_npc_runtime`, `create_npc`, `update_npc`, `move_npc`                               |
-| Locations | `get_location_runtime`, `create_location`, `update_location`, `move_party`                                  |
-| Inventory | `get_inventory`, `add_item`, `update_item`, `remove_item`                                                   |
-| Clocks    | `get_clocks`, `create_clock`, `update_clock`, `tick_clock`                                                  |
+### The generic play verbs
 
-### Campaign runtime layout
+| Verb | Purpose |
+| ---- | ------- |
+| `game_open` | One-call bootstrap: returns the game's PLAY.md instructions, manifest, and save slots; with a slot, the live scene and opening. |
+| `game_scene` | The per-turn packet: selected state fields, summaries of declared collections, a rolling recap, recent journal. `focus` narrows it. |
+| `game_read` | Read one runtime entity or a scoped JSON property when the scene summary is not enough. |
+| `game_write` | Create/update/delete `state`, a collection entry `<collection>/<id>`, or a runtime file. Refreshes the collection index. |
+| `game_commit` | End the turn: bump the turn, merge state, append a journal entry, snapshot for rewind. |
+| `game_roll` | Roll dice (`NdM+K`) so outcomes are not invented. |
+| `game_rewind` | Restore a pre-turn snapshot to undo a bad turn. |
+| `game_save` | Create or list playthrough save slots. |
 
-New story campaigns use structured runtime files:
+### Game folder layout
+
+A game is schema-flexible. The framework requires only a small skeleton; the creating model declares everything else in the manifest.
 
 ```text
-30-runtime/
-  state.json
-  journal.jsonl
-  inventory.json
-  clocks.json
-  quests/
-    index.json
-    q-example.json
-  locations/
-    index.json
-    loc-example.json
-  npcs/
-    index.json
-40-saves/
-  dwarf-warrior/
-    save.json
-    30-runtime/
-      state.json
-      journal.jsonl
+campaign-<slug>/
+  game.manifest.json     # contract + runtime shape (which collections exist)
+  PLAY.md                # per-game instructions for the playing model
+  30-runtime/
+    state.json           # initial state: campaign_id, turn, schema (+ game-defined fields)
+    journal.jsonl
+    <collection>/        # optional, game-defined (clues, npcs, rooms, suspects, ...)
+      index.json
+  40-saves/
+    <slot>/
+      save.json
+      30-runtime/        # a divergent playthrough copy
 ```
 
-`30-runtime/` is the reusable campaign template. Starting an adventure should
-call `create_save_slot`, which copies that template into
-`40-saves/<slot>/30-runtime/`. Normal play tools accept optional `save_slot` and
-then read/write that slot instead of the template. This lets the same backdrop
-support multiple divergent runs without consuming the reusable campaign template.
+`30-runtime/` is the reusable template. `game_save(action="create")` copies it into `40-saves/<slot>/30-runtime/`; every play verb takes a `save_slot` and reads/writes that slot. Per-turn snapshots live under `40-saves/<slot>/.snapshots/` for `game_rewind`.
 
-Indexes are intentionally compact. Full quest, NPC, and location detail lives in
-one JSON file per durable entity inside the active runtime. This keeps the
-playing model from flooding context with unrelated quests, cast members, or map
-detail.
+### The manifest
 
-Quest statuses are conventionally `available`, `active`, `completed`, `failed`,
-`closed`, or `hidden`. `get_potential_quests` returns active quests even when
-the party has moved away from the quest's start location, and filters out
-completed, failed, closed, and hidden quests by default.
+`game.manifest.json` is the single source of truth the harness and the player boot from. Required keys: `manifest_version`, `campaign_id`, `title`, `pitch`, `authoring_mode` (`fixed` or `procedural-startpoint`), `play_instructions`, `initial_state`, `runtime_collections`, and `boot`. Each entry in `runtime_collections` declares a collection the game uses — its index path, id pattern, `min_count`, whether it is `boot_required`, and the `summary_fields` shown in the scene packet. `boot` describes how play starts (scene packet tool, optional `start_location`, opening prose, whether the game `uses_dice`) plus an optional `packet` recipe controlling how much state and which collections each scene includes. A detective game declares `clues`/`suspects`; a dungeon declares `rooms`/`monsters`; a slice-of-life game declares only `npcs`.
 
-Quest `current_step` must match an id in that quest's `steps` array. If play
-discovers a new step, add it with `update_quest` or include it in
-`advance_quest.fields.steps` before advancing to it. Location changes are also
-strict: create a new location with `create_location` before `move_party` or
-`commit_turn` can set the party there.
+### PLAY.md
 
-Open RPG play can create quests through `create_quest`. Use this for durable new
-threads created by the player's actions, not for every clue or temporary
-obstacle.
+The creating model writes the per-game playing instructions in `PLAY.md`, which `game_open` returns to the playing model as its system prompt. It must contain five sections: `## Premise`, `## Loop` (the per-turn procedure for this game, using only the generic verbs), `## State Shape`, `## Tone`, and `## Setup`. The framework owns the universal player boundary (narrate the world, not the player); PLAY.md owns tone and the loop.
 
-The same rule applies to other domains:
+### State and player setup
 
-- Use `create_npc` only for named or recurring NPCs likely to matter again.
-- Use `create_location` only for places the party can revisit, search, travel to, or track.
-- Use `add_item` only for items the player can keep, spend, inspect, trade, or use later.
-- Use `create_clock` only for pressure that can advance over turns or scenes.
+`state.json` requires only `campaign_id`, `turn`, and `schema` (a free-form tag the game chooses, e.g. `"detective-v1"`). Everything else is game-defined; keep it lean since the playing model reads it each turn. Protagonist setup questions live in PLAY.md's `## Setup` section — in-world questions, not generic race/ancestry/class.
 
-Campaigns can define `state.player_setup` to describe the protagonist premise,
-fixed facts, and the short fields needed before play starts. For example, a
-magic-academy campaign can mark the protagonist as a first-year student and ask
-for name, pronouns, and magical focus instead of generic fantasy race/class
-fields.
+Player input uses a small syntax during play: `*text*` is private thought, `"text"` is speech, plain text is a visible action, and `**text**` is an out-of-character question. Narration avoids decorative Markdown so those channels stay unambiguous.
 
-For older campaigns, add `player_setup` manually to
-`<campaign>/30-runtime/state.json`. Future save slots copy it from there. If a
-save slot already exists, also add the same block to
-`<campaign>/40-saves/<slot>/30-runtime/state.json`, or recreate the slot.
+### Verifying a game
 
-```json
-"player_setup": {
-  "setup_intro": "You are a first-year student arriving at Arcanum Academy, where the three houses are already watching for signs of who you might become.",
-  "protagonist_premise": "The player is a first-year magic student at Arcanum Academy.",
-  "fixed_facts": ["first-year magic student", "new arrival at the academy"],
-  "ask_fields": ["name", "pronouns", "magical focus", "private worry from home"],
-  "optional_fields": ["family tie", "dorm preference"],
-  "example_answers": ["garden charms", "mirror-light", "storm dreams", "not belonging", "family pressure", "a debt"],
-  "avoid_fields": ["race", "ancestry", "class"],
-  "guidance": "Give the setup_intro first, then ask plain in-world questions. Do not say campaign-appropriate or use generic fantasy character creation."
-}
-```
+Creation ends with `verify_campaign`, now a two-phase harness:
 
-Player input uses a small Markdown-like syntax during play: `*text*` is private
-protagonist thought or intent, `"text"` is spoken dialogue, plain text is visible
-action when phrased as action, and `**text**` is a no-play/OOC question or
-instruction to the narrator/model. Narrator output and opening scenes should
-avoid decorative Markdown italics/bold so those channels stay unambiguous.
-When a player returns to an existing run, call `list_save_slots` if the slot is
-unknown, then `get_game_summary` with `save_slot` and use its `recap_lines` to
-give a short spoiler-light recap. During active play, call `get_scene_context`
-with the same `save_slot` first. Then load individual runtime records only when
-they matter: `get_quest_runtime`, `get_npc_runtime`, or
-`get_location_runtime`.
+1. **Contract checks** — the manifest has all required keys; PLAY.md has its required sections; `state.json` has the three required keys; every declared collection index parses with valid, unique ids and meets its `min_count`; the journal and `40-saves/` exist.
+2. **Live smoke test** — it creates a throwaway save slot, boots the scene, reads state, commits a turn (asserting the turn advanced and the journal grew), rolls dice if the game uses them, then tears the slot down.
 
-Campaign creation should end with `verify_campaign`. It checks required files,
-JSON object/array fields, empty or very short text files, and technical runtime
-counts such as quests, locations, NPCs, inventory, clocks, and save slots. It
-also warns when `player_setup` is missing or uses generic protagonist fields
-like race/class without a campaign reason. Fix all reported errors before
-handing the campaign to the user.
+Fix every reported error, including any `smoke_*` failure, before handing the game to the user.
 
 ## Requirements
 
@@ -412,17 +355,18 @@ registry, install command, or skill-creator tool in this project.
 
 The `Skills/` folder includes a small RPG workflow:
 
-- `story-creator`: create a campaign folder with world, plot, structured game runtime files, and compact starter quests.
-- `role-play`: run open-mode RPG play with free player actions, scene context, quest creation, and turn commits.
-- `story-player-closed`: run closed-mode RPG play with explicit A/B/C choices through the game runtime.
-- `story-refiner`: improve or expand an existing campaign after generation.
+- `story-creator`: build a schema-flexible game — manifest, PLAY.md, initial state, and whatever runtime content it needs.
+- `story-player`: play any game in open mode; load its PLAY.md and narrate the world's response to free actions.
+- `role-play`: game-master framing of open-mode play over the same generic verbs.
+- `story-player-closed`: play in closed mode, ending each turn with explicit A/B/C choices.
+- `story-refiner`: improve or expand an existing game after creation.
 - `story-verbose`: add richer prose during play.
 - `compact-mode`: keep model output short.
 
-For RPG runtime state, campaign creation should use `lmstudio-game-creator` and
-play should use `lmstudio-game-player` over raw file reads. Use
-`get_scene_context` at the start of each turn and `commit_turn` for meaningful
-state changes.
+Campaign creation should use `lmstudio-game-creator`; play should use
+`lmstudio-game-player`. During play, call `game_open` once to load the game's
+instructions, then `game_scene` at the start of each turn and `game_commit` for
+meaningful state changes.
 
 ### Tools exposed
 

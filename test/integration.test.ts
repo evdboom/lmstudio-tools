@@ -165,7 +165,7 @@ describe("MCP integration over stdio", () => {
     );
   });
 
-  it("game creator server exposes only creation tools", async () => {
+  it("game creator server exposes file tools plus creation helpers", async () => {
     await client.close();
     client = spawnServer(root, gameCreatorEntry);
     await handshake(client);
@@ -175,6 +175,20 @@ describe("MCP integration over stdio", () => {
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toEqual(
       [
+        // generic file tools for authoring the manifest, PLAY.md, prose, collections
+        "add_file",
+        "add_folder",
+        "add_json",
+        "append_file",
+        "list_files",
+        "list_folders",
+        "read_file",
+        "read_json",
+        "remove_file",
+        "remove_folder",
+        "replace_file",
+        "update_json",
+        // typed convenience writers + harness
         "add_item",
         "create_clock",
         "create_location",
@@ -185,7 +199,7 @@ describe("MCP integration over stdio", () => {
     );
   });
 
-  it("game player server exposes a slim play surface", async () => {
+  it("game player server exposes a slim generic play surface", async () => {
     await client.close();
     client = spawnServer(root, gamePlayerEntry);
     await handshake(client);
@@ -195,35 +209,85 @@ describe("MCP integration over stdio", () => {
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toEqual(
       [
-        "add_item",
-        "advance_quest",
-        "commit_turn",
-        "create_clock",
-        "create_location",
-        "create_npc",
-        "create_quest",
-        "create_save_slot",
-        "get_game_summary",
-        "get_location_runtime",
-        "get_npc_runtime",
-        "get_quest_runtime",
-        "get_recent_journal",
-        "get_scene_context",
-        "list_save_slots",
-        "move_npc",
-        "move_party",
-        "remove_item",
-        "tick_clock",
-        "update_clock",
-        "update_item",
-        "update_location",
-        "update_npc",
-        "update_quest",
+        "game_commit",
+        "game_open",
+        "game_read",
+        "game_rewind",
+        "game_roll",
+        "game_save",
+        "game_scene",
+        "game_write",
       ].sort()
     );
-    expect(names).not.toContain("get_potential_quests");
-    expect(names).not.toContain("get_inventory");
-    expect(names).not.toContain("get_clocks");
+    // No typed per-domain tools leak into the player surface.
+    expect(names).not.toContain("create_quest");
+    expect(names).not.toContain("commit_turn");
+    expect(names).not.toContain("get_scene_context");
+  });
+
+  it("end to end: create a game, then play two turns over stdio", async () => {
+    // Scaffold a minimal game on disk.
+    const camp = "campaign-e2e";
+    const writeJson = (rel: string, data: unknown) =>
+      fs.mkdir(path.dirname(path.join(root, camp, rel)), { recursive: true }).then(() =>
+        fs.writeFile(path.join(root, camp, rel), `${JSON.stringify(data, null, 2)}\n`, "utf8")
+      );
+    const writeText = (rel: string, text: string) =>
+      fs.mkdir(path.dirname(path.join(root, camp, rel)), { recursive: true }).then(() =>
+        fs.writeFile(path.join(root, camp, rel), text, "utf8")
+      );
+
+    await writeJson("game.manifest.json", {
+      manifest_version: 1,
+      campaign_id: camp,
+      title: "Two Turns",
+      pitch: "A tiny test game.",
+      authoring_mode: "procedural-startpoint",
+      play_instructions: "PLAY.md",
+      initial_state: "30-runtime/state.json",
+      runtime_collections: {},
+      boot: { scene_packet_tool: "game_scene", start_location: null, opening: { source: null, inline: "Begin." }, uses_dice: false, packet: { journal: { limit: 5 } } },
+    });
+    await writeText(
+      "PLAY.md",
+      ["## Premise", "Test.", "## Loop", "scene, write, commit.", "## State Shape", "turn.", "## Tone", "Plain.", "## Setup", "Ask a name."].join("\n\n")
+    );
+    await writeJson("30-runtime/state.json", { campaign_id: camp, turn: 0, schema: "test-v1", last_summary: "" });
+    await writeText("30-runtime/journal.jsonl", "");
+    await fs.mkdir(path.join(root, camp, "40-saves"), { recursive: true });
+
+    await client.close();
+    client = spawnServer(root, gamePlayerEntry);
+    await handshake(client);
+
+    const create = unwrapToolResult(
+      await client.request("tools/call", {
+        name: "game_save",
+        arguments: { campaign_path: camp, action: "create", slot_id: "run1", label: "Run 1" },
+      })
+    );
+    expect(create.isError).toBeFalsy();
+
+    for (const summary of ["turn one", "turn two"]) {
+      const commit = unwrapToolResult(
+        await client.request("tools/call", {
+          name: "game_commit",
+          arguments: { campaign_path: camp, save_slot: "run1", summary, journal: { summary } },
+        })
+      );
+      expect(commit.isError).toBeFalsy();
+    }
+
+    const state = JSON.parse(
+      await fs.readFile(path.join(root, camp, "40-saves", "run1", "30-runtime", "state.json"), "utf8")
+    ) as { turn: number };
+    expect(state.turn).toBe(2);
+
+    const journal = await fs.readFile(
+      path.join(root, camp, "40-saves", "run1", "30-runtime", "journal.jsonl"),
+      "utf8"
+    );
+    expect(journal.trim().split(/\n/).filter(Boolean)).toHaveLength(2);
   });
 
   it("json tools update a state property without replacing the whole file", async () => {

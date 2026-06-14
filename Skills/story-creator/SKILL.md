@@ -1,268 +1,139 @@
 ---
 name: story-creator
-description: Build a hidden RPG campaign folder with plot, world, and structured game-runtime state for later play.
-when_to_use: User asks to create a new interactive RPG story setup, campaign folder, or hidden plot package.
+description: Build a hidden, schema-flexible RPG game folder — a manifest, per-game play instructions, initial state, and whatever runtime content the game needs — for later play by a local model.
+when_to_use: User asks to create a new interactive RPG, campaign folder, detective case, dungeon, slice-of-life game, or hidden game package.
 allow_scripts: false
 ---
 # Story Creator
 
-Create a campaign folder. Do not start play.
+Build a game folder. Do not start play.
 
-Tools only: list_files, list_folders, read_file, read_json, add_folder, add_file, replace_file, append_file, create_quest, create_npc, create_location, add_item, create_clock, verify_campaign.
+You decide the shape of this game. The framework only requires a small skeleton; everything else — quests, locations, NPCs, clues, suspects, rooms, factions, or any custom collection — is yours to design or to leave for the playing model to grow during play.
 
-Use `lmstudio-game-creator` runtime create tools if available after the campaign folder exists. Otherwise write JSON files with `add_file`.
+Tools: list_files, list_folders, read_file, read_json, add_folder, add_file, replace_file, append_file, add_json, update_json, create_quest, create_npc, create_location, add_item, create_clock, verify_campaign. Write the manifest, PLAY.md, prose, and any custom collections with `add_file`/`add_json`. The `create_*` tools are convenience writers for the conventional quests/npcs/locations/inventory/clocks collections only.
 
 ## Ask
 
-Ask once for: tone, setting, power level, limits, length, pacing, choice_mode.
+Ask once for: tone, setting, content limits, length, and two design choices:
+- **kind** — detective, dungeon crawl, slice-of-life, intrigue, survival, other. Drives the per-turn loop you write.
+- **authoring_mode** — `fixed` (you pre-author the content) or `procedural-startpoint` (you author a small seed and the playing model expands it during play).
 
-Defaults:
-- pacing: balanced
-- choice_mode: open
-- safe content limits
+Defaults: balanced pacing, safe content limits, `procedural-startpoint` unless the user wants a tightly authored story.
 
-Field meanings:
-- pacing: fast procedural | balanced | immersive roleplay. Controls scene detail and dialogue zoom.
-- choice_mode: open | closed. Controls interface.
+## Required skeleton
 
-choice_mode values:
-- open: no menus; player writes free actions
-- closed: A/B/C choices allowed
+Folder name: `campaign-<specific-setting-slug>`. The only files the harness requires:
 
-## Create
+```
+campaign-<slug>/
+  game.manifest.json     # the contract + runtime shape
+  PLAY.md                # per-game instructions for the playing model
+  30-runtime/
+    state.json           # initial state (3 required keys)
+    journal.jsonl        # empty file
+  40-saves/              # empty directory (save slots are copied here)
+```
 
-Folder name: `campaign-<specific-setting-slug>`. Avoid generic names.
+Add any other folders/files your game needs (e.g. `10-world/world.md`, `30-runtime/clues/`, `30-runtime/npcs/`).
 
-Required folders:
-- `00-meta/`
-- `10-world/`
-- `20-story/`
-- `30-runtime/`
-- `30-runtime/quests/`
-- `30-runtime/locations/`
-- `30-runtime/npcs/`
-- `40-saves/`
+## game.manifest.json
 
-Required files:
-- `00-meta/campaign-brief.md`
-- `00-meta/table-rules.md`
-- `10-world/world.md`
-- `10-world/factions.md`
-- `10-world/locations.md`
-- `20-story/plot-spine.md`
-- `20-story/key-events.md`
-- `20-story/themes.md`
-- `20-story/secrets.md`
-- `20-story/opening-scene.md`
-- `30-runtime/state.json`
-- `30-runtime/journal.jsonl`
-- `30-runtime/inventory.json`
-- `30-runtime/clocks.json`
-- `30-runtime/quests/index.json`
-- `30-runtime/locations/index.json`
-- `30-runtime/locations/<start-location-id>.json`
-- `30-runtime/npcs/index.json`
-
-Use add_folder/add_file. Use replace_file only when regenerating an existing file.
-
-Keep files compact: headings, short bullets, concrete nouns. No lore walls.
-
-## Runtime JSON
-
-Write `30-runtime/state.json`:
+This is the single source of truth. Declare only the runtime collections this game actually uses.
 
 ```json
 {
+  "manifest_version": 1,
   "campaign_id": "<folder>",
-  "turn": 0,
-  "in_game_day": 1,
-  "time_of_day": "morning",
-  "location": "<start-location-id>",
-  "game_stage": 1,
-  "act": "act1",
-  "party": [{ "name": "Player", "hp": 10, "max_hp": 10, "status": [] }],
-  "inventory": [],
-  "present_npcs": [],
-  "known_npcs": [],
-  "active_quests": [],
-  "completed_quests": [],
-  "closed_quests": [],
-  "flags": {},
-  "open_loops": [],
-  "player_setup": {
-    "setup_intro": "1 to 2 player-facing sentences explaining what the player already knows before choosing protagonist details.",
-    "protagonist_premise": "Who the player is in this campaign, including fixed facts.",
-    "fixed_facts": ["Campaign-specific protagonist facts the player should not have to choose."],
-    "ask_fields": ["name", "one or two premise-specific identity details"],
-    "optional_fields": [],
-    "example_answers": ["Short in-world example answers for the requested details."],
-    "avoid_fields": ["race", "ancestry", "class"],
-    "guidance": "Ask plain player-facing questions. Do not say campaign-appropriate or use generic fantasy character creation unless the campaign explicitly needs it."
+  "title": "Short Game Title",
+  "pitch": "One spoiler-light sentence shown when picking a game.",
+  "authoring_mode": "procedural-startpoint",
+  "play_instructions": "PLAY.md",
+  "initial_state": "30-runtime/state.json",
+  "runtime_collections": {
+    "<collection>": {
+      "index": "30-runtime/<collection>/index.json",
+      "id_pattern": "^[a-z0-9][a-z0-9_-]{1,80}$",
+      "min_count": 0,
+      "boot_required": false,
+      "summary_fields": ["id", "title", "status"]
+    }
   },
-  "play_style": "<pacing: fast procedural | balanced | immersive roleplay>",
-  "choice_mode": "<open | closed>",
-  "scene_scale": "procedural",
-  "last_summary": "Campaign initialized."
-}
-```
-
-## Runtime Game Data
-
-Do not create a giant quest file. Do not pre-generate the whole campaign.
-
-Create only:
-- 2 to 4 starter quest JSON files
-- 0 to 2 compact deferred quest seeds in `quests/index.json` with status `hidden` or `available`
-
-Quest files live at `30-runtime/quests/<quest-id>.json`.
-
-Quest shape:
-
-```json
-{
-  "id": "q-specific-slug",
-  "title": "Short Quest Title",
-  "status": "available",
-  "locations": ["<location-id>"],
-  "stages": ["act1"],
-  "min_game_stage": 1,
-  "max_game_stage": 1,
-  "priority": 50,
-  "summary": "One sentence visible summary.",
-  "tags": ["starter"],
-  "hooks": ["One visible hook."],
-  "current_step": "start",
-  "steps": [
-    {
-      "id": "start",
-      "at": ["<location-id>"],
-      "result": "What can change when the player engages."
+  "boot": {
+    "scene_packet_tool": "game_scene",
+    "start_location": null,
+    "opening": { "source": "20-story/opening-scene.md", "inline": null },
+    "uses_dice": false,
+    "packet": {
+      "state_fields": ["turn", "location", "time_of_day", "last_summary", "recap"],
+      "collections": ["<collection>"],
+      "journal": { "limit": 5 }
     }
-  ]
+  },
+  "content_files": ["10-world/world.md"],
+  "tags": ["mystery"]
 }
 ```
 
-`quests/index.json` contains compact copies only:
+Key notes:
+- `runtime_collections`: each entry names a collection the playing model can read/write with `game_write target="<collection>/<id>"`. `summary_fields` are what appear in the cheap scene packet — keep them short. `min_count` and `boot_required` are checked by the harness. Declare a collection only if the game uses it.
+- `boot.start_location`: set to a location id only if you declare a locations-style collection with `boot_required: true`.
+- `boot.uses_dice`: set true if PLAY.md tells the model to call `game_roll`.
+- `boot.packet`: the scene recipe. `state_fields` limits what state the model sees each turn (keep state lean). `collections` lists which to summarize. Omit `state_fields` to send the whole state object.
+- `opening`: point `source` at a prose file, or put short prose in `inline`.
+
+### Examples by kind
+
+- **Detective** — collections: `clues` (`min_count` 0), `suspects` (`min_count` 2). No locations needed. `uses_dice` false. PLAY.md loop centers on examining clues and confronting suspects.
+- **Dungeon** — collections: `rooms` (`boot_required` true, `start_location` set), `monsters`, plus `30-runtime/inventory.json`. `uses_dice` true. Loop: describe room, resolve action (roll on risk), move between rooms.
+- **Slice-of-life** — collections: `npcs` only. `uses_dice` false. Loop: scene with 1-3 NPCs, advance relationships via `game_write`.
+
+## state.json
+
+Required keys: `campaign_id`, `turn` (start at 0), `schema` (a free-form tag you choose, e.g. `"detective-v1"`). Everything else is game-defined — add `location`, `flags`, `time_of_day`, custom fields as needed. Keep it lean; the playing model reads it every turn.
 
 ```json
-{
-  "version": 1,
-  "quests": [
-    {
-      "id": "q-specific-slug",
-      "title": "Short Quest Title",
-      "status": "available",
-      "locations": ["<location-id>"],
-      "stages": ["act1"],
-      "min_game_stage": 1,
-      "max_game_stage": 1,
-      "priority": 50,
-      "summary": "One sentence visible summary.",
-      "tags": ["starter"],
-      "current_step": "start"
-    }
-  ]
-}
+{ "campaign_id": "<folder>", "turn": 0, "schema": "<kind>-v1", "location": "<id or omit>", "flags": {}, "last_summary": "" }
 ```
 
-Location files live at `30-runtime/locations/<location-id>.json`.
+## PLAY.md
 
-Location shape:
+The per-game system prompt for the playing model. Plain prose and short bullets. Required `##` sections (the harness checks they exist and are non-empty):
 
-```json
-{
-  "id": "<location-id>",
-  "name": "Short Location Name",
-  "region": "<region>",
-  "status": "available",
-  "summary": "One sentence visible summary.",
-  "exits": ["<other-location-id>"],
-  "present_npcs": ["<npc-id>"],
-  "visible_features": ["concrete feature"],
-  "hazards": [],
-  "points_of_interest": [],
-  "tags": ["starter"]
-}
+- `## Premise` — spoiler-light setup the player sees.
+- `## Loop` — the exact per-turn procedure for THIS game, using only the generic play tools (`game_scene`, `game_read`, `game_write`, `game_commit`, `game_roll`). State the order. This is where detective ≠ dungeon. It must be runnable end to end — the harness smoke-tests it.
+- `## State Shape` — name the custom `state.json` fields this game keeps, so the model knows what to write back via `game_write target="state"`.
+- `## Tone` — voice, pacing, content limits. You own tone here.
+- `## Setup` — the spoiler-light premise and the 2-4 protagonist questions to ask on a new run. Do not ask race/ancestry/class unless they are real concepts in this game.
+
+Do not restate the player-boundary in PLAY.md; the player skill owns it. If they conflict, the player skill wins.
+
+### Loop template (adapt per kind)
+
+```
+## Loop
+1. Call game_scene to see state, the relevant collections, and recent journal.
+2. If one entity matters this turn, game_read it (e.g. clues/<id>.json).
+3. Narrate the world's response to the player's action.
+4. For a check or uncertain outcome, call game_roll (e.g. 1d20) and narrate from the result.   # only if uses_dice
+5. Record durable changes with game_write (state, or a collection entry).
+6. End the turn with game_commit (summary + a short journal entry).
 ```
 
-`locations/index.json` contains compact location cards. Create a full JSON file for the starting location and 1 to 3 nearby locations.
+## authoring_mode
 
-NPC files live at `30-runtime/npcs/<npc-id>.json`.
+- `fixed`: pre-author the collections the game needs (locations, NPCs, clues, etc.) and write `## Loop` to advance existing content, creating new records only on a genuine new thread.
+- `procedural-startpoint`: author a minimal seed (the opening, one start location/scene, 1-2 NPCs) and write `## Loop` to instruct the model to create records procedurally with `game_write` as play expands. Keep `min_count` low.
 
-NPC shape:
+## Opening scene
 
-```json
-{
-  "id": "npc-specific-slug",
-  "name": "Name",
-  "role": "role in the fiction",
-  "location": "<location-id>",
-  "status": "available",
-  "relationship": "neutral",
-  "visible_mood": "short visible mood",
-  "summary": "One sentence visible summary.",
-  "voice": "short voice cue",
-  "motive": "private pressure or desire",
-  "knows": [],
-  "memory": [],
-  "tags": []
-}
-```
-
-`npcs/index.json` contains compact NPC cards: id, name, role, location, status, visible_mood, relationship, summary, tags.
-
-`journal.jsonl` starts empty. `inventory.json` starts as `{ "items": [] }`. `clocks.json` starts as `{ "clocks": [] }` unless a starting pressure is needed.
-
-## File Rules
-
-- `campaign-brief.md`: include pacing/play_style and choice_mode.
-- `table-rules.md`: include Story Control and Narrative Scale.
-- `plot-spine.md`: 3 acts or 5 beats max.
-- `key-events.md`: triggers + outcomes, not prose scenes.
-- `themes.md`: 2 to 4 themes, one sentence each.
-- `secrets.md`: hidden. Do not reveal in chat.
-- Starter quests: 2 to 4 full quest JSON files, compact and playable.
-- Locations: 2 to 4 compact locations, each with exits and visible features.
-- NPCs: 3 to 5 named NPCs, each with role, location, visible mood, relationship, motive.
-- Inventory: only starting durable items, usually none.
-- Clocks: 0 to 2 starting pressures, only if they matter immediately.
-- Runtime JSON files: keep compact. The game runtime must be able to return small scene packets.
-- `player_setup`: tailor protagonist questions to the campaign. Include `setup_intro` so a new player understands the premise before answering. For a magic academy, prefer fields like name, pronouns, magical focus, scholarship reason, dorm/house preference, or family tie. Include short example answers. Do not ask for race/ancestry/class unless those are real campaign concepts.
-
-## Opening Scene
-
-Match choice_mode.
-
-Use plain prose, not Markdown styling. Player input reserves `*text*` for private thought and `**text**` for no-play/OOC questions, so opening scenes should not use italics or bold for emphasis.
-
-Open mode:
-- No A/B/C, numbers, menu, `choose`, `option`, `What do you do?`, `Your choice`, spotlight prompt, direct question ending.
-- No labels like `Focus:` or `(Romance route)`.
-- First establish the current state in the setting: where the protagonist is, what situation is happening now, what visible pressure or decision is present, and who is waiting or acting. Then describe people and atmosphere.
-- End on live scene facts. Weave possible paths into prose.
-- Player agency is implied.
-- Write final player-facing prose only. Do not include `Possible Paths`, `Live Scene Facts`, `Opening Line`, bullet lists, or authoring scaffold in `opening-scene.md`.
-
-Closed mode:
-- End with 2 to 4 short A/B/C choices.
-- No hidden labels like `Focus:` or `(Social route)`.
-- First establish the current state and immediate decision before listing choices.
-- Final line: `Choose one, or describe a different action.`
+Write final player-facing prose only, plain text (no Markdown emphasis, no menus, no "What do you do?"). Establish where the protagonist is, what is happening now, what visible pressure or decision is present, and who is waiting or acting. Put it in the file named by `boot.opening.source`, or inline in the manifest.
 
 ## Verify
 
-- Call `verify_campaign(campaign_path=<campaign>)` after all files and runtime entities are created.
-- If `ok=false`, fix every `severity="error"` and rerun `verify_campaign`.
-- Warnings for thin files or low counts should be fixed unless the campaign brief explicitly justifies them.
-- Do not give the final response until `verify_campaign` has no errors.
+- Call `verify_campaign(campaign_path=<campaign>)` after the folder is built.
+- It runs contract checks AND a live smoke test (it boots a throwaway save slot and exercises the play tools). Fix every `severity="error"`, including any `smoke_*` failure, and rerun.
+- Do not give the final response until `verify_campaign` reports `ok=true`.
 
-## Final Response
+## Final response
 
-Return only:
-- Campaign folder path
-- Spoiler-light pitch
-- Verify summary: errors, warnings, quest/location/NPC counts
-- Open mode: start new chat with story-player + folder path + character/save slot concept
-- Closed mode: start new chat with story-player-closed + folder path + character/save slot concept
-
-Do not reveal secrets. Do not narrate opening scene. Do not ask for first action.
+Return only: campaign folder path, spoiler-light pitch, verify summary (errors/warnings + smoke result), and "start a new chat with story-player + folder path". Do not reveal secrets. Do not narrate the opening scene. Do not ask for the first action.

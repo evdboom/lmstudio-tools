@@ -8,37 +8,25 @@ import * as process from "node:process";
 import { pathToFileURL } from "node:url";
 import {
   addItem,
-  advanceQuest,
-  commitTurn,
   createClock,
   createLocation,
   createNpc,
   createQuest,
   createSaveSlot,
-  getClocks,
-  getGameSummary,
-  getInventory,
-  getLocationRuntime,
-  getNpcRuntime,
-  getOpeningScene,
-  getPotentialQuests,
-  getPresentNpcs,
-  getQuestRuntime,
-  getRecentJournal,
-  getSceneContext,
   listSaveSlots,
-  moveNpc,
-  moveParty,
-  removeItem,
   runtimeCampaignPath,
-  tickClock,
-  updateClock,
-  updateItem,
-  updateLocation,
-  updateNpc,
-  updateQuest,
-  verifyCampaign,
 } from "./game.js";
+import {
+  gameCommit,
+  gameOpen,
+  gameRead,
+  gameRewind,
+  gameRoll,
+  gameScene,
+  gameWrite,
+  verifyCampaign,
+} from "./runtime-engine.js";
+import { registerTools } from "./index.js";
 import { type ToolResult } from "./tools.js";
 import { makeLogger, type Logger } from "./log.js";
 
@@ -48,48 +36,6 @@ interface CliArgs {
 }
 
 export type GameToolMode = "full" | "creator" | "player";
-
-const CREATOR_TOOLS = new Set([
-  "verify_campaign",
-  "create_quest",
-  "create_npc",
-  "create_location",
-  "add_item",
-  "create_clock",
-]);
-
-const PLAYER_TOOLS = new Set([
-  "create_save_slot",
-  "list_save_slots",
-  "get_game_summary",
-  "get_scene_context",
-  "get_quest_runtime",
-  "create_quest",
-  "update_quest",
-  "advance_quest",
-  "get_npc_runtime",
-  "create_npc",
-  "update_npc",
-  "move_npc",
-  "get_location_runtime",
-  "create_location",
-  "update_location",
-  "move_party",
-  "add_item",
-  "update_item",
-  "remove_item",
-  "create_clock",
-  "update_clock",
-  "tick_clock",
-  "commit_turn",
-  "get_recent_journal",
-]);
-
-function shouldRegisterTool(mode: GameToolMode, toolName: string): boolean {
-  if (mode === "full") return true;
-  if (mode === "creator") return CREATOR_TOOLS.has(toolName);
-  return PLAYER_TOOLS.has(toolName);
-}
 
 function parseArgs(argv: string[]): CliArgs {
   const out: CliArgs = { quiet: false };
@@ -109,9 +55,7 @@ function parseArgs(argv: string[]): CliArgs {
 async function resolveRoot(cli: CliArgs): Promise<string> {
   const raw = cli.root ?? process.env.MCP_GAME_ROOT ?? process.env.MCP_ROOT;
   if (!raw) {
-    throw new Error(
-      "Game root not set. Pass --root <path> or set MCP_GAME_ROOT env."
-    );
+    throw new Error("Game root not set. Pass --root <path> or set MCP_GAME_ROOT env.");
   }
   const abs = path.resolve(raw);
   const stat = await fs.stat(abs).catch(() => null);
@@ -133,7 +77,7 @@ function toMcp(result: ToolResult) {
 
 function wrap<A>(
   name: string,
-  fn: (args: A) => Promise<ToolResult>,
+  fn: (args: A) => ToolResult | Promise<ToolResult>,
   log: Logger
 ): (args: A) => Promise<ReturnType<typeof toMcp>> {
   return async (args) => {
@@ -142,10 +86,7 @@ function wrap<A>(
     try {
       result = await fn(args);
     } catch (e) {
-      result = {
-        ok: false,
-        error: e instanceof Error ? e.message : String(e),
-      };
+      result = { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
     log({
       tool: name,
@@ -167,7 +108,192 @@ const saveSlot = z
   .string()
   .min(1)
   .optional()
-  .describe("Optional save slot id. When set, reads/writes campaign/40-saves/<slot>/30-runtime instead of the campaign template runtime.");
+  .describe("Save slot id. When set, reads/writes campaign/40-saves/<slot>/30-runtime instead of the campaign template runtime.");
+
+// ---------------------------------------------------------------------------
+// Creator tools: schema-flexible authoring. The creating model also has the
+// generic file tools (registered separately) to author the manifest, PLAY.md,
+// prose, and any custom collections. These typed helpers stay for games that
+// use the conventional quests/npcs/locations/inventory/clocks collections.
+// ---------------------------------------------------------------------------
+
+export function registerCreatorTools(server: McpServer, root: string, log: Logger = () => {}): void {
+  server.tool(
+    "verify_campaign",
+    "Validate a created game and run a live smoke test. Phase 1 checks the contract: game.manifest.json keys, PLAY.md required sections, state.json required keys (campaign_id, turn, schema), and every declared runtime collection. Phase 2 boots a throwaway save slot and exercises the generic play tools (scene, state read, commit a turn, roll). Call at the end of creation and fix every error, including smoke_* failures.",
+    { campaign_path: campaignPath },
+    wrap("verify_campaign", ({ campaign_path }) => verifyCampaign(root, campaign_path), log)
+  );
+
+  server.tool(
+    "create_quest",
+    "Convenience writer for the conventional 'quests' collection: writes one quest JSON file and refreshes 30-runtime/quests/index.json. Only useful for games whose manifest declares a quests collection; otherwise author collections with the generic file tools.",
+    {
+      campaign_path: campaignPath,
+      save_slot: saveSlot,
+      quest: z.record(z.unknown()).describe("Quest object. Suggested fields: id, title, status, locations, stages, priority, summary, tags, hooks, current_step, steps."),
+    },
+    wrap("create_quest", ({ campaign_path, save_slot, quest }) => createQuest(root, runtimeCampaignPath(campaign_path, save_slot), quest), log)
+  );
+
+  server.tool(
+    "create_npc",
+    "Convenience writer for the conventional 'npcs' collection: writes one NPC JSON file and refreshes 30-runtime/npcs/index.json.",
+    {
+      campaign_path: campaignPath,
+      save_slot: saveSlot,
+      npc: z.record(z.unknown()).describe("NPC object. Suggested fields: id, name, role, location, status, relationship, visible_mood, summary, voice, motive, knows, memory, tags."),
+    },
+    wrap("create_npc", ({ campaign_path, save_slot, npc }) => createNpc(root, runtimeCampaignPath(campaign_path, save_slot), npc), log)
+  );
+
+  server.tool(
+    "create_location",
+    "Convenience writer for the conventional 'locations' collection: writes one location JSON file and refreshes 30-runtime/locations/index.json.",
+    {
+      campaign_path: campaignPath,
+      save_slot: saveSlot,
+      location: z.record(z.unknown()).describe("Location object. Suggested fields: id, name, region, status, summary, exits, visible_features, hazards, points_of_interest, present_npcs, tags."),
+    },
+    wrap("create_location", ({ campaign_path, save_slot, location }) => createLocation(root, runtimeCampaignPath(campaign_path, save_slot), location), log)
+  );
+
+  server.tool(
+    "add_item",
+    "Convenience writer for the conventional inventory file (30-runtime/inventory.json).",
+    {
+      campaign_path: campaignPath,
+      save_slot: saveSlot,
+      item: z.record(z.unknown()).describe("Item object. Suggested fields: id, name, quantity, description, tags."),
+    },
+    wrap("add_item", ({ campaign_path, save_slot, item }) => addItem(root, runtimeCampaignPath(campaign_path, save_slot), item), log)
+  );
+
+  server.tool(
+    "create_clock",
+    "Convenience writer for the conventional clocks file (30-runtime/clocks.json). Use for durable ticking pressure.",
+    {
+      campaign_path: campaignPath,
+      save_slot: saveSlot,
+      clock: z.record(z.unknown()).describe("Clock object. Suggested fields: id, title, value, max, status, summary, consequence, tags."),
+    },
+    wrap("create_clock", ({ campaign_path, save_slot, clock }) => createClock(root, runtimeCampaignPath(campaign_path, save_slot), clock), log)
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Player tools: the slim generic surface a small local model uses to play any
+// game. The per-game PLAY.md (returned by game_open) tells the model how to use
+// these for this specific game.
+// ---------------------------------------------------------------------------
+
+export function registerPlayerTools(server: McpServer, root: string, log: Logger = () => {}): void {
+  server.tool(
+    "game_open",
+    "Start or resume a session in one call. Without save_slot: returns this game's PLAY.md instructions, the manifest, and the list of save slots. With save_slot: also returns the live scene packet and (on a new game) the opening. Always read and follow the returned instructions.",
+    { campaign_path: campaignPath, save_slot: saveSlot },
+    wrap("game_open", ({ campaign_path, save_slot }) => gameOpen(root, campaign_path, { saveSlot: save_slot }), log)
+  );
+
+  server.tool(
+    "game_scene",
+    "Return the current scene packet for the active save slot: selected state fields, summaries of each runtime collection the game declares, a rolling recap, and recent journal entries. Call at the start of each turn. Use focus to load only some collections for a cheap turn.",
+    {
+      campaign_path: campaignPath,
+      save_slot: saveSlot,
+      focus: z.array(z.string()).optional().describe("Optional list of collection names to include (default: all declared)."),
+      journal_limit: z.number().int().positive().max(50).default(5).describe("Recent journal entries to include."),
+    },
+    wrap("game_scene", ({ campaign_path, save_slot, focus, journal_limit }) =>
+      gameScene(root, runtimeCampaignPath(campaign_path, save_slot), { focus, journalLimit: journal_limit }), log)
+  );
+
+  server.tool(
+    "game_read",
+    "Read one runtime entity or a single property of it when the scene summary is not enough. Path is relative to the runtime, e.g. 'npcs/npc-nira.json' or 'state.json' (the save-slot prefix is added automatically). Provide property for a scoped JSON read, e.g. 'relationship'.",
+    {
+      campaign_path: campaignPath,
+      save_slot: saveSlot,
+      path: z.string().min(1).describe("Runtime-relative file path, e.g. 'clues/clue-1.json' or 'state.json'."),
+      property: z.string().optional().describe("Optional JSON property path, e.g. 'status' or 'party[0].hp'."),
+    },
+    wrap("game_read", ({ campaign_path, save_slot, path: target, property }) =>
+      gameRead(root, runtimeCampaignPath(campaign_path, save_slot), target, property), log)
+  );
+
+  server.tool(
+    "game_write",
+    "Create or update durable game data. target is 'state', a collection entry '<collection>/<id>' (collection must be declared in the manifest), or a runtime file like 'flags.json'. mode merge (default) deep-merges patch, replace overwrites, delete removes. Collection writes refresh the collection index automatically.",
+    {
+      campaign_path: campaignPath,
+      save_slot: saveSlot,
+      target: z.string().min(1).describe("'state' | '<collection>/<id>' | '<file>.json'."),
+      patch: z.record(z.unknown()).optional().describe("JSON object to merge/replace. Omit for delete."),
+      mode: z.enum(["merge", "replace", "delete"]).default("merge"),
+    },
+    wrap("game_write", ({ campaign_path, save_slot, target, patch, mode }) =>
+      gameWrite(root, runtimeCampaignPath(campaign_path, save_slot), target, patch ?? {}, mode), log)
+  );
+
+  server.tool(
+    "game_commit",
+    "End the turn: bump the turn counter, deep-merge state_patch into state, set last_summary, and append a journal entry. A pre-turn snapshot is saved so the turn can be undone with game_rewind. Make durable entity changes with game_write before committing.",
+    {
+      campaign_path: campaignPath,
+      save_slot: saveSlot,
+      summary: z.string().optional().describe("Compact last_summary for the turn."),
+      state_patch: z.record(z.unknown()).optional().describe("JSON object to deep-merge into state.json."),
+      journal: z.record(z.unknown()).optional().describe("Compact journal entry for the turn, e.g. {action, outcome, summary}."),
+      increment_turn: z.boolean().default(true).describe("If true, increment state.turn."),
+    },
+    wrap("game_commit", ({ campaign_path, save_slot, summary, state_patch, journal, increment_turn }) =>
+      gameCommit(root, runtimeCampaignPath(campaign_path, save_slot), {
+        summary,
+        statePatch: state_patch,
+        journal,
+        incrementTurn: increment_turn,
+      }), log)
+  );
+
+  server.tool(
+    "game_roll",
+    "Roll dice for a check or random outcome. Use this instead of inventing results. Notation is NdM+K, e.g. 1d20, 2d6+1. Returns the individual rolls and the total.",
+    {
+      notation: z.string().default("1d20").describe("Dice notation, e.g. 1d20 or 2d6+1."),
+      reason: z.string().optional().describe("What the roll is for (echoed back)."),
+    },
+    wrap("game_roll", ({ notation, reason }) => gameRoll(notation, reason), log)
+  );
+
+  server.tool(
+    "game_rewind",
+    "Undo turns by restoring a pre-turn snapshot. Without to_turn, undoes the most recent turn. Use to recover from a bad turn.",
+    {
+      campaign_path: campaignPath,
+      save_slot: saveSlot,
+      to_turn: z.number().int().nonnegative().optional().describe("Restore the snapshot taken at the start of this turn. Defaults to the latest."),
+    },
+    wrap("game_rewind", ({ campaign_path, save_slot, to_turn }) =>
+      gameRewind(root, runtimeCampaignPath(campaign_path, save_slot), to_turn), log)
+  );
+
+  server.tool(
+    "game_save",
+    "Manage playthrough save slots. action 'create' copies the campaign template runtime into a new slot; action 'list' returns existing slots with turn/summary metadata.",
+    {
+      campaign_path: campaignPath,
+      action: z.enum(["create", "list"]).default("list"),
+      slot_id: z.string().min(1).optional().describe("Slot id for create. Generated from label/character if omitted."),
+      label: z.string().optional().describe("Human-readable save label."),
+      character: z.record(z.unknown()).optional().describe("Free-form protagonist metadata for this playthrough."),
+      overwrite: z.boolean().default(false).describe("If true, replace an existing slot with the same id."),
+    },
+    wrap("game_save", ({ campaign_path, action, slot_id, label, character, overwrite }) =>
+      action === "create"
+        ? createSaveSlot(root, campaign_path, { slotId: slot_id, label, character, overwrite })
+        : listSaveSlots(root, campaign_path), log)
+  );
+}
 
 export function registerGameTools(
   server: McpServer,
@@ -175,621 +301,13 @@ export function registerGameTools(
   log: Logger = () => {},
   mode: GameToolMode = "full"
 ): void {
-  const originalTool = server.tool.bind(server) as (...args: unknown[]) => unknown;
-  const mutableServer = server as unknown as {
-    tool: (name: string, ...args: unknown[]) => unknown;
-  };
-  mutableServer.tool = (name: string, ...args: unknown[]) => {
-    if (!shouldRegisterTool(mode, name)) return undefined;
-    return originalTool(name, ...args);
-  };
-
-  server.tool(
-    "verify_campaign",
-    "Verify a generated campaign folder for required files, JSON structure, thin/empty files, and technical runtime counts. Call at the end of campaign creation before responding to the user.",
-    {
-      campaign_path: campaignPath,
-    },
-    wrap(
-      "verify_campaign",
-      ({ campaign_path }) => verifyCampaign(root, campaign_path),
-      log
-    )
-  );
-
-  server.tool(
-    "create_save_slot",
-    "Create a new playthrough save slot by copying the campaign template runtime at 30-runtime into 40-saves/<slot>/30-runtime. Use before starting play so the campaign backdrop remains reusable.",
-    {
-      campaign_path: campaignPath,
-      slot_id: z
-        .string()
-        .min(1)
-        .optional()
-        .describe("Save slot id, e.g. student-name or run-1. Generated from label/character if omitted."),
-      label: z.string().optional().describe("Human-readable save label."),
-      character: z
-        .record(z.unknown())
-        .optional()
-        .describe("Campaign-specific protagonist metadata for this playthrough. Use fields from player_setup; do not invent generic race/class fields."),
-      state_patch: z
-        .record(z.unknown())
-        .optional()
-        .describe("Optional state patch to apply to the copied slot state."),
-      reset_journal: z
-        .boolean()
-        .default(true)
-        .describe("If true, starts the slot with an empty journal.jsonl after copying the template runtime."),
-      overwrite: z
-        .boolean()
-        .default(false)
-        .describe("If true, replace an existing slot with the same id."),
-    },
-    wrap(
-      "create_save_slot",
-      ({ campaign_path, slot_id, label, character, state_patch, reset_journal, overwrite }) =>
-        createSaveSlot(root, campaign_path, {
-          slotId: slot_id,
-          label,
-          character,
-          statePatch: state_patch,
-          resetJournal: reset_journal,
-          overwrite,
-        }),
-      log
-    )
-  );
-
-  server.tool(
-    "list_save_slots",
-    "List existing playthrough save slots for a campaign, including character metadata and current turn/location summary.",
-    {
-      campaign_path: campaignPath,
-    },
-    wrap(
-      "list_save_slots",
-      ({ campaign_path }) => listSaveSlots(root, campaign_path),
-      log
-    )
-  );
-
-  server.tool(
-    "get_game_summary",
-    "Return a compact spoiler-light recap and player_setup for campaign-grounded protagonist questions. If state.turn is 0 with an empty journal, also includes startup opening-scene text for first play.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      quest_limit: z
-        .number()
-        .int()
-        .positive()
-        .max(25)
-        .default(8)
-        .describe("Maximum active/relevant quests to include."),
-      journal_limit: z
-        .number()
-        .int()
-        .positive()
-        .max(20)
-        .default(5)
-        .describe("Recent journal entries to include."),
-    },
-    wrap(
-      "get_game_summary",
-      ({ campaign_path, save_slot, quest_limit, journal_limit }) =>
-        getGameSummary(root, {
-          campaignPath: runtimeCampaignPath(campaign_path, save_slot),
-          questLimit: quest_limit,
-          journalLimit: journal_limit,
-        }),
-      log
-    )
-  );
-
-  server.tool(
-    "get_scene_context",
-    "Return a compact playable scene packet for the current campaign state: state summary, current location, present NPC summaries, relevant quests, clocks, inventory, and recent journal entries. Call at the start of each player turn instead of reading campaign files.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      location: z
-        .string()
-        .optional()
-        .describe("Override current state.location for this query."),
-      game_stage: z
-        .number()
-        .optional()
-        .describe("Override current state.game_stage for this query."),
-      act: z.string().optional().describe("Override current state.act."),
-      quest_limit: z
-        .number()
-        .int()
-        .positive()
-        .max(25)
-        .default(6)
-        .describe("Maximum relevant quests to return."),
-      journal_limit: z
-        .number()
-        .int()
-        .positive()
-        .max(20)
-        .default(5)
-        .describe("Recent journal entries to return."),
-    },
-    wrap(
-      "get_scene_context",
-      ({ campaign_path, save_slot, location, game_stage, act, quest_limit, journal_limit }) =>
-        getSceneContext(root, {
-          campaignPath: runtimeCampaignPath(campaign_path, save_slot),
-          location,
-          gameStage: game_stage,
-          act,
-          questLimit: quest_limit,
-          journalLimit: journal_limit,
-        }),
-      log
-    )
-  );
-
-  server.tool(
-    "get_potential_quests",
-    "Return non-closed quests that are active or can start in the current location and game stage. The result is an index-sized summary, not full quest text.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      location: z
-        .string()
-        .optional()
-        .describe("Override current state.location for this query."),
-      game_stage: z
-        .number()
-        .optional()
-        .describe("Override current state.game_stage for this query."),
-      act: z.string().optional().describe("Override current state.act."),
-      limit: z
-        .number()
-        .int()
-        .positive()
-        .max(25)
-        .default(8)
-        .describe("Maximum quests to return."),
-      include_hidden: z
-        .boolean()
-        .default(false)
-        .describe("If true, include hidden quests that match the query."),
-    },
-    wrap(
-      "get_potential_quests",
-      ({ campaign_path, save_slot, location, game_stage, act, limit, include_hidden }) =>
-        getPotentialQuests(root, {
-          campaignPath: runtimeCampaignPath(campaign_path, save_slot),
-          location,
-          gameStage: game_stage,
-          act,
-          limit,
-          includeHidden: include_hidden,
-        }),
-      log
-    )
-  );
-
-  server.tool(
-    "get_quest_runtime",
-    "Read one quest by id. Use view='runtime' during play to get only the current step, hooks, and summary; use view='full' only for authoring or repair.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      quest_id: z.string().min(1).describe("Quest id, e.g. q-lantern-in-the-well."),
-      view: z
-        .enum(["summary", "runtime", "full"])
-        .default("runtime")
-        .describe("How much quest detail to return."),
-    },
-    wrap(
-      "get_quest_runtime",
-      ({ campaign_path, save_slot, quest_id, view }) =>
-        getQuestRuntime(root, runtimeCampaignPath(campaign_path, save_slot), quest_id, view),
-      log
-    )
-  );
-
-  server.tool(
-    "create_quest",
-    "Create a new quest during open play or authoring. Writes one quest JSON file and updates the compact quest index. Use this when the player's action creates a real new thread.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      quest: z
-        .record(z.unknown())
-        .describe("Quest object. Recommended fields: id, title, status, locations, stages, min_game_stage, max_game_stage, priority, summary, tags, hooks, current_step, steps."),
-    },
-    wrap(
-      "create_quest",
-      ({ campaign_path, save_slot, quest }) =>
-        createQuest(root, runtimeCampaignPath(campaign_path, save_slot), quest),
-      log
-    )
-  );
-
-  server.tool(
-    "update_quest",
-    "Patch any fields on one quest and refresh its index entry. If setting current_step, that id must already exist in steps or be added in the same patch.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      quest_id: z.string().min(1).describe("Quest id to update."),
-      patch: z.record(z.unknown()).describe("JSON object to merge into the quest."),
-    },
-    wrap(
-      "update_quest",
-      ({ campaign_path, save_slot, quest_id, patch }) =>
-        updateQuest(root, runtimeCampaignPath(campaign_path, save_slot), quest_id, patch),
-      log
-    )
-  );
-
-  server.tool(
-    "advance_quest",
-    "Advance a quest's status, current step, fields, and progress note. current_step must match an existing step id; add the step in fields.steps before or during the same call.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      quest_id: z.string().min(1).describe("Quest id to advance."),
-      status: z
-        .string()
-        .optional()
-        .describe("New quest status, e.g. available, active, completed, failed, closed."),
-      current_step: z.string().optional().describe("New current step id. Must exist in quest.steps after fields are merged."),
-      progress_note: z.string().optional().describe("Short progress note to append."),
-      fields: z
-        .record(z.unknown())
-        .optional()
-        .describe("Additional quest fields to merge."),
-    },
-    wrap(
-      "advance_quest",
-      ({ campaign_path, save_slot, quest_id, status, current_step, progress_note, fields }) =>
-        advanceQuest(root, runtimeCampaignPath(campaign_path, save_slot), quest_id, {
-          status,
-          current_step,
-          progress_note,
-          fields,
-        }),
-      log
-    )
-  );
-
-  server.tool(
-    "get_present_npcs",
-    "Return compact NPC cards present at the current or supplied location. Use before deciding who can speak or act in a scene.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      location: z.string().optional().describe("Override current state.location."),
-      limit: z.number().int().positive().max(25).default(8),
-    },
-    wrap(
-      "get_present_npcs",
-      ({ campaign_path, save_slot, location, limit }) =>
-        getPresentNpcs(root, runtimeCampaignPath(campaign_path, save_slot), location, limit),
-      log
-    )
-  );
-
-  server.tool(
-    "get_npc_runtime",
-    "Read one NPC by id. Use view='runtime' during play; use view='full' only for authoring or repair.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      npc_id: z.string().min(1).describe("NPC id, e.g. npc-captain-nira."),
-      view: z.enum(["summary", "runtime", "full"]).default("runtime"),
-    },
-    wrap(
-      "get_npc_runtime",
-      ({ campaign_path, save_slot, npc_id, view }) =>
-        getNpcRuntime(root, runtimeCampaignPath(campaign_path, save_slot), npc_id, view),
-      log
-    )
-  );
-
-  server.tool(
-    "create_npc",
-    "Create a durable NPC during open play or authoring. Writes one NPC JSON file and updates the compact NPC index.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      npc: z.record(z.unknown()).describe("NPC object. Recommended: id, name, role, location, status, relationship, visible_mood, summary, voice, motive, knows, memory, tags."),
-    },
-    wrap(
-      "create_npc",
-      ({ campaign_path, save_slot, npc }) =>
-        createNpc(root, runtimeCampaignPath(campaign_path, save_slot), npc),
-      log
-    )
-  );
-
-  server.tool(
-    "update_npc",
-    "Patch one NPC and refresh its compact index card. Use for relationship, mood, knowledge, memory, status, or location changes.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      npc_id: z.string().min(1),
-      patch: z.record(z.unknown()),
-    },
-    wrap(
-      "update_npc",
-      ({ campaign_path, save_slot, npc_id, patch }) =>
-        updateNpc(root, runtimeCampaignPath(campaign_path, save_slot), npc_id, patch),
-      log
-    )
-  );
-
-  server.tool(
-    "move_npc",
-    "Move one NPC to a new location and refresh the NPC index. Optionally records a compact memory reason.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      npc_id: z.string().min(1),
-      location: z.string().min(1),
-      reason: z.string().optional(),
-    },
-    wrap(
-      "move_npc",
-      ({ campaign_path, save_slot, npc_id, location, reason }) =>
-        moveNpc(root, runtimeCampaignPath(campaign_path, save_slot), npc_id, location, reason),
-      log
-    )
-  );
-
-  server.tool(
-    "get_location_runtime",
-    "Read one location by id. Use view='runtime' during play for visible features, exits, hazards, points of interest, and hooks.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      location_id: z.string().min(1),
-      view: z.enum(["summary", "runtime", "full"]).default("runtime"),
-    },
-    wrap(
-      "get_location_runtime",
-      ({ campaign_path, save_slot, location_id, view }) =>
-        getLocationRuntime(root, runtimeCampaignPath(campaign_path, save_slot), location_id, view),
-      log
-    )
-  );
-
-  server.tool(
-    "create_location",
-    "Create a durable location during open play or authoring. Writes one location JSON file and updates the compact location index.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      location: z.record(z.unknown()).describe("Location object. Recommended: id, name, region, status, summary, exits, visible_features, hazards, points_of_interest, present_npcs, tags."),
-    },
-    wrap(
-      "create_location",
-      ({ campaign_path, save_slot, location }) =>
-        createLocation(root, runtimeCampaignPath(campaign_path, save_slot), location),
-      log
-    )
-  );
-
-  server.tool(
-    "update_location",
-    "Patch one location and refresh its compact index card. Use for exits, hazards, visible changes, present NPCs, and discovered points of interest.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      location_id: z.string().min(1),
-      patch: z.record(z.unknown()),
-    },
-    wrap(
-      "update_location",
-      ({ campaign_path, save_slot, location_id, patch }) =>
-        updateLocation(root, runtimeCampaignPath(campaign_path, save_slot), location_id, patch),
-      log
-    )
-  );
-
-  server.tool(
-    "move_party",
-    "Move the party to a known location by updating state.location. Use after travel or scene transitions.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      destination: z.string().min(1),
-      summary: z.string().optional().describe("Optional compact last_summary."),
-    },
-    wrap(
-      "move_party",
-      ({ campaign_path, save_slot, destination, summary }) =>
-        moveParty(root, runtimeCampaignPath(campaign_path, save_slot), destination, summary),
-      log
-    )
-  );
-
-  server.tool(
-    "get_inventory",
-    "Return structured campaign inventory without reading state or logs.",
-    { campaign_path: campaignPath, save_slot: saveSlot },
-    wrap(
-      "get_inventory",
-      ({ campaign_path, save_slot }) => getInventory(root, runtimeCampaignPath(campaign_path, save_slot)),
-      log
-    )
-  );
-
-  server.tool(
-    "add_item",
-    "Add one durable inventory item. Use for items the player can keep, spend, inspect, or use later.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      item: z.record(z.unknown()).describe("Item object. Recommended: id, name, quantity, description, tags."),
-    },
-    wrap(
-      "add_item",
-      ({ campaign_path, save_slot, item }) =>
-        addItem(root, runtimeCampaignPath(campaign_path, save_slot), item),
-      log
-    )
-  );
-
-  server.tool(
-    "update_item",
-    "Patch one inventory item by id. Use for quantity, description, state, charges, or ownership changes.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      item_id: z.string().min(1),
-      patch: z.record(z.unknown()),
-    },
-    wrap(
-      "update_item",
-      ({ campaign_path, save_slot, item_id, patch }) =>
-        updateItem(root, runtimeCampaignPath(campaign_path, save_slot), item_id, patch),
-      log
-    )
-  );
-
-  server.tool(
-    "remove_item",
-    "Remove one inventory item by id after it is spent, lost, traded, or destroyed.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      item_id: z.string().min(1),
-    },
-    wrap(
-      "remove_item",
-      ({ campaign_path, save_slot, item_id }) =>
-        removeItem(root, runtimeCampaignPath(campaign_path, save_slot), item_id),
-      log
-    )
-  );
-
-  server.tool(
-    "get_clocks",
-    "Return structured campaign clocks for faction pressure, danger, deadlines, travel, rituals, and other ticking threats.",
-    { campaign_path: campaignPath, save_slot: saveSlot },
-    wrap(
-      "get_clocks",
-      ({ campaign_path, save_slot }) => getClocks(root, runtimeCampaignPath(campaign_path, save_slot)),
-      log
-    )
-  );
-
-  server.tool(
-    "create_clock",
-    "Create a campaign clock. Use for durable pressure that should progress across turns or scenes.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      clock: z.record(z.unknown()).describe("Clock object. Recommended: id, title, value, max, status, summary, consequence, tags."),
-    },
-    wrap(
-      "create_clock",
-      ({ campaign_path, save_slot, clock }) =>
-        createClock(root, runtimeCampaignPath(campaign_path, save_slot), clock),
-      log
-    )
-  );
-
-  server.tool(
-    "update_clock",
-    "Patch one campaign clock by id.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      clock_id: z.string().min(1),
-      patch: z.record(z.unknown()),
-    },
-    wrap(
-      "update_clock",
-      ({ campaign_path, save_slot, clock_id, patch }) =>
-        updateClock(root, runtimeCampaignPath(campaign_path, save_slot), clock_id, patch),
-      log
-    )
-  );
-
-  server.tool(
-    "tick_clock",
-    "Advance or reduce one campaign clock by amount. Marks it complete when value reaches max.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      clock_id: z.string().min(1),
-      amount: z.number().default(1),
-    },
-    wrap(
-      "tick_clock",
-      ({ campaign_path, save_slot, clock_id, amount }) =>
-        tickClock(root, runtimeCampaignPath(campaign_path, save_slot), clock_id, amount),
-      log
-    )
-  );
-
-  server.tool(
-    "commit_turn",
-    "Commit meaningful state changes at the end of a player turn. Location changes must target an existing location; create_location first for new places. Quest current_step updates must target existing steps.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      increment_turn: z
-        .boolean()
-        .default(true)
-        .describe("If true, increment state.turn by one."),
-      location: z.string().optional().describe("New current location id. Must already exist; call create_location first for a new place."),
-      game_stage: z.number().optional().describe("New numeric game stage."),
-      act: z.string().optional().describe("New act/stage label."),
-      last_summary: z.string().optional().describe("Compact new last_summary."),
-      state_patch: z
-        .record(z.unknown())
-        .optional()
-        .describe("Additional JSON object to deep-merge into state.json."),
-      journal_entry: z
-        .record(z.unknown())
-        .optional()
-        .describe("Compact JSON journal entry for the turn."),
-      quest_updates: z
-        .array(z.record(z.unknown()))
-        .optional()
-        .describe("Quest updates, each with id plus advance_quest fields."),
-    },
-    wrap(
-      "commit_turn",
-      ({ campaign_path, save_slot, ...update }) =>
-        commitTurn(root, runtimeCampaignPath(campaign_path, save_slot), update),
-      log
-    )
-  );
-
-  server.tool(
-    "get_recent_journal",
-    "Return the most recent compact journal entries without reading the full session log.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-      limit: z
-        .number()
-        .int()
-        .positive()
-        .max(20)
-        .default(5)
-        .describe("Maximum journal entries to return."),
-    },
-    wrap(
-      "get_recent_journal",
-      ({ campaign_path, save_slot, limit }) =>
-        getRecentJournal(root, runtimeCampaignPath(campaign_path, save_slot), limit),
-      log
-    )
-  );
-
-  mutableServer.tool = originalTool;
+  if (mode === "creator" || mode === "full") {
+    registerTools(server, root, log);
+    registerCreatorTools(server, root, log);
+  }
+  if (mode === "player" || mode === "full") {
+    registerPlayerTools(server, root, log);
+  }
 }
 
 export async function createServer(
@@ -797,10 +315,7 @@ export async function createServer(
   log: Logger = () => {},
   options: { name?: string; mode?: GameToolMode } = {}
 ): Promise<McpServer> {
-  const server = new McpServer({
-    name: options.name ?? "lmstudio-game",
-    version: "0.1.0",
-  });
+  const server = new McpServer({ name: options.name ?? "lmstudio-game", version: "0.1.0" });
   registerGameTools(server, root, log, options.mode ?? "full");
   return server;
 }
@@ -812,11 +327,7 @@ export async function runGameServer(name: string, mode: GameToolMode): Promise<v
   const server = await createServer(root, log, { name, mode });
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(
-    `${name} MCP server ready. Root: ${root}${
-      cli.quiet ? " (quiet)" : ""
-    }`
-  );
+  console.error(`${name} MCP server ready. Root: ${root}${cli.quiet ? " (quiet)" : ""}`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

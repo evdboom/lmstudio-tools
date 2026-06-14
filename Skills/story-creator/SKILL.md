@@ -16,9 +16,9 @@ Tools: list_files, list_folders, read_file, read_json, add_folder, add_file, rep
 
 Ask once for: tone, setting, content limits, length, and two design choices:
 - **kind** — detective, dungeon crawl, slice-of-life, intrigue, survival, other. Drives the per-turn loop you write.
-- **authoring_mode** — `fixed` (you pre-author the content) or `procedural-startpoint` (you author a small seed and the playing model expands it during play).
+- **authoring_mode** — how much you pre-author vs leave for the playing model to grow. One of: `fixed`, `guided`, `fixed-endpoint`, `open-world`, `procedural-startpoint`, `procedural` (see below).
 
-Defaults: balanced pacing, safe content limits, `procedural-startpoint` unless the user wants a tightly authored story.
+Defaults: balanced pacing, safe content limits, `guided` unless the user wants something tighter or looser.
 
 ## Required skeleton
 
@@ -121,8 +121,14 @@ Do not restate the player-boundary in PLAY.md; the player skill owns it. If they
 
 ## authoring_mode
 
-- `fixed`: pre-author the collections the game needs (locations, NPCs, clues, etc.) and write `## Loop` to advance existing content, creating new records only on a genuine new thread.
-- `procedural-startpoint`: author a minimal seed (the opening, one start location/scene, 1-2 NPCs) and write `## Loop` to instruct the model to create records procedurally with `game_write` as play expands. Keep `min_count` low.
+Pick one. It sets how much you pre-author and what the `## Loop` tells the player model to generate. Set higher `min_count`s for authored content, low (0) for what the model will create in play.
+
+- `fixed` — author the full world and plot. Loop: advance existing content; create new records only on a genuine new thread.
+- `guided` (rode draad) — author a through-line: the spine, the hidden truth/goal, and 3-5 key beats (store them in a `beats` collection or in state). Author a small starting world. Loop: play freely, but keep surfacing the next beat and pulling toward the truth. The thread is fixed; the path is loose.
+- `fixed-endpoint` — author the ending / win-or-lose condition (in state, e.g. `flags.goal` and what satisfies it) and a starting situation. Loop: open, procedural play; every turn can move toward or away from the locked endpoint. All roads lead there.
+- `open-world` (sandbox) — author the world (locations, NPCs, factions) with no required plot. Loop: react to the player, let story emerge; create records only for genuinely new things. No win condition.
+- `procedural-startpoint` — author a minimal seed (opening, one start scene, 1-2 NPCs). Loop: create world records with `game_write` as play expands. Keep `min_count` low.
+- `procedural` — author only premise, tone, and setup in PLAY.md plus a near-empty state. Loop: generate locations/NPCs/threads live from turn 1 via `game_write`. Declared collections start empty (`min_count` 0).
 
 ## Opening scene
 

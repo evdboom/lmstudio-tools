@@ -41,6 +41,17 @@ const REQUIRED_MANIFEST_KEYS = [
 
 const REQUIRED_STATE_KEYS = ["campaign_id", "turn", "schema"] as const;
 
+// How much of the game is pre-authored vs grown in play. A single recipe the
+// creating model picks; PLAY.md's Loop adapts to it.
+export const AUTHORING_MODES = [
+  "fixed",                  // world + plot fully authored
+  "guided",                 // authored through-line (rode draad) + key beats; world grows around it
+  "fixed-endpoint",         // ending/win-condition locked; path open and procedural
+  "open-world",             // world authored; no required plot (sandbox)
+  "procedural-startpoint",  // small seed; world + story grow in play
+  "procedural",             // only premise/genre authored; everything live
+] as const;
+
 const REQUIRED_PLAY_SECTIONS = ["Premise", "Loop", "State Shape", "Tone", "Setup"] as const;
 
 export interface CollectionSpec {
@@ -70,7 +81,7 @@ export interface Manifest {
   campaign_id: string;
   title: string;
   pitch: string;
-  authoring_mode: "fixed" | "procedural-startpoint" | string;
+  authoring_mode: (typeof AUTHORING_MODES)[number] | string;
   play_instructions: string;
   initial_state: string;
   runtime_collections: Record<string, CollectionSpec>;
@@ -239,8 +250,8 @@ export function validateManifestShape(manifest: unknown): string[] {
     problems.push("boot must be a JSON object.");
   }
   const mode = manifest.authoring_mode;
-  if (typeof mode === "string" && mode !== "fixed" && mode !== "procedural-startpoint") {
-    problems.push(`authoring_mode must be "fixed" or "procedural-startpoint" (got ${mode}).`);
+  if (typeof mode === "string" && !AUTHORING_MODES.includes(mode as (typeof AUTHORING_MODES)[number])) {
+    problems.push(`authoring_mode must be one of ${AUTHORING_MODES.join(", ")} (got ${mode}).`);
   }
   return problems;
 }

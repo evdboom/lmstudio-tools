@@ -65,7 +65,7 @@ class McpClient {
           this.pending.delete(id);
           reject(new Error(`Timeout waiting for response to ${method}`));
         }
-      }, 8000);
+      }, 20000);
     });
   }
 

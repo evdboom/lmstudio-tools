@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import {
+  AUTHORING_MODES,
   gameCommit,
   gameOpen,
   gameRead,
@@ -116,6 +117,16 @@ describe("manifest + state validation", () => {
     expect(problems.some((p) => p.includes("boot"))).toBe(true);
   });
 
+  it("accepts every supported authoring_mode", () => {
+    expect(AUTHORING_MODES).toContain("guided");
+    expect(AUTHORING_MODES).toContain("fixed-endpoint");
+    expect(AUTHORING_MODES).toContain("open-world");
+    expect(AUTHORING_MODES).toContain("procedural");
+    for (const mode of AUTHORING_MODES) {
+      expect(validateManifestShape(manifest({ authoring_mode: mode }))).toEqual([]);
+    }
+  });
+
   it("rejects an unknown authoring_mode", () => {
     const problems = validateManifestShape(manifest({ authoring_mode: "freeform" }));
     expect(problems.some((p) => p.includes("authoring_mode"))).toBe(true);
@@ -192,6 +203,17 @@ describe("verify_campaign harness", () => {
     const payload = JSON.parse(result.text) as { ok: boolean; issues: Array<{ code: string }> };
     expect(payload.ok).toBe(false);
     expect(payload.issues.map((i) => i.code)).toContain("collection_below_min");
+  });
+
+  it("smoke test rolls dice when the game declares uses_dice", async () => {
+    const base = manifest();
+    await scaffoldGame({ boot: { ...base.boot, uses_dice: true } });
+    const result = await verifyCampaign(root, campaign);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const payload = JSON.parse(result.text) as { ok: boolean; smoke: { roll?: boolean } };
+    expect(payload.ok).toBe(true);
+    expect(payload.smoke.roll).toBe(true);
   });
 
   it("errors when state.json is missing a required key", async () => {

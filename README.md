@@ -140,7 +140,7 @@ campaign-<slug>/
 
 ### The manifest
 
-`game.manifest.json` is the single source of truth the harness and the player boot from. Required keys: `manifest_version`, `campaign_id`, `title`, `pitch`, `authoring_mode` (`fixed` or `procedural-startpoint`), `play_instructions`, `initial_state`, `runtime_collections`, and `boot`. Each entry in `runtime_collections` declares a collection the game uses — its index path, id pattern, `min_count`, whether it is `boot_required`, and the `summary_fields` shown in the scene packet. `boot` describes how play starts (scene packet tool, optional `start_location`, opening prose, whether the game `uses_dice`) plus an optional `packet` recipe controlling how much state and which collections each scene includes. A detective game declares `clues`/`suspects`; a dungeon declares `rooms`/`monsters`; a slice-of-life game declares only `npcs`.
+`game.manifest.json` is the single source of truth the harness and the player boot from. Required keys: `manifest_version`, `campaign_id`, `title`, `pitch`, `authoring_mode` (one of `fixed`, `guided`, `fixed-endpoint`, `open-world`, `procedural-startpoint`, `procedural` — how much world/plot is pre-authored vs grown in play), `play_instructions`, `initial_state`, `runtime_collections`, and `boot`. Each entry in `runtime_collections` declares a collection the game uses — its index path, id pattern, `min_count`, whether it is `boot_required`, and the `summary_fields` shown in the scene packet. `boot` describes how play starts (scene packet tool, optional `start_location`, opening prose, whether the game `uses_dice`) plus an optional `packet` recipe controlling how much state and which collections each scene includes. A detective game declares `clues`/`suspects`; a dungeon declares `rooms`/`monsters`; a slice-of-life game declares only `npcs`.
 
 ### PLAY.md
 
@@ -356,9 +356,7 @@ registry, install command, or skill-creator tool in this project.
 The `Skills/` folder includes a small RPG workflow:
 
 - `story-creator`: build a schema-flexible game — manifest, PLAY.md, initial state, and whatever runtime content it needs.
-- `story-player`: play any game in open mode; load its PLAY.md and narrate the world's response to free actions.
-- `role-play`: game-master framing of open-mode play over the same generic verbs.
-- `story-player-closed`: play in closed mode, ending each turn with explicit A/B/C choices.
+- `story-player`: play any game — open or choice-based. Loads the game's PLAY.md and narrates the world's response; closed/menu presentation is driven by the game's own instructions.
 - `story-refiner`: improve or expand an existing game after creation.
 - `story-verbose`: add richer prose during play.
 - `compact-mode`: keep model output short.

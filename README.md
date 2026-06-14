@@ -109,7 +109,7 @@ The full game surface is:
 | --------- | ----------------------------------------------------------------------------------------------------------- |
 | Verify    | `verify_campaign`                                                                                          |
 | Saves     | `create_save_slot`, `list_save_slots`                                                                       |
-| Scene     | `get_opening_scene`, `get_game_summary`, `get_scene_context`, `commit_turn`, `get_recent_journal`             |
+| Scene     | `get_game_summary`, `get_scene_context`, `commit_turn`, `get_recent_journal`             |
 | Quests    | `get_potential_quests`, `get_quest_runtime`, `create_quest`, `update_quest`, `advance_quest`                |
 | NPCs      | `get_present_npcs`, `get_npc_runtime`, `create_npc`, `update_npc`, `move_npc`                               |
 | Locations | `get_location_runtime`, `create_location`, `update_location`, `move_party`                                  |
@@ -198,13 +198,6 @@ save slot already exists, also add the same block to
   "guidance": "Give the setup_intro first, then ask plain in-world questions. Do not say campaign-appropriate or use generic fantasy character creation."
 }
 ```
-
-When a player starts a new run, inspect `player_setup` if character details are
-missing, call `create_save_slot`, then call `get_opening_scene` with the same
-`save_slot`. The opening scene is returned by the game runtime so the player
-model does not need file tools. If a model calls `get_game_summary` on a fresh
-slot instead, the summary returns `summary_type: "new_game_start"` with a
-`startup.text` opening scene payload.
 
 Player input uses a small Markdown-like syntax during play: `*text*` is private
 protagonist thought or intent, `"text"` is spoken dialogue, plain text is visible
@@ -420,7 +413,7 @@ registry, install command, or skill-creator tool in this project.
 The `Skills/` folder includes a small RPG workflow:
 
 - `story-creator`: create a campaign folder with world, plot, structured game runtime files, and compact starter quests.
-- `story-player`: run open-mode RPG play with free player actions, scene context, quest creation, and turn commits.
+- `role-play`: run open-mode RPG play with free player actions, scene context, quest creation, and turn commits.
 - `story-player-closed`: run closed-mode RPG play with explicit A/B/C choices through the game runtime.
 - `story-refiner`: improve or expand an existing campaign after generation.
 - `story-verbose`: add richer prose during play.

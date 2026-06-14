@@ -61,7 +61,6 @@ const CREATOR_TOOLS = new Set([
 const PLAYER_TOOLS = new Set([
   "create_save_slot",
   "list_save_slots",
-  "get_opening_scene",
   "get_game_summary",
   "get_scene_context",
   "get_quest_runtime",
@@ -282,23 +281,6 @@ export function registerGameTools(
           campaignPath: runtimeCampaignPath(campaign_path, save_slot),
           questLimit: quest_limit,
           journalLimit: journal_limit,
-        }),
-      log
-    )
-  );
-
-  server.tool(
-    "get_opening_scene",
-    "Return the first-scene startup payload and player_setup for a new save slot. Call after creating or selecting a slot whose state.turn is 0; do not dump the packet, transform startup.text into player-facing prose.",
-    {
-      campaign_path: campaignPath,
-      save_slot: saveSlot,
-    },
-    wrap(
-      "get_opening_scene",
-      ({ campaign_path, save_slot }) =>
-        getOpeningScene(root, {
-          campaignPath: runtimeCampaignPath(campaign_path, save_slot),
         }),
       log
     )

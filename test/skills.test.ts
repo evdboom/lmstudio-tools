@@ -23,9 +23,10 @@ afterEach(async () => {
 async function writeSkill(
   name: string,
   frontmatter: string,
-  body: string
+  body: string,
+  base = root
 ): Promise<void> {
-  const dir = path.join(root, name);
+  const dir = path.join(base, name);
   await fs.mkdir(dir, { recursive: true });
   const content = `---\n${frontmatter.trim()}\n---\n${body}`;
   await fs.writeFile(path.join(dir, "SKILL.md"), content, "utf8");
@@ -133,6 +134,36 @@ describe("listSkills", () => {
     const r = await listSkills(root);
     if (r.ok) expect(r.value[0].allow_scripts).toBe(true);
   });
+
+  it("lists skills across multiple roots", async () => {
+    const otherRoot = await fs.mkdtemp(path.join(path.dirname(root), "skills-"));
+    try {
+      await writeSkill("zebra", "description: Z", "", otherRoot);
+      await writeSkill("alpha", "description: A", "");
+
+      const r = await listSkills([root, otherRoot]);
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.value.map((s) => s.name)).toEqual(["alpha", "zebra"]);
+      }
+    } finally {
+      await fs.rm(otherRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("errors when multiple roots contain the same skill name", async () => {
+    const otherRoot = await fs.mkdtemp(path.join(path.dirname(root), "skills-"));
+    try {
+      await writeSkill("dupe", "description: one", "", root);
+      await writeSkill("dupe", "description: two", "", otherRoot);
+
+      const r = await listSkills([root, otherRoot]);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toMatch(/duplicate skill name/i);
+    } finally {
+      await fs.rm(otherRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("loadSkill", () => {
@@ -174,6 +205,19 @@ describe("loadSkill", () => {
     const r2 = await loadSkill(root, "foo\\bar");
     expect(r1.ok).toBe(false);
     expect(r2.ok).toBe(false);
+  });
+
+  it("loads a skill from a later configured root", async () => {
+    const otherRoot = await fs.mkdtemp(path.join(path.dirname(root), "skills-"));
+    try {
+      await writeSkill("demo", "description: x", "from second root", otherRoot);
+
+      const r = await loadSkill([root, otherRoot], "demo");
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.value.body).toBe("from second root");
+    } finally {
+      await fs.rm(otherRoot, { recursive: true, force: true });
+    }
   });
 });
 
@@ -234,5 +278,19 @@ describe("readSkillFile", () => {
     await fs.mkdir(path.join(root, "a", "sub"));
     const r = await readSkillFile(root, "a", "sub");
     expect(r.ok).toBe(false);
+  });
+
+  it("reads a support file from a later configured root", async () => {
+    const otherRoot = await fs.mkdtemp(path.join(path.dirname(root), "skills-"));
+    try {
+      await writeSkill("demo", "description: x", "body", otherRoot);
+      await fs.writeFile(path.join(otherRoot, "demo", "notes.md"), "from second root", "utf8");
+
+      const r = await readSkillFile([root, otherRoot], "demo", "notes.md");
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.value).toBe("from second root");
+    } finally {
+      await fs.rm(otherRoot, { recursive: true, force: true });
+    }
   });
 });

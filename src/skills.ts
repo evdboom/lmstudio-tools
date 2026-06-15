@@ -20,6 +20,8 @@ export interface ParsedSkill {
   body: string;
 }
 
+export type SkillRoots = string | readonly string[];
+
 const SKILL_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
 
@@ -35,6 +37,10 @@ function toError(e: unknown): string {
   if (e instanceof ReadError) return e.message;
   if (e instanceof Error) return e.message;
   return String(e);
+}
+
+function rootList(roots: SkillRoots): readonly string[] {
+  return typeof roots === "string" ? [roots] : roots;
 }
 
 export function validateSkillName(name: unknown): name is string {
@@ -75,23 +81,33 @@ function summaryFromFrontmatter(
 }
 
 export async function listSkills(
-  root: string
+  roots: SkillRoots
 ): Promise<SkillResult<SkillSummary[]>> {
   try {
-    const entries = await fs.readdir(root, { withFileTypes: true });
+    const seen = new Map<string, string>();
     const summaries: SkillSummary[] = [];
-    for (const e of entries) {
-      if (!e.isDirectory()) continue;
-      if (!SKILL_NAME_RE.test(e.name)) continue;
-      const skillFile = path.join(root, e.name, "SKILL.md");
-      let text: string;
-      try {
-        text = await fs.readFile(skillFile, "utf8");
-      } catch {
-        continue;
+    for (const root of rootList(roots)) {
+      const entries = await fs.readdir(root, { withFileTypes: true });
+      for (const e of entries) {
+        if (!e.isDirectory()) continue;
+        if (!SKILL_NAME_RE.test(e.name)) continue;
+        const skillFile = path.join(root, e.name, "SKILL.md");
+        let text: string;
+        try {
+          text = await fs.readFile(skillFile, "utf8");
+        } catch {
+          continue;
+        }
+        const firstRoot = seen.get(e.name);
+        if (firstRoot) {
+          return err(
+            `Duplicate skill name ${JSON.stringify(e.name)} in ${firstRoot} and ${root}`
+          );
+        }
+        seen.set(e.name, root);
+        const { frontmatter } = parseSkill(text);
+        summaries.push(summaryFromFrontmatter(e.name, frontmatter));
       }
-      const { frontmatter } = parseSkill(text);
-      summaries.push(summaryFromFrontmatter(e.name, frontmatter));
     }
     summaries.sort((a, b) => a.name.localeCompare(b.name));
     return ok(summaries);
@@ -101,19 +117,26 @@ export async function listSkills(
 }
 
 export async function loadSkill(
-  root: string,
+  roots: SkillRoots,
   name: string
 ): Promise<SkillResult<{ name: string; frontmatter: Record<string, unknown>; body: string }>> {
   if (!validateSkillName(name)) {
     return err(`Invalid skill name: ${JSON.stringify(name)}`);
   }
   try {
-    const skillDir = path.join(root, name);
-    const stat = await fs.stat(skillDir).catch(() => null);
-    if (!stat || !stat.isDirectory()) {
-      return err(`Skill not found: ${name}`);
+    let foundDir: string | undefined;
+    for (const root of rootList(roots)) {
+      const skillDir = path.join(root, name);
+      const skillFile = path.join(skillDir, "SKILL.md");
+      const stat = await fs.stat(skillFile).catch(() => null);
+      if (!stat || !stat.isFile()) continue;
+      if (foundDir) {
+        return err(`Duplicate skill name ${JSON.stringify(name)} in configured roots`);
+      }
+      foundDir = skillDir;
     }
-    const skillFile = path.join(skillDir, "SKILL.md");
+    if (!foundDir) return err(`Skill not found: ${name}`);
+    const skillFile = path.join(foundDir, "SKILL.md");
     const text = await fs.readFile(skillFile, "utf8");
     const { frontmatter, body } = parseSkill(text);
     return ok({ name, frontmatter, body });
@@ -123,7 +146,7 @@ export async function loadSkill(
 }
 
 export async function readSkillFile(
-  root: string,
+  roots: SkillRoots,
   name: string,
   relPath: string,
   maxBytes: number = DEFAULT_MAX_BYTES
@@ -132,8 +155,19 @@ export async function readSkillFile(
     return err(`Invalid skill name: ${JSON.stringify(name)}`);
   }
   try {
-    const skillDir = path.join(root, name);
-    const realSkillDir = await fs.realpath(skillDir).catch(() => null);
+    let realSkillDir: string | undefined;
+    for (const root of rootList(roots)) {
+      const skillDir = path.join(root, name);
+      const skillFile = path.join(skillDir, "SKILL.md");
+      const stat = await fs.stat(skillFile).catch(() => null);
+      if (!stat || !stat.isFile()) continue;
+      const candidate = await fs.realpath(skillDir).catch(() => null);
+      if (!candidate) continue;
+      if (realSkillDir) {
+        return err(`Duplicate skill name ${JSON.stringify(name)} in configured roots`);
+      }
+      realSkillDir = candidate;
+    }
     if (!realSkillDir) return err(`Skill not found: ${name}`);
     const abs = await safeResolve(realSkillDir, relPath);
     const st = await fs.stat(abs);

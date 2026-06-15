@@ -23,10 +23,12 @@ import {
 } from "./tools.js";
 import { DEFAULT_MAX_BYTES } from "./io.js";
 import { makeLogger, type Logger } from "./log.js";
+import { prefixedToolName, validateToolPrefix, type ToolPrefixOptions } from "./tool-prefix.js";
 
 interface CliArgs {
   root?: string;
   quiet: boolean;
+  prefix?: string;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -37,10 +39,15 @@ function parseArgs(argv: string[]): CliArgs {
       out.root = argv[++i];
     } else if (a.startsWith("--root=")) {
       out.root = a.slice("--root=".length);
+    } else if (a === "--prefix") {
+      out.prefix = argv[++i];
+    } else if (a.startsWith("--prefix=")) {
+      out.prefix = a.slice("--prefix=".length);
     } else if (a === "--quiet" || a === "-q") {
       out.quiet = true;
     }
   }
+  out.prefix = validateToolPrefix(out.prefix);
   return out;
 }
 
@@ -99,10 +106,13 @@ function wrap<A>(
 export function registerTools(
   server: McpServer,
   root: string,
-  log: Logger = () => {}
+  log: Logger = () => {},
+  options: ToolPrefixOptions = {}
 ): void {
+  const toolName = (name: string) => prefixedToolName(name, options.prefix);
+
   server.tool(
-    "list_files",
+    toolName("list_files"),
     "List files (not folders) inside a directory relative to the sandbox root. Set recursive=true to return files in all nested folders as paths relative to the requested directory.",
     {
       path: z
@@ -122,7 +132,7 @@ export function registerTools(
   );
 
   server.tool(
-    "list_folders",
+    toolName("list_folders"),
     "List subfolders (not files) inside a directory relative to the sandbox root. Set recursive=true to return all nested folders as paths relative to the requested directory.",
     {
       path: z
@@ -142,7 +152,7 @@ export function registerTools(
   );
 
   server.tool(
-    "read_file",
+    toolName("read_file"),
     `Read the UTF-8 text contents of a file. Refuses binary files and known binary extensions. Returns at most maxBytes (default ${DEFAULT_MAX_BYTES}); larger files are truncated with a header line.`,
     {
       path: z.string().min(1).describe("File path relative to root."),
@@ -161,7 +171,7 @@ export function registerTools(
   );
 
   server.tool(
-    "read_json",
+    toolName("read_json"),
     "Read one property from a JSON file without loading the whole file into chat. Use for state.json and other compact runtime JSON. Property paths support dots and array indexes, e.g. 'party[0].hp'.",
     {
       path: z.string().min(1).describe("JSON file path relative to root."),
@@ -178,7 +188,7 @@ export function registerTools(
   );
 
   server.tool(
-    "add_json",
+    toolName("add_json"),
     "Add a new property to a JSON file. Fails if the property already exists. Use for adding state flags, runtime fields, or array items without replacing the whole file.",
     {
       path: z.string().min(1).describe("JSON file path relative to root."),
@@ -196,7 +206,7 @@ export function registerTools(
   );
 
   server.tool(
-    "update_json",
+    toolName("update_json"),
     "Update an existing property in a JSON file. Fails if the property does not exist. Prefer this over replace_file for state.json changes such as update_json(path='state.json', property='party[0].hp', value=5).",
     {
       path: z.string().min(1).describe("JSON file path relative to root."),
@@ -214,7 +224,7 @@ export function registerTools(
   );
 
   server.tool(
-    "add_file",
+    toolName("add_file"),
     "Create a new file with UTF-8 content. Fails if the file already exists.",
     {
       path: z.string().min(1).describe("File path relative to root."),
@@ -228,7 +238,7 @@ export function registerTools(
   );
 
   server.tool(
-    "replace_file",
+    toolName("replace_file"),
     "Overwrite an existing file with new UTF-8 content. Fails if the file does not exist.",
     {
       path: z.string().min(1).describe("File path relative to root."),
@@ -242,7 +252,7 @@ export function registerTools(
   );
 
   server.tool(
-    "append_file",
+    toolName("append_file"),
     "Append UTF-8 text to a file. Creates the file if it does not exist.",
     {
       path: z.string().min(1).describe("File path relative to root."),
@@ -256,7 +266,7 @@ export function registerTools(
   );
 
   server.tool(
-    "add_folder",
+    toolName("add_folder"),
     "Create a new folder. Fails if it already exists. Parents are created automatically.",
     {
       path: z.string().min(1).describe("Folder path relative to root."),
@@ -265,7 +275,7 @@ export function registerTools(
   );
 
   server.tool(
-    "remove_file",
+    toolName("remove_file"),
     "Delete a file. Fails if the path is not a file. Symlinks are removed (not followed).",
     {
       path: z.string().min(1).describe("File path relative to root."),
@@ -274,7 +284,7 @@ export function registerTools(
   );
 
   server.tool(
-    "remove_folder",
+    toolName("remove_folder"),
     "Delete a folder. Fails on non-empty unless recursive=true. Refuses to delete the sandbox root.",
     {
       path: z.string().min(1).describe("Folder path relative to root."),
@@ -293,13 +303,14 @@ export function registerTools(
 
 export async function createServer(
   root: string,
-  log: Logger = () => {}
+  log: Logger = () => {},
+  options: ToolPrefixOptions = {}
 ): Promise<McpServer> {
   const server = new McpServer({
     name: "lmstudio-tools",
     version: "0.1.0",
   });
-  registerTools(server, root, log);
+  registerTools(server, root, log, options);
   return server;
 }
 
@@ -307,11 +318,13 @@ async function main() {
   const cli = parseArgs(process.argv.slice(2));
   const root = await resolveRoot(cli);
   const log = makeLogger("lmstudio-tools", cli.quiet);
-  const server = await createServer(root, log);
+  const server = await createServer(root, log, { prefix: cli.prefix });
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(
     `lmstudio-tools MCP server ready. Root: ${root}${
+      cli.prefix ? ` Prefix: ${cli.prefix}` : ""
+    }${
       cli.quiet ? " (quiet)" : ""
     }`
   );

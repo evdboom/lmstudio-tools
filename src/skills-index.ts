@@ -9,44 +9,65 @@ import {
   listSkills,
   loadSkill,
   readSkillFile,
+  type SkillRoots,
   type SkillResult,
 } from "./skills.js";
 import { DEFAULT_MAX_BYTES } from "./io.js";
 import { makeLogger, type Logger } from "./log.js";
+import { prefixedToolName, validateToolPrefix, type ToolPrefixOptions } from "./tool-prefix.js";
 
 interface CliArgs {
-  root?: string;
+  roots: string[];
   quiet: boolean;
+  prefix?: string;
 }
 
 function parseArgs(argv: string[]): CliArgs {
-  const out: CliArgs = { quiet: false };
+  const out: CliArgs = { roots: [], quiet: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--root") {
-      out.root = argv[++i];
+      out.roots.push(argv[++i]);
     } else if (a.startsWith("--root=")) {
-      out.root = a.slice("--root=".length);
+      out.roots.push(a.slice("--root=".length));
+    } else if (a === "--prefix") {
+      out.prefix = argv[++i];
+    } else if (a.startsWith("--prefix=")) {
+      out.prefix = a.slice("--prefix=".length);
     } else if (a === "--quiet" || a === "-q") {
       out.quiet = true;
     }
   }
+  out.prefix = validateToolPrefix(out.prefix);
   return out;
 }
 
-async function resolveRoot(cli: CliArgs): Promise<string> {
-  const raw = cli.root ?? process.env.MCP_SKILLS_ROOT;
-  if (!raw) {
-    throw new Error(
-      "Skills root not set. Pass --root <path> or set MCP_SKILLS_ROOT env."
-    );
-  }
+async function resolveRoot(raw: string): Promise<string> {
   const abs = path.resolve(raw);
   const stat = await fs.stat(abs).catch(() => null);
   if (!stat || !stat.isDirectory()) {
     throw new Error(`Root is not an existing directory: ${abs}`);
   }
   return await fs.realpath(abs);
+}
+
+async function resolveRoots(cli: CliArgs): Promise<string[]> {
+  const rawRoots = cli.roots.length > 0
+    ? cli.roots
+    : (process.env.MCP_SKILLS_ROOTS ?? process.env.MCP_SKILLS_ROOT)
+        ?.split(path.delimiter)
+        .filter(Boolean) ?? [];
+  if (rawRoots.length === 0) {
+    throw new Error(
+      "Skills root not set. Pass one or more --root <path> values, or set MCP_SKILLS_ROOTS/MCP_SKILLS_ROOT env."
+    );
+  }
+  const roots: string[] = [];
+  for (const raw of rawRoots) {
+    const root = await resolveRoot(raw);
+    if (!roots.includes(root)) roots.push(root);
+  }
+  return roots;
 }
 
 function okText(text: string) {
@@ -95,23 +116,26 @@ function wrap<A, T>(
 
 export function registerSkillTools(
   server: McpServer,
-  root: string,
-  log: Logger = () => {}
+  roots: SkillRoots,
+  log: Logger = () => {},
+  options: ToolPrefixOptions = {}
 ): void {
+  const toolName = (name: string) => prefixedToolName(name, options.prefix);
+
   server.tool(
-    "list_skills",
+    toolName("list_skills"),
     "List installed skills as JSON: [{name, description, when_to_use?, allow_scripts?}]. Call this first when starting a task to see which skills apply.",
     {},
     wrap(
       "list_skills",
-      () => listSkills(root),
+      () => listSkills(roots),
       (v) => JSON.stringify(v, null, 2),
       log
     )
   );
 
   server.tool(
-    "load_skill",
+    toolName("load_skill"),
     "Load a skill's full instructions. Returns the SKILL.md body (frontmatter stripped). Follow the instructions in the body.",
     {
       name: z
@@ -121,14 +145,14 @@ export function registerSkillTools(
     },
     wrap(
       "load_skill",
-      ({ name }) => loadSkill(root, name),
+      ({ name }) => loadSkill(roots, name),
       (v) => v.body,
       log
     )
   );
 
   server.tool(
-    "read_skill_file",
+    toolName("read_skill_file"),
     `Read a support file inside a skill folder (references, examples). Path is relative to the skill's own directory. Refuses binary files and known binary extensions. Returns at most maxBytes (default ${DEFAULT_MAX_BYTES}); larger files are truncated.`,
     {
       name: z.string().min(1).describe("Skill name."),
@@ -146,7 +170,7 @@ export function registerSkillTools(
     wrap(
       "read_skill_file",
       ({ name, path: rel, maxBytes }) =>
-        readSkillFile(root, name, rel, maxBytes),
+        readSkillFile(roots, name, rel, maxBytes),
       (v) => v,
       log
     )
@@ -154,26 +178,29 @@ export function registerSkillTools(
 }
 
 export async function createServer(
-  root: string,
-  log: Logger = () => {}
+  roots: SkillRoots,
+  log: Logger = () => {},
+  options: ToolPrefixOptions = {}
 ): Promise<McpServer> {
   const server = new McpServer({
     name: "lmstudio-skills",
     version: "0.1.0",
   });
-  registerSkillTools(server, root, log);
+  registerSkillTools(server, roots, log, options);
   return server;
 }
 
 async function main() {
   const cli = parseArgs(process.argv.slice(2));
-  const root = await resolveRoot(cli);
+  const roots = await resolveRoots(cli);
   const log = makeLogger("lmstudio-skills", cli.quiet);
-  const server = await createServer(root, log);
+  const server = await createServer(roots, log, { prefix: cli.prefix });
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(
-    `lmstudio-skills MCP server ready. Root: ${root}${
+    `lmstudio-skills MCP server ready. Roots: ${roots.join(path.delimiter)}${
+      cli.prefix ? ` Prefix: ${cli.prefix}` : ""
+    }${
       cli.quiet ? " (quiet)" : ""
     }`
   );

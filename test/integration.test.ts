@@ -11,6 +11,7 @@ const repoRoot = path.resolve(path.dirname(__filename), "..");
 const entry = path.join(repoRoot, "src", "index.ts");
 const gameCreatorEntry = path.join(repoRoot, "src", "game-creator-index.ts");
 const gamePlayerEntry = path.join(repoRoot, "src", "game-player-index.ts");
+const skillsEntry = path.join(repoRoot, "src", "skills-index.ts");
 
 interface JsonRpcResponse {
   jsonrpc: "2.0";
@@ -84,7 +85,7 @@ class McpClient {
   }
 }
 
-function spawnServer(root: string, serverEntry = entry): McpClient {
+function spawnServer(root: string, serverEntry = entry, extraArgs: string[] = []): McpClient {
   // Run tsx via Node directly to avoid the Windows .cmd shell-spawn pitfall.
   const tsxCli = path.join(
     repoRoot,
@@ -95,7 +96,7 @@ function spawnServer(root: string, serverEntry = entry): McpClient {
   );
   const child = spawn(
     process.execPath,
-    [tsxCli, serverEntry, "--root", root],
+    [tsxCli, serverEntry, "--root", root, ...extraArgs],
     {
       cwd: repoRoot,
       stdio: ["pipe", "pipe", "pipe"],
@@ -163,6 +164,73 @@ describe("MCP integration over stdio", () => {
         "update_json",
       ].sort()
     );
+  });
+
+  it("file server prefixes registered tool names", async () => {
+    await client.close();
+    client = spawnServer(root, entry, ["--prefix", "story"]);
+    await handshake(client);
+
+    const resp = await client.request("tools/list");
+    const result = resp.result as { tools: Array<{ name: string }> };
+    const names = result.tools.map((t) => t.name).sort();
+    expect(names).toContain("story_read_file");
+    expect(names).not.toContain("read_file");
+
+    await fs.writeFile(path.join(root, "hello.txt"), "world", "utf8");
+    const read = unwrapToolResult(
+      await client.request("tools/call", {
+        name: "story_read_file",
+        arguments: { path: "hello.txt" },
+      })
+    );
+    expect(read.isError).toBeFalsy();
+    expect(read.content[0].text).toBe("world");
+  });
+
+  it("skills server supports repeated roots and prefixed tool names", async () => {
+    const otherRoot = await fs.mkdtemp(path.join(path.dirname(root), "skills-"));
+    try {
+      await fs.mkdir(path.join(root, "alpha"), { recursive: true });
+      await fs.writeFile(
+        path.join(root, "alpha", "SKILL.md"),
+        "---\ndescription: A\n---\nalpha body",
+        "utf8"
+      );
+      await fs.mkdir(path.join(otherRoot, "zebra"), { recursive: true });
+      await fs.writeFile(
+        path.join(otherRoot, "zebra", "SKILL.md"),
+        "---\ndescription: Z\n---\nzebra body",
+        "utf8"
+      );
+
+      await client.close();
+      client = spawnServer(root, skillsEntry, ["--root", otherRoot, "--prefix", "skill"]);
+      await handshake(client);
+
+      const listedTools = await client.request("tools/list");
+      const toolNames = (listedTools.result as { tools: Array<{ name: string }> }).tools.map((t) => t.name);
+      expect(toolNames).toEqual(expect.arrayContaining(["skill_list_skills", "skill_load_skill", "skill_read_skill_file"]));
+      expect(toolNames).not.toContain("list_skills");
+
+      const skills = unwrapToolResult(
+        await client.request("tools/call", {
+          name: "skill_list_skills",
+          arguments: {},
+        })
+      );
+      expect(JSON.parse(skills.content[0].text).map((s: { name: string }) => s.name)).toEqual(["alpha", "zebra"]);
+
+      const loaded = unwrapToolResult(
+        await client.request("tools/call", {
+          name: "skill_load_skill",
+          arguments: { name: "zebra" },
+        })
+      );
+      expect(loaded.content[0].text).toBe("zebra body");
+    } finally {
+      await fs.rm(otherRoot, { recursive: true, force: true });
+    }
   });
 
   it("game creator server exposes file tools plus creation helpers", async () => {

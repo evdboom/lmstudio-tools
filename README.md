@@ -4,7 +4,7 @@ Local **MCP (Model Context Protocol)** servers for LM Studio:
 
 - **`lmstudio-tools`** — sandboxed filesystem tools scoped to a folder you choose.
 - **`lmstudio-skills`** — a Claude-Code-style "skills" framework: drop
-  `SKILL.md` files into a folder, the model lists/loads them on demand.
+  `SKILL.md` files into one or more folders, the model lists/loads them on demand.
 - **`lmstudio-game-creator`** — an RPG authoring surface: the file tools plus
   typed helpers and a `verify_campaign` harness for building schema-flexible games.
 - **`lmstudio-game-player`** — a slim play surface of eight generic verbs
@@ -255,27 +255,66 @@ stderr. The server reads MCP JSON-RPC over stdin; press `Ctrl+C` to exit.
 Game servers also accept `MCP_GAME_ROOT`. If omitted, they fall back to
 `MCP_ROOT`.
 
+### Tool name prefixes
+
+All server binaries accept an optional `--prefix <name>` argument. When set,
+the prefix is prepended to every registered tool name with an underscore. This
+lets LM Studio load multiple instances of the same server without duplicate MCP
+tool names.
+
+```json
+{
+  "mcpServers": {
+    "file-tools-project1": {
+      "command": "node",
+      "args": [
+        "[lm studio tools folder]\\dist\\index.js",
+        "--root",
+        "[directory of project1]",
+        "--prefix",
+        "project1"
+      ]
+    },
+    "file-tools-project2": {
+      "command": "node",
+      "args": [
+        "[lm studio tools folder]\\dist\\index.js",
+        "--root",
+        "[directory of project2]",
+        "--prefix",
+        "project2"
+      ]
+    }
+  }
+}
+```
+
+With this configuration, file tools appear as `project1_read_file`,
+`project1_add_file`, `project2_read_file`, `project2_add_file`, and so on. Prefixes
+must use lowercase letters, digits, underscores, or hyphens, and must start with
+a letter or digit.
+
 For local models, enable only the game server you need for the current chat:
 `lmstudio-game-creator` while generating a campaign, then
 `lmstudio-game-player` while playing. Leave `lmstudio-game` disabled unless you
 want the full/debug tool surface.
 
-### One server, one root
+### Multiple roots
 
-Each server instance serves exactly **one root**. To expose multiple folders,
-register multiple `mcpServers` entries, each pointing at its own root and using
-a distinct key:
+File and game server instances serve exactly **one root**. To expose multiple
+folders, register multiple `mcpServers` entries, each pointing at its own root
+and using a distinct `--prefix`:
 
 ```json
 {
   "mcpServers": {
     "lmstudio-tools-projects": {
       "command": "node",
-      "args": ["[lm studio tools folder]\\dist\\index.js", "--root", "C:\\Projects"]
+      "args": ["[lm studio tools folder]\\dist\\index.js", "--root", "C:\\Projects", "--prefix", "projects"]
     },
     "lmstudio-tools-scratch": {
       "command": "node",
-      "args": ["[lm studio tools folder]\\dist\\index.js", "--root", "C:\\Scratch"]
+      "args": ["[lm studio tools folder]\\dist\\index.js", "--root", "C:\\Scratch", "--prefix", "scratch"]
     }
   }
 }
@@ -283,6 +322,31 @@ a distinct key:
 
 This keeps the sandbox model simple — every path is unambiguously inside one
 known root, no merge rules, no name collisions.
+
+The skills server can merge multiple skill roots into one MCP surface by
+repeating `--root`:
+
+```json
+{
+  "mcpServers": {
+    "lmstudio-skills": {
+      "command": "node",
+      "args": [
+        "[lm studio tools folder]\\dist\\skills-index.js",
+        "--root",
+        "C:\\Tools\\lmstudio-tools\\Skills",
+        "--root",
+        "C:\\Personal\\Skills",
+      ]
+    }
+  }
+}
+```
+
+The skills server also accepts `MCP_SKILLS_ROOTS`, separated by the platform
+path delimiter (`;` on Windows, `:` on macOS/Linux). Duplicate skill folder
+names across configured roots are reported as an error so `load_skill` remains
+unambiguous.
 
 ### Logging
 

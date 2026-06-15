@@ -29,10 +29,12 @@ import {
 import { registerTools } from "./index.js";
 import { type ToolResult } from "./tools.js";
 import { makeLogger, type Logger } from "./log.js";
+import { prefixedToolName, validateToolPrefix, type ToolPrefixOptions } from "./tool-prefix.js";
 
 interface CliArgs {
   root?: string;
   quiet: boolean;
+  prefix?: string;
 }
 
 export type GameToolMode = "full" | "creator" | "player";
@@ -45,10 +47,15 @@ function parseArgs(argv: string[]): CliArgs {
       out.root = argv[++i];
     } else if (a.startsWith("--root=")) {
       out.root = a.slice("--root=".length);
+    } else if (a === "--prefix") {
+      out.prefix = argv[++i];
+    } else if (a.startsWith("--prefix=")) {
+      out.prefix = a.slice("--prefix=".length);
     } else if (a === "--quiet" || a === "-q") {
       out.quiet = true;
     }
   }
+  out.prefix = validateToolPrefix(out.prefix);
   return out;
 }
 
@@ -117,16 +124,23 @@ const saveSlot = z
 // use the conventional quests/npcs/locations/inventory/clocks collections.
 // ---------------------------------------------------------------------------
 
-export function registerCreatorTools(server: McpServer, root: string, log: Logger = () => {}): void {
+export function registerCreatorTools(
+  server: McpServer,
+  root: string,
+  log: Logger = () => {},
+  options: ToolPrefixOptions = {}
+): void {
+  const toolName = (name: string) => prefixedToolName(name, options.prefix);
+
   server.tool(
-    "verify_campaign",
+    toolName("verify_campaign"),
     "Validate a created game and run a live smoke test. Phase 1 checks the contract: game.manifest.json keys, PLAY.md required sections, state.json required keys (campaign_id, turn, schema), and every declared runtime collection. Phase 2 boots a throwaway save slot and exercises the generic play tools (scene, state read, commit a turn, roll). Call at the end of creation and fix every error, including smoke_* failures.",
     { campaign_path: campaignPath },
     wrap("verify_campaign", ({ campaign_path }) => verifyCampaign(root, campaign_path), log)
   );
 
   server.tool(
-    "create_quest",
+    toolName("create_quest"),
     "Convenience writer for the conventional 'quests' collection: writes one quest JSON file and refreshes 30-runtime/quests/index.json. Only useful for games whose manifest declares a quests collection; otherwise author collections with the generic file tools.",
     {
       campaign_path: campaignPath,
@@ -137,7 +151,7 @@ export function registerCreatorTools(server: McpServer, root: string, log: Logge
   );
 
   server.tool(
-    "create_npc",
+    toolName("create_npc"),
     "Convenience writer for the conventional 'npcs' collection: writes one NPC JSON file and refreshes 30-runtime/npcs/index.json.",
     {
       campaign_path: campaignPath,
@@ -148,7 +162,7 @@ export function registerCreatorTools(server: McpServer, root: string, log: Logge
   );
 
   server.tool(
-    "create_location",
+    toolName("create_location"),
     "Convenience writer for the conventional 'locations' collection: writes one location JSON file and refreshes 30-runtime/locations/index.json.",
     {
       campaign_path: campaignPath,
@@ -159,7 +173,7 @@ export function registerCreatorTools(server: McpServer, root: string, log: Logge
   );
 
   server.tool(
-    "add_item",
+    toolName("add_item"),
     "Convenience writer for the conventional inventory file (30-runtime/inventory.json).",
     {
       campaign_path: campaignPath,
@@ -170,7 +184,7 @@ export function registerCreatorTools(server: McpServer, root: string, log: Logge
   );
 
   server.tool(
-    "create_clock",
+    toolName("create_clock"),
     "Convenience writer for the conventional clocks file (30-runtime/clocks.json). Use for durable ticking pressure.",
     {
       campaign_path: campaignPath,
@@ -187,16 +201,23 @@ export function registerCreatorTools(server: McpServer, root: string, log: Logge
 // these for this specific game.
 // ---------------------------------------------------------------------------
 
-export function registerPlayerTools(server: McpServer, root: string, log: Logger = () => {}): void {
+export function registerPlayerTools(
+  server: McpServer,
+  root: string,
+  log: Logger = () => {},
+  options: ToolPrefixOptions = {}
+): void {
+  const toolName = (name: string) => prefixedToolName(name, options.prefix);
+
   server.tool(
-    "game_open",
+    toolName("game_open"),
     "Start or resume a session in one call. Without save_slot: returns this game's PLAY.md instructions, the manifest, and the list of save slots. With save_slot: also returns the live scene packet and (on a new game) the opening. Always read and follow the returned instructions.",
     { campaign_path: campaignPath, save_slot: saveSlot },
     wrap("game_open", ({ campaign_path, save_slot }) => gameOpen(root, campaign_path, { saveSlot: save_slot }), log)
   );
 
   server.tool(
-    "game_scene",
+    toolName("game_scene"),
     "Return the current scene packet for the active save slot: selected state fields, summaries of each runtime collection the game declares, a rolling recap, and recent journal entries. Call at the start of each turn. Use focus to load only some collections for a cheap turn.",
     {
       campaign_path: campaignPath,
@@ -209,7 +230,7 @@ export function registerPlayerTools(server: McpServer, root: string, log: Logger
   );
 
   server.tool(
-    "game_read",
+    toolName("game_read"),
     "Read one runtime entity or a single property of it when the scene summary is not enough. Path is relative to the runtime, e.g. 'npcs/npc-nira.json' or 'state.json' (the save-slot prefix is added automatically). Provide property for a scoped JSON read, e.g. 'relationship'.",
     {
       campaign_path: campaignPath,
@@ -222,7 +243,7 @@ export function registerPlayerTools(server: McpServer, root: string, log: Logger
   );
 
   server.tool(
-    "game_write",
+    toolName("game_write"),
     "Create or update durable game data. target is 'state', a collection entry '<collection>/<id>' (collection must be declared in the manifest), or a runtime file like 'flags.json'. mode merge (default) deep-merges patch, replace overwrites, delete removes. Collection writes refresh the collection index automatically.",
     {
       campaign_path: campaignPath,
@@ -236,7 +257,7 @@ export function registerPlayerTools(server: McpServer, root: string, log: Logger
   );
 
   server.tool(
-    "game_commit",
+    toolName("game_commit"),
     "End the turn: bump the turn counter, deep-merge state_patch into state, set last_summary, and append a journal entry. A pre-turn snapshot is saved so the turn can be undone with game_rewind. Make durable entity changes with game_write before committing.",
     {
       campaign_path: campaignPath,
@@ -256,7 +277,7 @@ export function registerPlayerTools(server: McpServer, root: string, log: Logger
   );
 
   server.tool(
-    "game_roll",
+    toolName("game_roll"),
     "Roll dice for a check or random outcome. Use this instead of inventing results. Notation is NdM+K, e.g. 1d20, 2d6+1. Returns the individual rolls and the total.",
     {
       notation: z.string().default("1d20").describe("Dice notation, e.g. 1d20 or 2d6+1."),
@@ -266,7 +287,7 @@ export function registerPlayerTools(server: McpServer, root: string, log: Logger
   );
 
   server.tool(
-    "game_rewind",
+    toolName("game_rewind"),
     "Undo turns by restoring a pre-turn snapshot. Without to_turn, undoes the most recent turn. Use to recover from a bad turn.",
     {
       campaign_path: campaignPath,
@@ -278,7 +299,7 @@ export function registerPlayerTools(server: McpServer, root: string, log: Logger
   );
 
   server.tool(
-    "game_save",
+    toolName("game_save"),
     "Manage playthrough save slots. action 'create' copies the campaign template runtime into a new slot; action 'list' returns existing slots with turn/summary metadata.",
     {
       campaign_path: campaignPath,
@@ -299,24 +320,25 @@ export function registerGameTools(
   server: McpServer,
   root: string,
   log: Logger = () => {},
-  mode: GameToolMode = "full"
+  mode: GameToolMode = "full",
+  options: ToolPrefixOptions = {}
 ): void {
   if (mode === "creator" || mode === "full") {
-    registerTools(server, root, log);
-    registerCreatorTools(server, root, log);
+    registerTools(server, root, log, options);
+    registerCreatorTools(server, root, log, options);
   }
   if (mode === "player" || mode === "full") {
-    registerPlayerTools(server, root, log);
+    registerPlayerTools(server, root, log, options);
   }
 }
 
 export async function createServer(
   root: string,
   log: Logger = () => {},
-  options: { name?: string; mode?: GameToolMode } = {}
+  options: { name?: string; mode?: GameToolMode; prefix?: string } = {}
 ): Promise<McpServer> {
   const server = new McpServer({ name: options.name ?? "lmstudio-game", version: "0.1.0" });
-  registerGameTools(server, root, log, options.mode ?? "full");
+  registerGameTools(server, root, log, options.mode ?? "full", { prefix: options.prefix });
   return server;
 }
 
@@ -324,10 +346,10 @@ export async function runGameServer(name: string, mode: GameToolMode): Promise<v
   const cli = parseArgs(process.argv.slice(2));
   const root = await resolveRoot(cli);
   const log = makeLogger(name, cli.quiet);
-  const server = await createServer(root, log, { name, mode });
+  const server = await createServer(root, log, { name, mode, prefix: cli.prefix });
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`${name} MCP server ready. Root: ${root}${cli.quiet ? " (quiet)" : ""}`);
+  console.error(`${name} MCP server ready. Root: ${root}${cli.prefix ? ` Prefix: ${cli.prefix}` : ""}${cli.quiet ? " (quiet)" : ""}`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

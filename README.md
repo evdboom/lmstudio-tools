@@ -395,8 +395,11 @@ allow_scripts: false
 3. ...
 ```
 
-The body (everything after the second `---`) is what the model reads when it
+The body (everything after the second `---`) is what the model reads after it
 calls `load_skill`. Frontmatter is parsed with full YAML (the `yaml` package).
+The `load_skill` response wraps that body in a short activation preamble so
+local models can tell that the skill is now instruction context, not a separate
+tool they should try to call by name.
 
 #### `allow_scripts` is reserved, not honored
 
@@ -435,11 +438,16 @@ meaningful state changes.
 | Tool              | Purpose                                                                |
 | ----------------- | ---------------------------------------------------------------------- |
 | `list_skills`     | Return JSON `[{name, description, when_to_use?, allow_scripts?}]`.     |
-| `load_skill`      | Return the `SKILL.md` body for one skill (frontmatter stripped).       |
+| `load_skill`      | Return activation guidance plus the `SKILL.md` body for one skill.     |
 | `read_skill_file` | Read a support file inside a skill folder (`references/...`, etc.).    |
 
 Skill names must match `^[a-z0-9][a-z0-9_-]{0,63}$`. Anything else (including
 `..`, `/`, `\`) is rejected before any filesystem op.
+
+For convenience, `load_skill` and `read_skill_file` also accept one leading
+slash in the `name` argument, so `/story-player` is treated as `story-player`.
+This matches slash-command style prompts without weakening the filesystem name
+validation.
 
 ### LM Studio config
 
@@ -473,6 +481,11 @@ user types /[skill name], call `load_skill` with that skill's name and follow
 the instructions in its body exactly. Use `read_skill_file` to fetch referenced 
 support files when needed.
 ```
+
+The server also repeats the essential part of this guidance inside every
+`load_skill` result: the response confirms activation, says no additional
+activation step is needed, and reminds the model that skills are instruction
+bundles rather than callable tools.
 
 ### Running the skills server side-by-side
 

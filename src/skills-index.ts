@@ -81,6 +81,34 @@ function errText(message: string) {
   };
 }
 
+interface SkillToolNames {
+  list: string;
+  load: string;
+  read: string;
+}
+
+function renderLoadedSkill(
+  skill: { name: string; body: string },
+  tools: SkillToolNames
+): string {
+  return [
+    `Skill loaded: ${skill.name}`,
+    "",
+    "Skills framework instructions:",
+    `- This ${tools.load} response is the activation confirmation. The SKILL.md body below is now active instruction context for the current task.`,
+    `- No additional activation step is needed. Continue the task using these instructions.`,
+    `- Follow the skill instructions where they apply. Do not call a tool named "${skill.name}"; skills are instruction bundles, not tools.`,
+    `- Use ${tools.read} only when the skill references support files that are not included below.`,
+    "",
+    "SKILL.md body:",
+    skill.body,
+  ].join("\n");
+}
+
+function normalizeSkillToolName(name: string): string {
+  return name.startsWith("/") ? name.slice(1) : name;
+}
+
 function toMcp<T>(result: SkillResult<T>, render: (v: T) => string) {
   if (result.ok) return okText(render(result.value));
   return errText(result.error);
@@ -121,9 +149,14 @@ export function registerSkillTools(
   options: ToolPrefixOptions = {}
 ): void {
   const toolName = (name: string) => prefixedToolName(name, options.prefix);
+  const toolNames: SkillToolNames = {
+    list: toolName("list_skills"),
+    load: toolName("load_skill"),
+    read: toolName("read_skill_file"),
+  };
 
   server.tool(
-    toolName("list_skills"),
+    toolNames.list,
     "List installed skills as JSON: [{name, description, when_to_use?, allow_scripts?}]. Call this first when starting a task to see which skills apply.",
     {},
     wrap(
@@ -135,27 +168,27 @@ export function registerSkillTools(
   );
 
   server.tool(
-    toolName("load_skill"),
-    "Load a skill's full instructions. Returns the SKILL.md body (frontmatter stripped). Follow the instructions in the body.",
+    toolNames.load,
+    "Load and activate a skill's full instructions. Returns an activation confirmation plus the SKILL.md body (frontmatter stripped). Follow the returned instructions; do not call the skill name as a tool.",
     {
       name: z
         .string()
         .min(1)
-        .describe("Skill name as returned by list_skills."),
+        .describe("Skill name as returned by list_skills. A leading slash is accepted for slash-command style names, e.g. '/story-player'."),
     },
     wrap(
       "load_skill",
-      ({ name }) => loadSkill(roots, name),
-      (v) => v.body,
+      ({ name }) => loadSkill(roots, normalizeSkillToolName(name)),
+      (v) => renderLoadedSkill(v, toolNames),
       log
     )
   );
 
   server.tool(
-    toolName("read_skill_file"),
+    toolNames.read,
     `Read a support file inside a skill folder (references, examples). Path is relative to the skill's own directory. Refuses binary files and known binary extensions. Returns at most maxBytes (default ${DEFAULT_MAX_BYTES}); larger files are truncated.`,
     {
-      name: z.string().min(1).describe("Skill name."),
+      name: z.string().min(1).describe("Skill name. A leading slash is accepted."),
       path: z
         .string()
         .min(1)
@@ -170,7 +203,7 @@ export function registerSkillTools(
     wrap(
       "read_skill_file",
       ({ name, path: rel, maxBytes }) =>
-        readSkillFile(roots, name, rel, maxBytes),
+        readSkillFile(roots, normalizeSkillToolName(name), rel, maxBytes),
       (v) => v,
       log
     )

@@ -224,10 +224,14 @@ describe("MCP integration over stdio", () => {
       const loaded = unwrapToolResult(
         await client.request("tools/call", {
           name: "skill_load_skill",
-          arguments: { name: "zebra" },
+          arguments: { name: "/zebra" },
         })
       );
-      expect(loaded.content[0].text).toBe("zebra body");
+      expect(loaded.content[0].text).toContain("Skill loaded: zebra");
+      expect(loaded.content[0].text).toContain("activation confirmation");
+      expect(loaded.content[0].text).toContain("Do not call a tool named \"zebra\"");
+      expect(loaded.content[0].text).toContain("skill_read_skill_file");
+      expect(loaded.content[0].text).toContain("SKILL.md body:\nzebra body");
     } finally {
       await fs.rm(otherRoot, { recursive: true, force: true });
     }

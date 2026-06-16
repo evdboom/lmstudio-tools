@@ -7,6 +7,24 @@ export type ToolOk = { ok: true; text: string };
 export type ToolErr = { ok: false; error: string };
 export type ToolResult = ToolOk | ToolErr;
 type JsonPathSegment = string | number;
+type PlanTaskStatus = "open" | "active" | "done" | "blocked";
+
+interface PlanTask {
+  id: string;
+  title: string;
+  description: string;
+  status: PlanTaskStatus;
+  notes?: string;
+  result?: string;
+}
+
+interface PlanDocument {
+  schema: "task-plan-v1";
+  name: string;
+  summary: string;
+  status?: PlanTaskStatus;
+  tasks: PlanTask[];
+}
 
 function ok(text: string): ToolOk {
   return { ok: true, text };
@@ -98,6 +116,124 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function formatJsonValue(value: unknown): string {
   return JSON.stringify(value, null, 2);
+}
+
+function normalizePlanStatus(value: unknown): PlanTaskStatus {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("Plan status is required");
+  }
+  const normalized = value.trim().toLowerCase().replace(/[-\s]+/g, "_");
+  if (["open", "pending", "not_started", "todo"].includes(normalized)) {
+    return "open";
+  }
+  if (["active", "in_progress", "current"].includes(normalized)) {
+    return "active";
+  }
+  if (["done", "completed", "complete"].includes(normalized)) {
+    return "done";
+  }
+  if (normalized === "blocked") return "blocked";
+  throw new Error(`Invalid plan status: ${value}`);
+}
+
+function requiredString(value: unknown, name: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`${name} is required`);
+  }
+  return value.trim();
+}
+
+function optionalString(value: unknown, name: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") throw new Error(`${name} must be a string`);
+  return value;
+}
+
+function normalizeTask(value: unknown): PlanTask {
+  if (!isRecord(value)) throw new Error("Plan task must be an object");
+  const task: PlanTask = {
+    id: requiredString(value.id, "task.id"),
+    title: requiredString(value.title, "task.title"),
+    description: requiredString(value.description, "task.description"),
+    status: normalizePlanStatus(value.status ?? "open"),
+  };
+  const notes = optionalString(value.notes, "task.notes");
+  const result = optionalString(value.result, "task.result");
+  if (notes !== undefined) task.notes = notes;
+  if (result !== undefined) task.result = result;
+  return task;
+}
+
+function normalizePlan(value: unknown): PlanDocument {
+  if (!isRecord(value)) throw new Error("Plan must be a JSON object");
+  const rawTasks = value.tasks;
+  if (!Array.isArray(rawTasks)) throw new Error("plan.tasks must be an array");
+  const tasks = rawTasks.map(normalizeTask);
+  const ids = new Set<string>();
+  for (const task of tasks) {
+    if (ids.has(task.id)) throw new Error(`Duplicate task id: ${task.id}`);
+    ids.add(task.id);
+  }
+  const plan: PlanDocument = {
+    schema: "task-plan-v1",
+    name: requiredString(value.name, "plan.name"),
+    summary: requiredString(value.summary, "plan.summary"),
+    tasks,
+  };
+  if (value.status !== undefined) plan.status = normalizePlanStatus(value.status);
+  return plan;
+}
+
+async function readPlanDocument(
+  root: string,
+  rel: string
+): Promise<{ abs: string; plan: PlanDocument }> {
+  const { abs, data } = await readJsonDocument(root, rel);
+  return { abs, plan: normalizePlan(data) };
+}
+
+function taskListRows(plan: PlanDocument): Array<Pick<PlanTask, "id" | "title" | "status">> {
+  return plan.tasks.map(({ id, title, status }) => ({ id, title, status }));
+}
+
+function openTask(plan: PlanDocument): PlanTask | undefined {
+  return plan.tasks.find((task) => task.status === "active")
+    ?? plan.tasks.find((task) => task.status === "open")
+    ?? plan.tasks.find((task) => task.status === "blocked");
+}
+
+function taskStatusMarker(status: PlanTaskStatus): string {
+  switch (status) {
+    case "done":
+      return "[X]";
+    case "active":
+      return "[-]";
+    case "blocked":
+      return "[!]";
+    case "open":
+      return "[ ]";
+  }
+}
+
+function planToMarkdown(plan: PlanDocument): string {
+  const lines: string[] = [
+    `# ${plan.name}`,
+    "",
+    `*${plan.summary}*`,
+    "",
+    "# Tasks",
+    "",
+  ];
+  for (const task of plan.tasks) {
+    lines.push(`${taskStatusMarker(task.status)} **${task.title}**`);
+    lines.push(task.description);
+    if (task.status === "done" && task.result && task.result.trim().length > 0) {
+      lines.push(`Result: ${task.result.trim()}`);
+    }
+    lines.push("");
+  }
+  lines.push("Legend: [X] done, [-] active, [ ] open, [!] blocked");
+  return `${lines.join("\n").trimEnd()}\n`;
 }
 
 async function readJsonDocument(
@@ -285,6 +421,107 @@ export async function readJson(
     const { data } = await readJsonDocument(root, rel);
     const segments = parseJsonPath(property);
     return ok(formatJsonValue(getJsonValue(data, segments)));
+  } catch (e) {
+    return err(toError(e));
+  }
+}
+
+export async function createPlan(
+  root: string,
+  rel: string,
+  planInput: unknown
+): Promise<ToolResult> {
+  try {
+    const plan = normalizePlan(planInput);
+    const abs = await safeResolve(root, rel);
+    if (path.extname(abs).toLowerCase() !== ".json") {
+      return err(`Not a JSON file: ${rel}`);
+    }
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, `${JSON.stringify(plan, null, 2)}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+    });
+    return ok(`Created plan ${rel}`);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException)?.code;
+    if (code === "EEXIST") {
+      return err(`Plan already exists: ${rel}. Use plan_update_task or replace_file.`);
+    }
+    return err(toError(e));
+  }
+}
+
+export async function listPlanTasks(root: string, rel: string): Promise<ToolResult> {
+  try {
+    const { plan } = await readPlanDocument(root, rel);
+    return ok(formatJsonValue(taskListRows(plan)));
+  } catch (e) {
+    return err(toError(e));
+  }
+}
+
+export async function getOpenPlanTask(root: string, rel: string): Promise<ToolResult> {
+  try {
+    const { plan } = await readPlanDocument(root, rel);
+    const task = openTask(plan);
+    return ok(formatJsonValue(task ?? null));
+  } catch (e) {
+    return err(toError(e));
+  }
+}
+
+export async function addPlanTask(
+  root: string,
+  rel: string,
+  taskInput: unknown
+): Promise<ToolResult> {
+  try {
+    const { abs, plan } = await readPlanDocument(root, rel);
+    const task = normalizeTask(taskInput);
+    if (plan.tasks.some((existing) => existing.id === task.id)) {
+      return err(`Task already exists: ${task.id}`);
+    }
+    plan.tasks.push(task);
+    await writeJsonDocument(abs, plan);
+    return ok(`Added task ${task.id} to ${rel}`);
+  } catch (e) {
+    return err(toError(e));
+  }
+}
+
+export async function updatePlanTask(
+  root: string,
+  rel: string,
+  taskId: string,
+  patchInput: unknown
+): Promise<ToolResult> {
+  try {
+    const id = requiredString(taskId, "id");
+    if (!isRecord(patchInput)) throw new Error("patch must be an object");
+    const { abs, plan } = await readPlanDocument(root, rel);
+    const task = plan.tasks.find((candidate) => candidate.id === id);
+    if (!task) return err(`Task does not exist: ${id}`);
+
+    if (patchInput.title !== undefined) task.title = requiredString(patchInput.title, "title");
+    if (patchInput.description !== undefined) {
+      task.description = requiredString(patchInput.description, "description");
+    }
+    if (patchInput.status !== undefined) task.status = normalizePlanStatus(patchInput.status);
+    if (patchInput.notes !== undefined) task.notes = optionalString(patchInput.notes, "notes") ?? "";
+    if (patchInput.result !== undefined) task.result = optionalString(patchInput.result, "result") ?? "";
+
+    await writeJsonDocument(abs, plan);
+    return ok(`Updated task ${id} in ${rel}`);
+  } catch (e) {
+    return err(toError(e));
+  }
+}
+
+export async function showPlan(root: string, rel: string): Promise<ToolResult> {
+  try {
+    const { plan } = await readPlanDocument(root, rel);
+    return ok(planToMarkdown(plan));
   } catch (e) {
     return err(toError(e));
   }

@@ -144,7 +144,7 @@ describe("MCP integration over stdio", () => {
     await cleanup();
   });
 
-  it("tools/list returns all 12 tools", async () => {
+  it("tools/list returns all 18 tools", async () => {
     const resp = await client.request("tools/list");
     const result = resp.result as { tools: Array<{ name: string }> };
     const names = result.tools.map((t) => t.name).sort();
@@ -156,6 +156,12 @@ describe("MCP integration over stdio", () => {
         "append_file",
         "list_files",
         "list_folders",
+        "plan_add_task",
+        "plan_create",
+        "plan_get_open_task",
+        "plan_list_tasks",
+        "plan_show",
+        "plan_update_task",
         "read_file",
         "read_json",
         "remove_file",
@@ -254,6 +260,12 @@ describe("MCP integration over stdio", () => {
         "append_file",
         "list_files",
         "list_folders",
+        "plan_add_task",
+        "plan_create",
+        "plan_get_open_task",
+        "plan_list_tasks",
+        "plan_show",
+        "plan_update_task",
         "read_file",
         "read_json",
         "remove_file",

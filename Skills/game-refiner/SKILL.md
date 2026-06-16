@@ -1,5 +1,5 @@
 ---
-name: story-refiner
+name: game-refiner
 description: Refine, update, or expand an existing RPG game folder after creation.
 when_to_use: User asks to improve, refine, update, expand, deepen, polish, or repair an existing story/campaign/game.
 allow_scripts: false

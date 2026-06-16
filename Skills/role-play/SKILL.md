@@ -1,6 +1,6 @@
 ---
-name: story-player
-description: Play any game built by story-creator — open or choice-based. Loads the game's own instructions and runs one turn at a time with a few generic tools.
+name: role-play
+description: Play any game built by game-crafter — open or choice-based. Loads the game's own instructions and runs one turn at a time with a few generic tools.
 when_to_use: User wants to play or continue an interactive RPG/story, role-play a character, or resolve the next action.
 allow_scripts: false
 ---

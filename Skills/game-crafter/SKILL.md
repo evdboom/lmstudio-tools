@@ -1,5 +1,5 @@
 ---
-name: story-creator
+name: game-crafter
 description: Build a hidden, schema-flexible RPG game folder — a manifest, per-game play instructions, initial state, and whatever runtime content the game needs — for later play by a local model.
 when_to_use: User asks to create a new interactive RPG, campaign folder, detective case, dungeon, slice-of-life game, or hidden game package.
 allow_scripts: false
@@ -10,7 +10,7 @@ Build a game folder. Do not start play.
 
 You decide the shape of this game. The framework only requires a small skeleton; everything else — quests, locations, NPCs, clues, suspects, rooms, factions, or any custom collection — is yours to design or to leave for the playing model to grow during play.
 
-Tools: list_files, list_folders, read_file, read_json, add_folder, add_file, replace_file, append_file, add_json, update_json, create_quest, create_npc, create_location, add_item, create_clock, verify_campaign. Write the manifest, PLAY.md, prose, and any custom collections with `add_file`/`add_json`. The `create_*` tools are convenience writers for the conventional quests/npcs/locations/inventory/clocks collections only.
+Tools: list_files, list_folders, read_file, read_json, add_folder, add_file, replace_file, append_file, add_json, update_json, plan_create, plan_list_tasks, plan_get_open_task, plan_add_task, plan_update_task, plan_show, create_quest, create_npc, create_location, add_item, create_clock, verify_campaign. Write the manifest, PLAY.md, prose, and any custom collections with `add_file`/`add_json`. The `create_*` tools are convenience writers for the conventional quests/npcs/locations/inventory/clocks collections only. The `plan_*` tools are general task-planning helpers; use them for the build plan, not for runtime game state.
 
 ## Ask
 
@@ -19,6 +19,19 @@ Ask once for: tone, setting, content limits, length, and two design choices:
 - **authoring_mode** — how much you pre-author vs leave for the playing model to grow. One of: `fixed`, `guided`, `fixed-endpoint`, `open-world`, `procedural-startpoint`, `procedural` (see below).
 
 Defaults: balanced pacing, safe content limits, `guided` unless the user wants something tighter or looser.
+
+## Refine
+
+Using the user's answers, reason a layout, game type and story. Discuss with the user. Do not start implementation until the user confirms the design.
+
+Use at most two user-question rounds total before implementation:
+
+1. Initial intake: ask for tone, setting, content limits, length, kind, authoring_mode, and your initial plan plus any high-leverage design questions.
+2. Optional follow-up: ask only if the answers create a real design fork or contradiction.
+
+After that, stop asking questions. Present a concise design plan with explicit assumptions and ask for confirmation to build. If the user dislikes the plan, they can intervene; otherwise proceed after confirmation.
+
+After confirmation, create `campaign-<slug>/plan.json` with `plan_create` when plan tools are available. Use task titles for the compact build list and task descriptions for the full implementation instructions. During the build, use `plan_get_open_task` to choose the next task and `plan_update_task` to mark progress. Use `plan_show` only when reporting plan status to the user.
 
 ## Required skeleton
 
@@ -142,4 +155,4 @@ Write final player-facing prose only, plain text (no Markdown emphasis, no menus
 
 ## Final response
 
-Return only: campaign folder path, spoiler-light pitch, verify summary (errors/warnings + smoke result), and "start a new chat with story-player + folder path". Do not reveal secrets. Do not narrate the opening scene. Do not ask for the first action.
+Return only: campaign folder path, spoiler-light pitch, verify summary (errors/warnings + smoke result), and "start a new chat with role-play + folder path". Do not reveal secrets. Do not narrate the opening scene. Do not ask for the first action.

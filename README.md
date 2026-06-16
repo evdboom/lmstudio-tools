@@ -25,6 +25,12 @@ All speak **stdio** and plug into LM Studio's built-in MCP client.
 | `read_json`     | Read one property from a JSON file.                                     |
 | `add_json`      | Add one new property to a JSON file. **Fails if it already exists.**    |
 | `update_json`   | Update one existing property in a JSON file. **Fails if missing.**      |
+| `plan_create`   | Create a reusable JSON task plan.                                       |
+| `plan_list_tasks` | List compact task rows: id, title, status.                            |
+| `plan_get_open_task` | Return one full task for the model to work on.                    |
+| `plan_add_task` | Add one task with title and description.                                |
+| `plan_update_task` | Update one task without rewriting the full plan.                    |
+| `plan_show`     | Render a user-facing Markdown plan status with a legend.                |
 | `add_file`      | Create a new file. **Fails if the file already exists.**                |
 | `replace_file`  | Overwrite an existing file's contents. **Fails if it does not exist.**  |
 | `append_file`   | Append text to a file. Creates the file if missing.                     |
@@ -72,6 +78,46 @@ Examples:
 `add_json` only adds missing properties. `update_json` only changes existing
 properties. Use `replace_file` for JSON only when repairing invalid JSON or
 performing a deliberate whole-file rewrite.
+
+### Plan tools
+
+Plan tools manage small JSON task plans for coding work, writing work, game
+creation, or any other multi-step task. They are part of the shared file-tools
+surface, so `lmstudio-tools`, `lmstudio-game-creator`, and `lmstudio-game` can
+use them. The slim `lmstudio-game-player` server does not expose them.
+
+The plan schema is intentionally simple:
+
+```json
+{
+  "schema": "task-plan-v1",
+  "name": "Planning tools",
+  "summary": "Add reusable planning helpers for small-context models.",
+  "tasks": [
+    {
+      "id": "implement",
+      "title": "Implement planning tools",
+      "description": "Add create, list, open-task, add, update, and show helpers.",
+      "status": "active",
+      "notes": "Optional model-private working notes.",
+      "result": "Optional completion note shown for done tasks."
+    }
+  ]
+}
+```
+
+Statuses are normalized to `open`, `active`, `done`, or `blocked`. Common aliases
+such as `pending`, `in_progress`, and `completed` are accepted.
+
+Typical model workflow:
+
+- `plan_create(path="plan.json", plan={...})` to start a plan.
+- `plan_list_tasks(path="plan.json")` for a compact overview.
+- `plan_get_open_task(path="plan.json")` to fetch exactly one full task.
+- `plan_update_task(path="plan.json", id="implement", patch={"status":"done"})`
+  after finishing work.
+- `plan_show(path="plan.json")` when the user asks for plan status; it returns
+  Markdown with `[X]` done, `[-]` active, `[ ]` open, and `[!]` blocked.
 
 ### `read_file` size + binary guards
 
@@ -422,10 +468,10 @@ registry, install command, or skill-creator tool in this project.
 
 The `Skills/` folder includes a small RPG workflow:
 
-- `story-creator`: build a schema-flexible game — manifest, PLAY.md, initial state, and whatever runtime content it needs.
-- `story-player`: play any game — open or choice-based. Loads the game's PLAY.md and narrates the world's response; closed/menu presentation is driven by the game's own instructions.
-- `story-refiner`: improve or expand an existing game after creation.
-- `story-verbose`: add richer prose during play.
+- `game-crafter`: build a schema-flexible game — manifest, PLAY.md, initial state, and whatever runtime content it needs.
+- `role-play`: play any game — open or choice-based. Loads the game's PLAY.md and narrates the world's response; closed/menu presentation is driven by the game's own instructions.
+- `game-refiner`: improve or expand an existing game after creation.
+- `verbose-mode`: add richer prose during play.
 - `compact-mode`: keep model output short.
 
 Campaign creation should use `lmstudio-game-creator`; play should use
@@ -445,7 +491,7 @@ Skill names must match `^[a-z0-9][a-z0-9_-]{0,63}$`. Anything else (including
 `..`, `/`, `\`) is rejected before any filesystem op.
 
 For convenience, `load_skill` and `read_skill_file` also accept one leading
-slash in the `name` argument, so `/story-player` is treated as `story-player`.
+slash in the `name` argument, so `/role-play` is treated as `role-play`.
 This matches slash-command style prompts without weakening the filesystem name
 validation.
 

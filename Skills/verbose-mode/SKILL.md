@@ -1,7 +1,7 @@
 ---
-name: story-verbose
+name: verbose-mode
 description: Activate rich narrative mode — vivid prose, sensory detail, strong atmosphere.
-when_to_use: User activates /story-verbose, asks for immersive storytelling, or wants narrative mode active.
+when_to_use: User activates /verbose-mode, asks for immersive storytelling, or wants narrative mode active.
 ---
 # Story Verbose
 

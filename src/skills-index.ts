@@ -174,7 +174,7 @@ export function registerSkillTools(
       name: z
         .string()
         .min(1)
-        .describe("Skill name as returned by list_skills. A leading slash is accepted for slash-command style names, e.g. '/story-player'."),
+        .describe("Skill name as returned by list_skills. A leading slash is accepted for slash-command style names, e.g. '/role-play'."),
     },
     wrap(
       "load_skill",

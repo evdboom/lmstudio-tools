@@ -5,15 +5,21 @@ import {
   addFile,
   addFolder,
   addJson,
+  addPlanTask,
   appendFile,
+  createPlan,
+  getOpenPlanTask,
   listFiles,
   listFolders,
+  listPlanTasks,
   readFile,
   readJson,
   removeFile,
   removeFolder,
   replaceFile,
+  showPlan,
   updateJson,
+  updatePlanTask,
 } from "../src/tools.js";
 import { makeSandbox, trySymlink } from "./helpers.js";
 
@@ -159,6 +165,119 @@ describe("json property tools", () => {
     const r = await readJson(root, "state.txt", "turn");
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toMatch(/json/i);
+  });
+});
+
+describe("plan tools", () => {
+  const initialPlan = {
+    name: "Planning Tools",
+    summary: "Add reusable planning helpers for small-context work.",
+    tasks: [
+      {
+        id: "design",
+        title: "Design task schema",
+        description: "Define the stable JSON shape used by all planning tools.",
+        status: "completed",
+        result: "Schema settled on title plus full description.",
+      },
+      {
+        id: "implement",
+        title: "Implement tools",
+        description: "Add create, list, open-task, update, add, and show helpers.",
+        status: "in_progress",
+      },
+      {
+        id: "docs",
+        title: "Document workflow",
+        description: "Describe how models should use plan tools during coding work.",
+      },
+    ],
+  };
+
+  it("creates a normalized plan", async () => {
+    const r = await createPlan(root, "plan.json", initialPlan);
+    expect(r.ok).toBe(true);
+    const data = JSON.parse(await fs.readFile(path.join(root, "plan.json"), "utf8"));
+    expect(data.schema).toBe("task-plan-v1");
+    expect(data.tasks.map((task: { status: string }) => task.status)).toEqual([
+      "done",
+      "active",
+      "open",
+    ]);
+  });
+
+  it("lists compact task rows", async () => {
+    await createPlan(root, "plan.json", initialPlan);
+    const r = await listPlanTasks(root, "plan.json");
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(JSON.parse(r.text)).toEqual([
+        { id: "design", title: "Design task schema", status: "done" },
+        { id: "implement", title: "Implement tools", status: "active" },
+        { id: "docs", title: "Document workflow", status: "open" },
+      ]);
+    }
+  });
+
+  it("returns one full open task", async () => {
+    await createPlan(root, "plan.json", initialPlan);
+    const r = await getOpenPlanTask(root, "plan.json");
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(JSON.parse(r.text)).toMatchObject({
+        id: "implement",
+        title: "Implement tools",
+        description: "Add create, list, open-task, update, add, and show helpers.",
+        status: "active",
+      });
+    }
+  });
+
+  it("adds and updates tasks without replacing the plan", async () => {
+    await createPlan(root, "plan.json", initialPlan);
+    const add = await addPlanTask(root, "plan.json", {
+      id: "verify",
+      title: "Verify changes",
+      description: "Run tests and build after adding the tools.",
+      status: "pending",
+    });
+    expect(add.ok).toBe(true);
+
+    const update = await updatePlanTask(root, "plan.json", "implement", {
+      status: "done",
+      result: "Tools implemented.",
+    });
+    expect(update.ok).toBe(true);
+
+    const data = JSON.parse(await fs.readFile(path.join(root, "plan.json"), "utf8"));
+    expect(data.tasks.find((task: { id: string }) => task.id === "implement")).toMatchObject({
+      status: "done",
+      result: "Tools implemented.",
+    });
+    expect(data.tasks.find((task: { id: string }) => task.id === "verify")).toMatchObject({
+      status: "open",
+    });
+  });
+
+  it("shows user-facing Markdown with a legend", async () => {
+    await createPlan(root, "plan.json", initialPlan);
+    await addPlanTask(root, "plan.json", {
+      id: "blocked",
+      title: "Resolve blocker",
+      description: "Wait for a missing external detail before continuing.",
+      status: "blocked",
+    });
+    const r = await showPlan(root, "plan.json");
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.text).toContain("# Planning Tools");
+      expect(r.text).toContain("*Add reusable planning helpers for small-context work.*");
+      expect(r.text).toContain("[X] **Design task schema**");
+      expect(r.text).toContain("[-] **Implement tools**");
+      expect(r.text).toContain("[ ] **Document workflow**");
+      expect(r.text).toContain("[!] **Resolve blocker**");
+      expect(r.text).toContain("Legend: [X] done, [-] active, [ ] open, [!] blocked");
+    }
   });
 });
 

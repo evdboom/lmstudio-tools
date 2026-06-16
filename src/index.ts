@@ -10,15 +10,21 @@ import {
   addFile,
   addFolder,
   addJson,
+  addPlanTask,
   appendFile,
+  createPlan,
+  getOpenPlanTask,
   listFiles,
   listFolders,
+  listPlanTasks,
   readFile,
   readJson,
   removeFile,
   removeFolder,
   replaceFile,
+  showPlan,
   updateJson,
+  updatePlanTask,
   type ToolResult,
 } from "./tools.js";
 import { DEFAULT_MAX_BYTES } from "./io.js";
@@ -221,6 +227,90 @@ export function registerTools(
       ({ path: rel, property, value }) => updateJson(root, rel, property, value),
       log
     )
+  );
+
+  server.tool(
+    toolName("plan_create"),
+    "Create a reusable task plan JSON file. The plan must have name, summary, and tasks. Each task must have id, title, description, and optional status (open, active, done, blocked).",
+    {
+      path: z.string().min(1).describe("Plan JSON file path relative to root, e.g. 'plan.json'."),
+      plan: z.object({
+        schema: z.string().optional(),
+        name: z.string().min(1),
+        summary: z.string().min(1),
+        status: z.string().optional(),
+        tasks: z.array(z.object({
+          id: z.string().min(1),
+          title: z.string().min(1),
+          description: z.string().min(1),
+          status: z.string().optional(),
+          notes: z.string().optional(),
+          result: z.string().optional(),
+        })),
+      }).describe("Plan document."),
+    },
+    wrap("plan_create", ({ path: rel, plan }) => createPlan(root, rel, plan), log)
+  );
+
+  server.tool(
+    toolName("plan_list_tasks"),
+    "Return a compact JSON list of plan tasks with id, title, and status only. Use this for cheap orientation before selecting work.",
+    {
+      path: z.string().min(1).describe("Plan JSON file path relative to root."),
+    },
+    wrap("plan_list_tasks", ({ path: rel }) => listPlanTasks(root, rel), log)
+  );
+
+  server.tool(
+    toolName("plan_get_open_task"),
+    "Return exactly one full task from a plan: first active task, otherwise first open task, otherwise first blocked task, otherwise null.",
+    {
+      path: z.string().min(1).describe("Plan JSON file path relative to root."),
+    },
+    wrap("plan_get_open_task", ({ path: rel }) => getOpenPlanTask(root, rel), log)
+  );
+
+  server.tool(
+    toolName("plan_add_task"),
+    "Append one task to an existing plan. The list view shows title only; get_open_task returns the full description for execution.",
+    {
+      path: z.string().min(1).describe("Plan JSON file path relative to root."),
+      task: z.object({
+        id: z.string().min(1),
+        title: z.string().min(1),
+        description: z.string().min(1),
+        status: z.string().optional(),
+        notes: z.string().optional(),
+        result: z.string().optional(),
+      }).describe("Task to add."),
+    },
+    wrap("plan_add_task", ({ path: rel, task }) => addPlanTask(root, rel, task), log)
+  );
+
+  server.tool(
+    toolName("plan_update_task"),
+    "Update one task in a plan without rewriting the whole JSON file. Use status open, active, done, or blocked; aliases like pending/in_progress/completed are accepted.",
+    {
+      path: z.string().min(1).describe("Plan JSON file path relative to root."),
+      id: z.string().min(1).describe("Task id."),
+      patch: z.object({
+        title: z.string().min(1).optional(),
+        description: z.string().min(1).optional(),
+        status: z.string().optional(),
+        notes: z.string().optional(),
+        result: z.string().optional(),
+      }).describe("Fields to update on the task."),
+    },
+    wrap("plan_update_task", ({ path: rel, id, patch }) => updatePlanTask(root, rel, id, patch), log)
+  );
+
+  server.tool(
+    toolName("plan_show"),
+    "Return a user-facing Markdown status view of a plan, including title, summary, each task title/description, completed task result when present, and a legend.",
+    {
+      path: z.string().min(1).describe("Plan JSON file path relative to root."),
+    },
+    wrap("plan_show", ({ path: rel }) => showPlan(root, rel), log)
   );
 
   server.tool(

@@ -24,6 +24,10 @@ import {
   gameRoll,
   gameScene,
   gameWrite,
+  ensureCollectionIndexes,
+  queryRelations,
+  scaffoldCampaign,
+  writeRelation,
   verifyCampaign,
 } from "./runtime-engine.js";
 import { registerTools } from "./index.js";
@@ -117,11 +121,19 @@ const saveSlot = z
   .optional()
   .describe("Save slot id. When set, reads/writes campaign/40-saves/<slot>/30-runtime instead of the campaign template runtime.");
 
+const collectionSpec = z.object({
+  index: z.string().optional().describe("Index path relative to the campaign folder. Defaults to 30-runtime/<collection>/index.json."),
+  id_pattern: z.string().optional().describe("Regex used by verify_campaign for entry ids."),
+  min_count: z.number().int().nonnegative().optional().describe("Minimum entries verify_campaign expects."),
+  boot_required: z.boolean().optional().describe("If true, the collection must exist for boot."),
+  summary_fields: z.array(z.string()).optional().describe("Fields included in game_scene summaries."),
+});
+
 // ---------------------------------------------------------------------------
-// Creator tools: schema-flexible authoring. The creating model also has the
-// generic file tools (registered separately) to author the manifest, PLAY.md,
-// prose, and any custom collections. These typed helpers stay for games that
-// use the conventional quests/npcs/locations/inventory/clocks collections.
+// Creator tools: schema-flexible authoring helpers. Pair this surface with the
+// generic file tools when authoring the manifest, PLAY.md, prose, and any
+// custom collections. These typed helpers stay for games that use the
+// conventional quests/npcs/locations/inventory/clocks collections.
 // ---------------------------------------------------------------------------
 
 export function registerCreatorTools(
@@ -133,10 +145,127 @@ export function registerCreatorTools(
   const toolName = (name: string) => prefixedToolName(name, options.prefix);
 
   server.tool(
+    toolName("scaffold"),
+    "Create the required skeleton for a schema-flexible game in one call: game.manifest.json, PLAY.md, 30-runtime/state.json, 30-runtime/journal.jsonl, 40-saves/, optional opening prose, and empty indexes for declared runtime collections. Fails if the campaign folder already contains files.",
+    {
+      campaign_path: campaignPath,
+      campaign_id: z.string().optional().describe("Manifest/state campaign id. Defaults to the campaign folder name."),
+      title: z.string().optional().describe("Game title. Defaults from campaign_path."),
+      pitch: z.string().optional().describe("Spoiler-light one-sentence pitch."),
+      authoring_mode: z.enum(["fixed", "guided", "fixed-endpoint", "open-world", "procedural-startpoint", "procedural"]).default("guided"),
+      collections: z.record(collectionSpec).default({}).describe("Runtime collections the playing model may use with game_write target='<collection>/<id>'."),
+      state: z.record(z.unknown()).optional().describe("Extra initial state fields. campaign_id, turn, and schema are ensured."),
+      play: z.string().optional().describe("Full PLAY.md content. If omitted, scaffold writes a valid fill-in template."),
+      opening: z.string().optional().describe("Opening scene text, or inline opening when opening_path is null."),
+      opening_path: z.string().nullable().optional().describe("Opening file path relative to campaign. Defaults to 20-story/opening-scene.md; null stores opening inline."),
+      uses_dice: z.boolean().default(false).describe("Whether PLAY.md will call game_roll."),
+    },
+    wrap("scaffold", ({
+      campaign_path,
+      campaign_id,
+      title,
+      pitch,
+      authoring_mode,
+      collections,
+      state,
+      play,
+      opening,
+      opening_path,
+      uses_dice,
+    }) => scaffoldCampaign(root, {
+      campaignPath: campaign_path,
+      campaignId: campaign_id,
+      title,
+      pitch,
+      authoringMode: authoring_mode,
+      collections,
+      state,
+      play,
+      opening,
+      openingPath: opening_path,
+      usesDice: uses_dice,
+    }), log)
+  );
+
+  server.tool(
     toolName("verify_campaign"),
     "Validate a created game and run a live smoke test. Phase 1 checks the contract: game.manifest.json keys, PLAY.md required sections, state.json required keys (campaign_id, turn, schema), and every declared runtime collection. Phase 2 boots a throwaway save slot and exercises the generic play tools (scene, state read, commit a turn, roll). Call at the end of creation and fix every error, including smoke_* failures.",
     { campaign_path: campaignPath },
     wrap("verify_campaign", ({ campaign_path }) => verifyCampaign(root, campaign_path), log)
+  );
+
+  server.tool(
+    toolName("repair_collection_indexes"),
+    "Create or repair index.json files for declared runtime collections. Use this when verify_campaign reports invalid_collection_index, especially if a model wrote an index as a top-level JSON array. If collection is omitted, repairs every declared collection.",
+    {
+      campaign_path: campaignPath,
+      save_slot: saveSlot,
+      collection: z.string().optional().describe("Declared runtime collection name to repair. Omit to repair all declared collections."),
+    },
+    wrap("repair_collection_indexes", ({ campaign_path, save_slot, collection }) =>
+      ensureCollectionIndexes(root, runtimeCampaignPath(campaign_path, save_slot), { collection }), log)
+  );
+
+  server.tool(
+    toolName("write_collection_entry"),
+    "Create, update, replace, or delete one free-form entry in any manifest-declared runtime collection, then refresh the collection index. Use this for custom collections like monsters, clues, suspects, rooms, scenes, or combat_combos instead of hand-writing index.json.",
+    {
+      campaign_path: campaignPath,
+      save_slot: saveSlot,
+      collection: z.string().min(1).describe("Declared runtime collection name, e.g. monsters, locations, combat_combos, scenes."),
+      id: z.string().min(1).describe("Entry id, used as 30-runtime/<collection>/<id>.json."),
+      entry: z.record(z.unknown()).optional().describe("Free-form JSON entry to merge or replace. id is added automatically."),
+      mode: z.enum(["merge", "replace", "delete"]).default("merge"),
+    },
+    wrap("write_collection_entry", async ({ campaign_path, save_slot, collection, id, entry, mode }) => {
+      const runtimePath = runtimeCampaignPath(campaign_path, save_slot);
+      const repaired = await ensureCollectionIndexes(root, runtimePath, { collection });
+      if (!repaired.ok) return repaired;
+      return gameWrite(root, runtimePath, `${collection}/${id}`, entry ?? {}, mode);
+    }, log)
+  );
+
+  server.tool(
+    toolName("write_relation"),
+    "Create, update, replace, or delete one relation between runtime refs. Refs are strings like 'locations/sunken-swamp', 'regions/outer-wilds', or 'monsters/abyssal-leviathan'. Use this to connect regions, locations, monsters, scenes, clues, factions, or any other declared/custom concept without hand-building lookup files.",
+    {
+      campaign_path: campaignPath,
+      save_slot: saveSlot,
+      id: z.string().optional().describe("Optional stable relation id. Defaults from type/from/to."),
+      from: z.string().min(1).describe("Source ref, e.g. regions/outer-wilds or locations/sunken-swamp."),
+      type: z.string().min(1).describe("Relation type, e.g. contains, inhabits, appears_in, unlocks, connects_to."),
+      to: z.string().min(1).describe("Target ref, e.g. monsters/abyssal-leviathan."),
+      relation: z.record(z.unknown()).optional().describe("Free-form relation fields such as summary, tags, weight, condition, or notes."),
+      mode: z.enum(["merge", "replace", "delete"]).default("merge"),
+    },
+    wrap("write_relation", ({ campaign_path, save_slot, id, from, type, to, relation, mode }) =>
+      writeRelation(root, runtimeCampaignPath(campaign_path, save_slot), { id, from, type, to, relation, mode }), log)
+  );
+
+  server.tool(
+    toolName("query_relations"),
+    "Query runtime relations and optionally include summaries for declared collection endpoints. Use this to ask for monsters in a region, scenes for a location, clues tied to a suspect, exits from a room, and similar relation slices.",
+    {
+      campaign_path: campaignPath,
+      save_slot: saveSlot,
+      from: z.string().optional().describe("Only relations with this source ref."),
+      to: z.string().optional().describe("Only relations with this target ref."),
+      type: z.string().optional().describe("Only this relation type."),
+      from_collection: z.string().optional().describe("Only source refs in this collection prefix."),
+      to_collection: z.string().optional().describe("Only target refs in this collection prefix."),
+      include_entries: z.boolean().default(true).describe("Include summaries for declared collection endpoints."),
+      limit: z.number().int().positive().max(100).default(25),
+    },
+    wrap("query_relations", ({ campaign_path, save_slot, from, to, type, from_collection, to_collection, include_entries, limit }) =>
+      queryRelations(root, runtimeCampaignPath(campaign_path, save_slot), {
+        from,
+        to,
+        type,
+        fromCollection: from_collection,
+        toCollection: to_collection,
+        includeEntries: include_entries,
+        limit,
+      }), log)
   );
 
   server.tool(
@@ -257,6 +386,53 @@ export function registerPlayerTools(
   );
 
   server.tool(
+    toolName("game_relation"),
+    "Query or update runtime relations between refs such as regions/outer-wilds, locations/sunken-swamp, monsters/abyssal-leviathan, scenes/ambush, or clues/bloody-key. Use action=query to retrieve related entries; action=write/delete to keep relation indexes current when play creates or changes durable entities.",
+    {
+      campaign_path: campaignPath,
+      save_slot: saveSlot,
+      action: z.enum(["query", "write", "delete"]).default("query"),
+      id: z.string().optional().describe("Optional stable relation id. Defaults from type/from/to."),
+      from: z.string().optional().describe("Source ref for query/write/delete."),
+      type: z.string().optional().describe("Relation type, e.g. contains, inhabits, appears_in, unlocks, connects_to."),
+      to: z.string().optional().describe("Target ref for query/write/delete."),
+      from_collection: z.string().optional().describe("Query only: source collection prefix."),
+      to_collection: z.string().optional().describe("Query only: target collection prefix."),
+      relation: z.record(z.unknown()).optional().describe("Write only: free-form relation fields."),
+      include_entries: z.boolean().default(true).describe("Query only: include summaries for declared collection endpoints."),
+      limit: z.number().int().positive().max(100).default(25),
+    },
+    wrap("game_relation", ({
+      campaign_path,
+      save_slot,
+      action,
+      id,
+      from,
+      type,
+      to,
+      from_collection,
+      to_collection,
+      relation,
+      include_entries,
+      limit,
+    }) => {
+      const runtimePath = runtimeCampaignPath(campaign_path, save_slot);
+      if (action === "write" || action === "delete") {
+        return writeRelation(root, runtimePath, { id, from, type, to, relation, mode: action === "delete" ? "delete" : "merge" });
+      }
+      return queryRelations(root, runtimePath, {
+        from,
+        to,
+        type,
+        fromCollection: from_collection,
+        toCollection: to_collection,
+        includeEntries: include_entries,
+        limit,
+      });
+    }, log)
+  );
+
+  server.tool(
     toolName("game_commit"),
     "End the turn: bump the turn counter, deep-merge state_patch into state, set last_summary, and append a journal entry. A pre-turn snapshot is saved so the turn can be undone with game_rewind. Make durable entity changes with game_write before committing.",
     {
@@ -323,8 +499,10 @@ export function registerGameTools(
   mode: GameToolMode = "full",
   options: ToolPrefixOptions = {}
 ): void {
-  if (mode === "creator" || mode === "full") {
+  if (mode === "full") {
     registerTools(server, root, log, options);
+  }
+  if (mode === "creator" || mode === "full") {
     registerCreatorTools(server, root, log, options);
   }
   if (mode === "player" || mode === "full") {

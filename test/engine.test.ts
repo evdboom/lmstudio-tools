@@ -4,15 +4,19 @@ import * as path from "node:path";
 import {
   AUTHORING_MODES,
   gameCommit,
+  ensureCollectionIndexes,
   gameOpen,
   gameRead,
   gameRewind,
   gameScene,
   gameWrite,
   lintNarration,
+  queryRelations,
   rollDice,
+  scaffoldCampaign,
   validateManifestShape,
   verifyCampaign,
+  writeRelation,
 } from "../src/runtime-engine.js";
 import { createSaveSlot, runtimeCampaignPath } from "../src/game.js";
 import { makeSandbox } from "./helpers.js";
@@ -134,6 +138,80 @@ describe("manifest + state validation", () => {
 });
 
 describe("verify_campaign harness", () => {
+  it("scaffolds a minimal flexible game that verifies", async () => {
+    const scaffolded = await scaffoldCampaign(root, {
+      campaignPath: campaign,
+      title: "The Harbor Letter",
+      pitch: "A letter, a liar, a tide.",
+      authoringMode: "procedural-startpoint",
+      collections: {
+        monsters: { summary_fields: ["id", "name", "status"], min_count: 0 },
+        combos: { summary_fields: ["id", "title", "status"], min_count: 0 },
+      },
+      state: {
+        schema: "flex-v1",
+        encountered_monsters: [],
+        explored_locations: [],
+        current_combos_available: [],
+      },
+      opening: "Rain beads the harbor glass. A sealed letter waits on the desk while the tide turns below.",
+    });
+    expect(scaffolded.ok).toBe(true);
+
+    const result = await verifyCampaign(root, campaign);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const payload = JSON.parse(result.text) as { ok: boolean; issue_counts: { errors: number }; smoke: { commit_turn: boolean } };
+    expect(payload.ok).toBe(true);
+    expect(payload.issue_counts.errors).toBe(0);
+    expect(payload.smoke.commit_turn).toBe(true);
+
+    const state = JSON.parse(await fs.readFile(path.join(root, campaign, "30-runtime", "state.json"), "utf8")) as {
+      encountered_monsters: unknown[];
+      explored_locations: unknown[];
+      current_combos_available: unknown[];
+    };
+    expect(state.encountered_monsters).toEqual([]);
+    expect(state.explored_locations).toEqual([]);
+    expect(state.current_combos_available).toEqual([]);
+  });
+
+  it("repairs accidental array collection indexes before free-form collection writes", async () => {
+    await writeJson(`${campaign}/game.manifest.json`, manifest({
+      runtime_collections: {
+        monsters: { index: "30-runtime/monsters/index.json", min_count: 1, summary_fields: ["id", "name", "status"] },
+      },
+      boot: {
+        scene_packet_tool: "game_scene",
+        start_location: null,
+        opening: { source: null, inline: "A lantern shakes at the tunnel mouth." },
+        uses_dice: false,
+        packet: { collections: ["monsters"], journal: { limit: 5 } },
+      },
+    }));
+    await writeFile(`${campaign}/PLAY.md`, PLAY_MD);
+    await writeJson(`${campaign}/30-runtime/state.json`, { campaign_id: campaign, turn: 0, schema: "monster-v1" });
+    await writeFile(`${campaign}/30-runtime/journal.jsonl`, "");
+    await writeFile(`${campaign}/30-runtime/monsters/index.json`, "[]\n");
+    await fs.mkdir(path.join(root, campaign, "40-saves"), { recursive: true });
+
+    const repaired = await ensureCollectionIndexes(root, campaign, { collection: "monsters" });
+    expect(repaired.ok).toBe(true);
+
+    const written = await gameWrite(root, campaign, "monsters/ash-wight", { name: "Ash Wight", status: "active" }, "merge");
+    expect(written.ok).toBe(true);
+
+    const index = JSON.parse(await fs.readFile(path.join(root, campaign, "30-runtime", "monsters", "index.json"), "utf8")) as {
+      monsters: Array<{ id: string; name: string }>;
+    };
+    expect(index.monsters).toEqual([{ id: "ash-wight", name: "Ash Wight", status: "active" }]);
+
+    const result = await verifyCampaign(root, campaign);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect((JSON.parse(result.text) as { ok: boolean }).ok).toBe(true);
+  });
+
   it("verifies a schema-flexible game and passes the smoke test", async () => {
     await scaffoldGame();
     const result = await verifyCampaign(root, campaign);
@@ -288,6 +366,72 @@ describe("generic play verbs", () => {
     expect(readState.ok).toBe(true);
     if (!readState.ok) return;
     expect(readState.text).toBe("true");
+  });
+
+  it("queries related collection entries without loading the whole collection", async () => {
+    const scaffolded = await scaffoldCampaign(root, {
+      campaignPath: campaign,
+      title: "Wilds",
+      pitch: "A region full of threats.",
+      collections: {
+        locations: { summary_fields: ["id", "name", "region", "status", "summary"] },
+        monsters: { summary_fields: ["id", "name", "status", "summary"] },
+      },
+      state: { schema: "wilds-v1", location: "sunken-swamp" },
+      opening: "The swamp bubbles under a green moon.",
+    });
+    expect(scaffolded.ok).toBe(true);
+
+    const location = await gameWrite(root, campaign, "locations/sunken-swamp", {
+      name: "Sunken Swamp",
+      region: "Outer Wilds",
+      status: "active",
+      summary: "Muddy waters teeming with aquatic monsters.",
+    }, "merge");
+    expect(location.ok).toBe(true);
+
+    const monster = await gameWrite(root, campaign, "monsters/abyssal-leviathan", {
+      name: "Abyssal Leviathan",
+      status: "active",
+      summary: "A leathery deep-water predator.",
+    }, "merge");
+    expect(monster.ok).toBe(true);
+
+    const regionRelation = await writeRelation(root, campaign, {
+      from: "regions/outer-wilds",
+      type: "contains",
+      to: "monsters/abyssal-leviathan",
+      relation: { summary: "A major aquatic threat in the region." },
+    });
+    expect(regionRelation.ok).toBe(true);
+
+    const locationRelation = await writeRelation(root, campaign, {
+      from: "locations/sunken-swamp",
+      type: "inhabits",
+      to: "monsters/abyssal-leviathan",
+    });
+    expect(locationRelation.ok).toBe(true);
+
+    const queried = await queryRelations(root, campaign, {
+      from: "regions/outer-wilds",
+      toCollection: "monsters",
+    });
+    expect(queried.ok).toBe(true);
+    if (!queried.ok) return;
+    const payload = JSON.parse(queried.text) as {
+      count: number;
+      relations: Array<{ to_entry: { id: string; name: string } }>;
+    };
+    expect(payload.count).toBe(1);
+    expect(payload.relations[0].to_entry).toEqual(expect.objectContaining({
+      id: "abyssal-leviathan",
+      name: "Abyssal Leviathan",
+    }));
+
+    const verified = await verifyCampaign(root, campaign);
+    expect(verified.ok).toBe(true);
+    if (!verified.ok) return;
+    expect((JSON.parse(verified.text) as { ok: boolean }).ok).toBe(true);
   });
 
   it("game_write rejects an undeclared collection", async () => {

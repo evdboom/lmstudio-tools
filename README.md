@@ -5,11 +5,11 @@ Local **MCP (Model Context Protocol)** servers for LM Studio:
 - **`lmstudio-tools`** — sandboxed filesystem tools scoped to a folder you choose.
 - **`lmstudio-skills`** — a Claude-Code-style "skills" framework: drop
   `SKILL.md` files into one or more folders, the model lists/loads them on demand.
-- **`lmstudio-game-creator`** — an RPG authoring surface: the file tools plus
-  typed helpers and a `verify_campaign` harness for building schema-flexible games.
-- **`lmstudio-game-player`** — a slim play surface of eight generic verbs
-  (`game_open`, `game_scene`, `game_read`, `game_write`, `game_commit`,
-  `game_roll`, `game_rewind`, `game_save`) driven by each game's own `PLAY.md`.
+- **`lmstudio-game-creator`** — a slim RPG authoring surface: `scaffold`,
+  typed helpers, and a `verify_campaign` harness for building schema-flexible games.
+- **`lmstudio-game-player`** — a slim play surface of generic verbs
+  (`game_open`, `game_scene`, `game_read`, `game_write`, `game_relation`,
+  `game_commit`, `game_roll`, `game_rewind`, `game_save`) driven by each game's own `PLAY.md`.
 - **`lmstudio-game`** — the full RPG runtime surface, useful for development or
   debugging when context budget is less important.
 
@@ -144,11 +144,33 @@ The game runtime is split into smaller MCP servers so a small local model carrie
 
 | Server | Use | Tools |
 | ------ | --- | ----- |
-| `lmstudio-game-creator` | Build games | The 12 file tools, plus `create_quest`, `create_npc`, `create_location`, `add_item`, `create_clock`, and `verify_campaign` |
-| `lmstudio-game-player` | Play games | `game_open`, `game_scene`, `game_read`, `game_write`, `game_commit`, `game_roll`, `game_rewind`, `game_save` |
+| `lmstudio-game-creator` | Build games | `scaffold`, `write_collection_entry`, `write_relation`, `query_relations`, `repair_collection_indexes`, `create_quest`, `create_npc`, `create_location`, `add_item`, `create_clock`, and `verify_campaign` |
+| `lmstudio-game-player` | Play games | `game_open`, `game_scene`, `game_read`, `game_write`, `game_relation`, `game_commit`, `game_roll`, `game_rewind`, `game_save` |
 | `lmstudio-game` | Full/debug | File tools + creator helpers + player verbs |
 
-The playing model only ever sees eight generic verbs. What each game does with them is described in that game's own `PLAY.md` (returned by `game_open`), not baked into the tool surface.
+The playing model only sees generic verbs. What each game does with them is described in that game's own `PLAY.md` (returned by `game_open`), not baked into the tool surface.
+
+For game creation, call `scaffold` first. It creates the required folder shape,
+manifest, PLAY.md, state, journal, saves directory, optional opening prose, and
+empty indexes for any declared runtime collections. Then fill the authored
+content with either `lmstudio-tools` file/JSON tools (when enabled) or the
+creator convenience helpers for conventional collections. Run `verify_campaign`
+before play.
+
+For custom runtime collections, prefer `write_collection_entry` over hand-writing
+`index.json`. It accepts free-form JSON for any manifest-declared collection and
+refreshes the index using the collection's `summary_fields`. If verification
+reports `invalid_collection_index`, call `repair_collection_indexes`; it creates
+missing indexes and converts accidental top-level arrays like `[]` into the
+expected object shape.
+
+Use relations when one collection needs cheap cross-links to another, such as
+monsters in a region, scenes at a location, clues tied to a suspect, or exits
+between rooms. `write_relation` stores refs in `30-runtime/relations.json`, for
+example `regions/outer-wilds` `contains` `monsters/abyssal-leviathan` or
+`locations/sunken-swamp` `inhabits` `monsters/abyssal-leviathan`.
+`query_relations` and `game_relation action="query"` can then return only the
+matching relation slice with summaries for declared collection endpoints.
 
 ### The generic play verbs
 
@@ -158,10 +180,20 @@ The playing model only ever sees eight generic verbs. What each game does with t
 | `game_scene` | The per-turn packet: selected state fields, summaries of declared collections, a rolling recap, recent journal. `focus` narrows it. |
 | `game_read` | Read one runtime entity or a scoped JSON property when the scene summary is not enough. |
 | `game_write` | Create/update/delete `state`, a collection entry `<collection>/<id>`, or a runtime file. Refreshes the collection index. |
+| `game_relation` | Query/write/delete relation refs such as regions to monsters, locations to scenes, suspects to clues, or rooms to exits. |
 | `game_commit` | End the turn: bump the turn, merge state, append a journal entry, snapshot for rewind. |
 | `game_roll` | Roll dice (`NdM+K`) so outcomes are not invented. |
 | `game_rewind` | Restore a pre-turn snapshot to undo a bad turn. |
 | `game_save` | Create or list playthrough save slots. |
+
+During play, the model does not use raw `add_json`/`update_json`. It writes live
+state with `game_write target="state"`, for example a patch containing
+`encountered_monsters`, `explored_locations`, or `current_combos_available`.
+It creates or updates declared runtime collections with targets such as
+`monsters/ash-wight`, `locations/old-mill`, or `combos/salt-and-spark`.
+It keeps cross-links with `game_relation`, for example querying
+`from="regions/outer-wilds"` and `to_collection="monsters"` to retrieve only
+monsters attached to that region.
 
 ### Game folder layout
 
@@ -174,6 +206,7 @@ campaign-<slug>/
   30-runtime/
     state.json           # initial state: campaign_id, turn, schema (+ game-defined fields)
     journal.jsonl
+    relations.json        # optional, engine-owned cross-links between refs
     <collection>/        # optional, game-defined (clues, npcs, rooms, suspects, ...)
       index.json
   40-saves/

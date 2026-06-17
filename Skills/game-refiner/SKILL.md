@@ -8,7 +8,7 @@ allow_scripts: false
 
 Improve an existing game. Do not start play. Do not reveal secrets. Run on the creator server.
 
-Tools: list_folders, list_files, read_file, read_json, add_file, replace_file, append_file, add_json, update_json, create_quest, create_npc, create_location, add_item, create_clock, verify_campaign.
+Tools: list_folders, list_files, read_file, read_json, add_file, replace_file, append_file, add_json, update_json, write_collection_entry, write_relation, query_relations, repair_collection_indexes, create_quest, create_npc, create_location, add_item, create_clock, verify_campaign.
 
 ## Modes
 
@@ -32,7 +32,9 @@ Default: balanced polish.
 
 - Prose: `replace_file` for rewrites. Short headings, concrete nouns, local-model friendly.
 - Conventional collections (quests/npcs/locations/inventory/clocks): use `create_*` to add entries, or edit the entry JSON + its `index.json` directly with `replace_file`/`update_json`.
-- Custom collections (clues/suspects/rooms/etc): edit the entry JSON and its `index.json` with the file tools; keep index entries to the manifest's `summary_fields`.
+- Custom collections (clues/suspects/rooms/etc): use `write_collection_entry`; it writes the entry JSON and refreshes `index.json` using the manifest's `summary_fields`.
+- Relations: use `write_relation` for cross-links such as monsters in a region, scenes at a location, clues tied to a suspect, factions controlling locations, or exits between rooms. Use `query_relations` to inspect existing links.
+- If `verify_campaign` reports `invalid_collection_index`, call `repair_collection_indexes`, then use `write_collection_entry` for subsequent custom collection edits.
 - PLAY.md: keep the five required sections (`Premise`, `Loop`, `State Shape`, `Tone`, `Setup`). Strengthen the `## Loop` so it stays runnable with the generic play tools.
 
 Strengthen: NPC motive/voice; faction desire/method/hidden pressure; location sensory identity + hook; quest/clue clear status + next step; clock pressure + consequence; opening scene = plain player-facing prose.

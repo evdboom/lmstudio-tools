@@ -243,7 +243,7 @@ describe("MCP integration over stdio", () => {
     }
   });
 
-  it("game creator server exposes file tools plus creation helpers", async () => {
+  it("game creator server exposes only creation helpers", async () => {
     await client.close();
     client = spawnServer(root, gameCreatorEntry);
     await handshake(client);
@@ -253,34 +253,22 @@ describe("MCP integration over stdio", () => {
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toEqual(
       [
-        // generic file tools for authoring the manifest, PLAY.md, prose, collections
-        "add_file",
-        "add_folder",
-        "add_json",
-        "append_file",
-        "list_files",
-        "list_folders",
-        "plan_add_task",
-        "plan_create",
-        "plan_get_open_task",
-        "plan_list_tasks",
-        "plan_show",
-        "plan_update_task",
-        "read_file",
-        "read_json",
-        "remove_file",
-        "remove_folder",
-        "replace_file",
-        "update_json",
-        // typed convenience writers + harness
         "add_item",
         "create_clock",
         "create_location",
         "create_npc",
         "create_quest",
+        "query_relations",
+        "repair_collection_indexes",
+        "scaffold",
         "verify_campaign",
+        "write_collection_entry",
+        "write_relation",
       ].sort()
     );
+    expect(names.filter((name) => name.startsWith("plan_"))).toEqual([]);
+    expect(names).not.toContain("list_files");
+    expect(names).not.toContain("read_file");
   });
 
   it("game player server exposes a slim generic play surface", async () => {
@@ -296,6 +284,7 @@ describe("MCP integration over stdio", () => {
         "game_commit",
         "game_open",
         "game_read",
+        "game_relation",
         "game_rewind",
         "game_roll",
         "game_save",

@@ -10,7 +10,7 @@ Build a game folder. Do not start play.
 
 You decide the shape of this game. The framework only requires a small skeleton; everything else — quests, locations, NPCs, clues, suspects, rooms, factions, or any custom collection — is yours to design or to leave for the playing model to grow during play.
 
-Tools: list_files, list_folders, read_file, read_json, add_folder, add_file, replace_file, append_file, add_json, update_json, plan_create, plan_list_tasks, plan_get_open_task, plan_add_task, plan_update_task, plan_show, create_quest, create_npc, create_location, add_item, create_clock, verify_campaign. Write the manifest, PLAY.md, prose, and any custom collections with `add_file`/`add_json`. The `create_*` tools are convenience writers for the conventional quests/npcs/locations/inventory/clocks collections only. The `plan_*` tools are general task-planning helpers; use them for the build plan, not for runtime game state.
+Tools: scaffold, write_collection_entry, write_relation, query_relations, repair_collection_indexes, list_files, list_folders, read_file, read_json, add_file, replace_file, append_file, add_json, update_json, create_quest, create_npc, create_location, add_item, create_clock, verify_campaign. Call `scaffold` first to create the required game skeleton, manifest, PLAY.md, state, journal, saves folder, opening file, and empty indexes for declared runtime collections. Fill authored prose with file tools when available. Fill custom runtime collections with `write_collection_entry`, not by hand-writing `index.json`. Connect collections with `write_relation`, not ad hoc lookup files. The `create_*` tools are convenience writers for conventional quests/npcs/locations/inventory/clocks only.
 
 ## Ask
 
@@ -31,11 +31,9 @@ Use at most two user-question rounds total before implementation:
 
 After that, stop asking questions. Present a concise design plan with explicit assumptions and ask for confirmation to build. If the user dislikes the plan, they can intervene; otherwise proceed after confirmation.
 
-After confirmation, create `campaign-<slug>/plan.json` with `plan_create` when plan tools are available. Use task titles for the compact build list and task descriptions for the full implementation instructions. During the build, use `plan_get_open_task` to choose the next task and `plan_update_task` to mark progress. Use `plan_show` only when reporting plan status to the user.
-
 ## Required skeleton
 
-Folder name: `campaign-<specific-setting-slug>`. The only files the harness requires:
+Folder name: `campaign-<specific-setting-slug>`. Create it with `scaffold(campaign_path=..., title=..., pitch=..., authoring_mode=..., collections=..., state=..., opening=...)`; do not manually add each required file one at a time. The only files the harness requires:
 
 ```
 campaign-<slug>/
@@ -48,6 +46,10 @@ campaign-<slug>/
 ```
 
 Add any other folders/files your game needs (e.g. `10-world/world.md`, `30-runtime/clues/`, `30-runtime/npcs/`).
+
+After `scaffold`, replace `PLAY.md`, update `game.manifest.json`/`state.json` properties as needed, then add collection entries. For custom collections, use `write_collection_entry(campaign_path, collection, id, entry)` so the entry file and index stay in sync. Leave collections empty with `min_count: 0` when the playing model should create them live with `game_write`.
+
+Use relations for cross-collection lookups. Do not create relation files by hand; call `write_relation`, which stores links in `30-runtime/relations.json`. If monsters belong to regions or locations, call `write_relation(from="regions/outer-wilds", type="contains", to="monsters/abyssal-leviathan")` and `write_relation(from="locations/sunken-swamp", type="inhabits", to="monsters/abyssal-leviathan")`. Then PLAY.md can tell the player model to call `game_relation action="query" from="regions/outer-wilds" to_collection="monsters"` instead of loading all monsters.
 
 ## game.manifest.json
 
@@ -89,6 +91,7 @@ This is the single source of truth. Declare only the runtime collections this ga
 
 Key notes:
 - `runtime_collections`: each entry names a collection the playing model can read/write with `game_write target="<collection>/<id>"`. `summary_fields` are what appear in the cheap scene packet — keep them short. `min_count` and `boot_required` are checked by the harness. Declare a collection only if the game uses it.
+- Runtime collections are the player's allowed durable entity types. If play needs monsters, explored places, combo recipes, rumors, or suspects, declare `monsters`, `locations`, `combos`, `rumors`, or `suspects` here. Then PLAY.md can tell the player model to create/update them with `game_write target="monsters/<id>"` or `game_write target="combos/<id>"`.
 - `boot.start_location`: set to a location id only if you declare a locations-style collection with `boot_required: true`.
 - `boot.uses_dice`: set true if PLAY.md tells the model to call `game_roll`.
 - `boot.packet`: the scene recipe. `state_fields` limits what state the model sees each turn (keep state lean). `collections` lists which to summarize. Omit `state_fields` to send the whole state object.
@@ -107,6 +110,8 @@ Required keys: `campaign_id`, `turn` (start at 0), `schema` (a free-form tag you
 ```json
 { "campaign_id": "<folder>", "turn": 0, "schema": "<kind>-v1", "location": "<id or omit>", "flags": {}, "last_summary": "" }
 ```
+
+For live state arrays such as `encountered_monsters`, `explored_locations`, or `current_combos_available`, put the initial arrays in `state.json` during creation. During play, the model updates them with `game_write target="state" patch={...}` or `game_commit state_patch={...}`. It does not call raw `add_json`/`update_json` on the player server.
 
 ## PLAY.md
 
@@ -129,7 +134,8 @@ Do not restate the player-boundary in PLAY.md; the player skill owns it. If they
 3. Narrate the world's response to the player's action.
 4. For a check or uncertain outcome, call game_roll (e.g. 1d20) and narrate from the result.   # only if uses_dice
 5. Record durable changes with game_write (state, or a collection entry).
-6. End the turn with game_commit (summary + a short journal entry).
+6. Use game_relation when the turn creates or needs cross-links (e.g. monsters in a region, scenes at a location).
+7. End the turn with game_commit (summary + a short journal entry).
 ```
 
 ## authoring_mode
@@ -151,6 +157,7 @@ Write final player-facing prose only, plain text (no Markdown emphasis, no menus
 
 - Call `verify_campaign(campaign_path=<campaign>)` after the folder is built.
 - It runs contract checks AND a live smoke test (it boots a throwaway save slot and exercises the play tools). Fix every `severity="error"`, including any `smoke_*` failure, and rerun.
+- If validation reports `invalid_collection_index`, call `repair_collection_indexes(campaign_path=<campaign>)`, then add/fix entries with `write_collection_entry` and rerun verification.
 - Do not give the final response until `verify_campaign` reports `ok=true`.
 
 ## Final response

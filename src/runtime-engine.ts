@@ -91,6 +91,45 @@ export interface Manifest {
   [key: string]: unknown;
 }
 
+export interface ScaffoldOptions {
+  campaignPath: string;
+  campaignId?: string;
+  title?: string;
+  pitch?: string;
+  authoringMode?: string;
+  collections?: Record<string, Partial<CollectionSpec>>;
+  state?: unknown;
+  play?: string;
+  opening?: string;
+  openingPath?: string | null;
+  usesDice?: boolean;
+}
+
+export interface EnsureCollectionIndexOptions {
+  collection?: string;
+}
+
+export type RelationMode = "merge" | "replace" | "delete";
+
+export interface WriteRelationOptions {
+  id?: string;
+  from?: string;
+  type?: string;
+  to?: string;
+  relation?: unknown;
+  mode?: RelationMode;
+}
+
+export interface QueryRelationsOptions {
+  from?: string;
+  to?: string;
+  type?: string;
+  fromCollection?: string;
+  toCollection?: string;
+  includeEntries?: boolean;
+  limit?: number;
+}
+
 export interface VerifyIssue {
   severity: "error" | "warning";
   code: string;
@@ -136,12 +175,192 @@ function asNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function asString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
 function rel(...parts: string[]): string {
   return path.join(...parts);
 }
 
 function displayPath(fileRel: string): string {
   return fileRel.replace(/\\/g, "/");
+}
+
+function titleFromCampaignPath(campaignPath: string): string {
+  const base = path.basename(path.normalize(campaignPath)).replace(/^campaign[-_]/i, "");
+  const words = base.split(/[-_\s]+/).filter(Boolean);
+  if (words.length === 0) return "Untitled Game";
+  return words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
+}
+
+function normalizeAuthoringMode(value: string | undefined): (typeof AUTHORING_MODES)[number] {
+  const mode = value ?? "guided";
+  if (!AUTHORING_MODES.includes(mode as (typeof AUTHORING_MODES)[number])) {
+    throw new Error(`authoring_mode must be one of ${AUTHORING_MODES.join(", ")} (got ${mode}).`);
+  }
+  return mode as (typeof AUTHORING_MODES)[number];
+}
+
+const COLLECTION_NAME_RE = /^[a-z][a-z0-9_-]{0,60}$/;
+const DEFAULT_ENTITY_ID_PATTERN = "^[a-z0-9][a-z0-9_.-]{0,80}$";
+
+function normalizeScaffoldCollections(collections: ScaffoldOptions["collections"]): Record<string, CollectionSpec> {
+  const out: Record<string, CollectionSpec> = {};
+  for (const [name, spec] of Object.entries(collections ?? {})) {
+    if (!COLLECTION_NAME_RE.test(name)) {
+      throw new Error(`Invalid collection name "${name}". Use lowercase letters, numbers, hyphens, or underscores.`);
+    }
+    const index = spec.index ?? rel(RUNTIME_DIR, name, "index.json");
+    out[name] = {
+      index,
+      id_pattern: spec.id_pattern ?? DEFAULT_ENTITY_ID_PATTERN,
+      min_count: spec.min_count ?? 0,
+      boot_required: spec.boot_required ?? false,
+      summary_fields: spec.summary_fields ?? ["id", "title", "name", "status", "summary"],
+    };
+  }
+  return out;
+}
+
+function defaultPlay(title: string): string {
+  return [
+    "## Premise",
+    `${title} is ready to be filled in by the creating model. Keep this section spoiler-light for the player.`,
+    "## Loop",
+    "1. Call game_scene at the start of each turn.",
+    "2. If the scene summary is not enough, call game_read for state.json or one declared collection entry.",
+    "3. Narrate the world's response to the player's action without deciding the protagonist's interior state.",
+    "4. Use game_roll only when this game's rules call for uncertainty.",
+    "5. Record durable state with game_write target=\"state\" and durable entities with game_write target=\"<collection>/<id>\".",
+    "6. End the turn with game_commit, including a compact summary and journal entry.",
+    "## State Shape",
+    "Required fields: campaign_id, turn, schema. Add game-specific state fields here as you design them.",
+    "## Tone",
+    "Concrete, responsive, and concise. Replace this with the game's own voice and content limits.",
+    "## Setup",
+    "Ask 2-4 in-world protagonist setup questions before the first turn.",
+  ].join("\n\n") + "\n";
+}
+
+async function writeTextAt(root: string, fileRel: string, text: string, flag: "w" | "wx" = "w"): Promise<void> {
+  const abs = await safeResolve(root, fileRel);
+  await fs.mkdir(path.dirname(abs), { recursive: true });
+  await fs.writeFile(abs, text, { encoding: "utf8", flag });
+}
+
+async function ensureNewOrEmptyFolder(root: string, folderRel: string): Promise<void> {
+  const st = await statAt(root, folderRel);
+  if (st) {
+    if (!st.isDirectory()) throw new Error(`Path exists and is not a folder: ${displayPath(folderRel)}`);
+    const entries = await fs.readdir(await safeResolve(root, folderRel));
+    if (entries.length > 0) {
+      throw new Error(`Campaign folder already exists and is not empty: ${displayPath(folderRel)}`);
+    }
+    return;
+  }
+  await fs.mkdir(await safeResolve(root, folderRel), { recursive: true });
+}
+
+// ---------------------------------------------------------------------------
+// scaffold
+// ---------------------------------------------------------------------------
+
+export async function scaffoldCampaign(root: string, options: ScaffoldOptions): Promise<ToolResult> {
+  try {
+    const campaignPath = options.campaignPath;
+    if (!campaignPath || campaignPath.trim().length === 0) throw new Error("campaign_path is required.");
+    await ensureNewOrEmptyFolder(root, campaignPath);
+
+    const campaignId = options.campaignId?.trim() || path.basename(path.normalize(campaignPath));
+    const title = options.title?.trim() || titleFromCampaignPath(campaignPath);
+    const pitch = options.pitch?.trim() || "A schema-flexible game scaffold, ready for authoring.";
+    const authoringMode = normalizeAuthoringMode(options.authoringMode);
+    const collections = normalizeScaffoldCollections(options.collections);
+    const openingPath = options.openingPath === null ? null : (options.openingPath?.trim() || "20-story/opening-scene.md");
+
+    const rawState = isRecord(options.state) ? options.state : {};
+    const turn = asNumber(rawState.turn) ?? 0;
+    const schema = typeof rawState.schema === "string" && rawState.schema.trim()
+      ? rawState.schema
+      : "game-v1";
+    const state: JsonRecord = {
+      last_summary: "",
+      flags: {},
+      ...rawState,
+      campaign_id: campaignId,
+      turn,
+      schema,
+    };
+
+    const collectionNames = Object.keys(collections);
+    const packetStateFields = ["turn", "location", "time_of_day", "last_summary", "recap"];
+    const manifest: Manifest = {
+      manifest_version: 1,
+      campaign_id: campaignId,
+      title,
+      pitch,
+      authoring_mode: authoringMode,
+      play_instructions: "PLAY.md",
+      initial_state: "30-runtime/state.json",
+      runtime_collections: collections,
+      boot: {
+        scene_packet_tool: "game_scene",
+        start_location: null,
+        opening: openingPath
+          ? { source: openingPath, inline: null }
+          : { source: null, inline: options.opening?.trim() || "Begin." },
+        uses_dice: options.usesDice ?? false,
+        packet: {
+          state_fields: packetStateFields,
+          collections: collectionNames,
+          journal: { limit: 5 },
+        },
+      },
+      content_files: openingPath ? [openingPath] : [],
+      tags: [],
+    };
+
+    const created: string[] = [];
+    await writeJsonAt(root, rel(campaignPath, "game.manifest.json"), manifest, "wx");
+    created.push(displayPath(rel(campaignPath, "game.manifest.json")));
+    await writeTextAt(root, rel(campaignPath, "PLAY.md"), options.play?.trim() ? `${options.play.trimEnd()}\n` : defaultPlay(title), "wx");
+    created.push(displayPath(rel(campaignPath, "PLAY.md")));
+    await writeJsonAt(root, rel(campaignPath, RUNTIME_DIR, "state.json"), state, "wx");
+    created.push(displayPath(rel(campaignPath, RUNTIME_DIR, "state.json")));
+    await writeTextAt(root, rel(campaignPath, RUNTIME_DIR, "journal.jsonl"), "", "wx");
+    created.push(displayPath(rel(campaignPath, RUNTIME_DIR, "journal.jsonl")));
+    await fs.mkdir(await safeResolve(root, rel(campaignPath, "40-saves")), { recursive: true });
+    created.push(displayPath(rel(campaignPath, "40-saves")));
+
+    if (openingPath) {
+      const openingText = options.opening?.trim() || "The first scene is ready to be authored.";
+      await writeTextAt(root, rel(campaignPath, openingPath), `${openingText.trimEnd()}\n`, "wx");
+      created.push(displayPath(rel(campaignPath, openingPath)));
+    }
+
+    for (const [name, spec] of Object.entries(collections)) {
+      const indexRel = rel(campaignPath, spec.index);
+      await writeJsonAt(root, indexRel, { version: 1, [name]: [] }, "wx");
+      created.push(displayPath(indexRel));
+    }
+
+    return ok(json({
+      created: true,
+      campaign_path: displayPath(campaignPath),
+      campaign_id: campaignId,
+      files: created,
+      collections: collectionNames,
+      next: [
+        "Fill PLAY.md and state.json for the game.",
+        "Add authored collection entries with file/JSON tools or creator convenience tools.",
+        "During play, use game_write target=\"state\" or target=\"<collection>/<id>\"; the player server does not use raw add_json/update_json.",
+        "Run verify_campaign before handing the game to a player.",
+      ],
+    }));
+  } catch (e) {
+    return err(toError(e));
+  }
 }
 
 async function statAt(root: string, fileRel: string): Promise<import("node:fs").Stats | undefined> {
@@ -199,6 +418,10 @@ function stateRel(campaignPath: string): string {
 
 function journalRel(campaignPath: string): string {
   return rel(campaignPath, RUNTIME_DIR, "journal.jsonl");
+}
+
+function relationsRel(campaignPath: string): string {
+  return rel(campaignPath, RUNTIME_DIR, "relations.json");
 }
 
 async function readState(root: string, campaignPath: string): Promise<JsonRecord> {
@@ -297,6 +520,77 @@ function buildSummary(record: JsonRecord, fields?: string[]): JsonRecord {
   const out: JsonRecord = {};
   for (const f of fields) if (f in record) out[f] = record[f];
   return out;
+}
+
+function endpointCollection(ref: string): string | undefined {
+  const slash = ref.indexOf("/");
+  if (slash <= 0) return undefined;
+  const collection = ref.slice(0, slash);
+  return COLLECTION_NAME_RE.test(collection) ? collection : undefined;
+}
+
+function normalizeEndpoint(value: unknown, name: string): string {
+  const text = asString(value);
+  if (!text) throw new Error(`${name} is required.`);
+  if (text.includes("\0")) throw new Error(`${name} contains NUL byte.`);
+  if (text.length > 240) throw new Error(`${name} must be 240 characters or less.`);
+  return text.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+}
+
+function slugPart(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "item";
+}
+
+function relationId(type: string, from: string, to: string, id?: string): string {
+  const raw = id?.trim() || `${slugPart(type)}-${slugPart(from)}-${slugPart(to)}`;
+  const out = slugPart(raw).slice(0, 120);
+  if (!ENTITY_ID_RE.test(out)) throw new Error(`Invalid relation id "${id}".`);
+  return out;
+}
+
+function normalizeRelationRecord(value: unknown): JsonRecord | undefined {
+  if (!isRecord(value)) return undefined;
+  const id = asString(value.id);
+  const from = asString(value.from);
+  const type = asString(value.type);
+  const to = asString(value.to);
+  if (!id || !from || !type || !to) return undefined;
+  return { ...value, id, from, type, to };
+}
+
+async function readRelationsDocument(root: string, runtimePath: string): Promise<JsonRecord> {
+  const existing = await readJsonOptional(root, relationsRel(runtimePath));
+  if (existing === undefined) return { version: 1, relations: [] };
+  if (!isRecord(existing)) throw new Error(`${displayPath(relationsRel(runtimePath))} must be a JSON object.`);
+  if (!Array.isArray(existing.relations)) return { ...existing, version: existing.version ?? 1, relations: [] };
+  return existing;
+}
+
+function relationEntries(document: JsonRecord): JsonRecord[] {
+  return Array.isArray(document.relations)
+    ? document.relations.map(normalizeRelationRecord).filter((entry): entry is JsonRecord => entry !== undefined)
+    : [];
+}
+
+async function endpointSummary(
+  root: string,
+  runtimePath: string,
+  manifest: Manifest,
+  ref: string
+): Promise<JsonRecord> {
+  const collection = endpointCollection(ref);
+  const id = collection ? ref.slice(collection.length + 1) : "";
+  const specEntry = collectionSpecs(manifest).find((c) => c.name === collection);
+  if (!specEntry || !id) return { ref };
+
+  const collectionDir = displayPath(path.dirname(specEntry.spec.index));
+  const entry = await readRecordOptional(root, rel(runtimePath, collectionDir, `${id}.json`));
+  if (!entry) return { ref };
+  return { ref, ...buildSummary(entry, specEntry.spec.summary_fields) };
 }
 
 // ---------------------------------------------------------------------------
@@ -527,6 +821,133 @@ export async function gameWrite(
     const next = mode === "replace" ? patch : deepMerge(existing, patch);
     await writeJsonAt(root, fileRel, next);
     return ok(json({ written: target, mode, value: next }));
+  } catch (e) {
+    return err(toError(e));
+  }
+}
+
+export async function ensureCollectionIndexes(
+  root: string,
+  runtimePath: string,
+  options: EnsureCollectionIndexOptions = {}
+): Promise<ToolResult> {
+  try {
+    await ensureCampaignFolder(root, runtimePath);
+    const manifest = await loadManifest(root, runtimePath);
+    const specs = collectionSpecs(manifest).filter(({ name }) => !options.collection || name === options.collection);
+    if (specs.length === 0) {
+      const valid = collectionSpecs(manifest).map((c) => c.name).join(", ") || "(none declared)";
+      throw new Error(`Unknown collection "${options.collection ?? ""}". Declared collections: ${valid}.`);
+    }
+
+    const results: JsonRecord[] = [];
+    for (const { name, spec } of specs) {
+      const indexRel = rel(runtimePath, spec.index);
+      const existing = await readJsonOptional(root, indexRel);
+      let next: JsonRecord;
+      let action = "kept";
+
+      if (Array.isArray(existing)) {
+        next = { version: 1, [name]: existing.filter(isRecord) };
+        action = "repaired_array_index";
+      } else if (!isRecord(existing)) {
+        next = { version: 1, [name]: [] };
+        action = existing === undefined ? "created" : "repaired_invalid_index";
+      } else {
+        next = existing;
+        const { key } = readIndexEntries(next);
+        if (!Array.isArray(next[key])) {
+          next[name] = [];
+          if (!("version" in next)) next.version = 1;
+          action = "added_entries_array";
+        }
+      }
+
+      if (action !== "kept") await writeJsonAt(root, indexRel, next);
+      const { entries } = readIndexEntries(next);
+      results.push({ collection: name, index: displayPath(indexRel), action, entries: entries.length });
+    }
+
+    return ok(json({ repaired: results }));
+  } catch (e) {
+    return err(toError(e));
+  }
+}
+
+export async function writeRelation(
+  root: string,
+  runtimePath: string,
+  options: WriteRelationOptions
+): Promise<ToolResult> {
+  try {
+    await ensureCampaignFolder(root, runtimePath);
+    const mode = options.mode ?? "merge";
+    const from = normalizeEndpoint(options.from, "from");
+    const type = normalizeEndpoint(options.type, "type");
+    const to = normalizeEndpoint(options.to, "to");
+    const id = relationId(type, from, to, options.id);
+    const document = await readRelationsDocument(root, runtimePath);
+    const entries = relationEntries(document);
+
+    if (mode === "delete") {
+      document.relations = entries.filter((entry) => entry.id !== id);
+      await writeJsonAt(root, relationsRel(runtimePath), document);
+      return ok(json({ written: "relation", id, mode: "delete" }));
+    }
+
+    const patch = isRecord(options.relation) ? options.relation : {};
+    const existing = entries.find((entry) => entry.id === id) ?? {};
+    const base: JsonRecord = { id, from, type, to };
+    const merged = mode === "replace"
+      ? { ...patch, ...base }
+      : { ...(deepMerge(existing, patch) as JsonRecord), ...base };
+    const next = entries.filter((entry) => entry.id !== id);
+    next.push(merged);
+    document.version = document.version ?? 1;
+    document.relations = next;
+    await writeJsonAt(root, relationsRel(runtimePath), document);
+    return ok(json({ written: "relation", id, mode, relation: merged }));
+  } catch (e) {
+    return err(toError(e));
+  }
+}
+
+export async function queryRelations(
+  root: string,
+  runtimePath: string,
+  options: QueryRelationsOptions = {}
+): Promise<ToolResult> {
+  try {
+    await ensureCampaignFolder(root, runtimePath);
+    const manifest = await loadManifest(root, runtimePath);
+    const document = await readRelationsDocument(root, runtimePath);
+    const limit = Math.max(1, Math.min(options.limit ?? 25, 100));
+    const requestedType = options.type?.trim();
+    const requestedFrom = options.from?.trim();
+    const requestedTo = options.to?.trim();
+
+    const matches = relationEntries(document)
+      .filter((entry) => !requestedFrom || entry.from === requestedFrom)
+      .filter((entry) => !requestedTo || entry.to === requestedTo)
+      .filter((entry) => !requestedType || entry.type === requestedType)
+      .filter((entry) => !options.fromCollection || endpointCollection(String(entry.from)) === options.fromCollection)
+      .filter((entry) => !options.toCollection || endpointCollection(String(entry.to)) === options.toCollection)
+      .slice(0, limit);
+
+    const hydrated: JsonRecord[] = [];
+    for (const entry of matches) {
+      const out: JsonRecord = { ...entry };
+      if (options.includeEntries !== false) {
+        out.from_entry = await endpointSummary(root, runtimePath, manifest, String(entry.from));
+        out.to_entry = await endpointSummary(root, runtimePath, manifest, String(entry.to));
+      }
+      hydrated.push(out);
+    }
+
+    return ok(json({
+      count: hydrated.length,
+      relations: hydrated,
+    }));
   } catch (e) {
     return err(toError(e));
   }
@@ -993,6 +1414,30 @@ export async function verifyCampaign(root: string, campaignPath: string): Promis
     }
     if (!(await statAt(root, rel(campaignPath, "40-saves")))) {
       addIssue(issues, "error", "missing_saves_dir", rel(campaignPath, "40-saves"), "40-saves/ directory is missing.");
+    }
+
+    // Optional relation index: if present, it must be queryable and have stable ids.
+    const relationsData = await readJsonOptional(root, relationsRel(campaignPath));
+    if (relationsData !== undefined) {
+      if (!isRecord(relationsData)) {
+        addIssue(issues, "error", "invalid_relations", relationsRel(campaignPath), "relations.json must be a JSON object.");
+      } else if (!Array.isArray(relationsData.relations)) {
+        addIssue(issues, "error", "invalid_relations", relationsRel(campaignPath), "relations.json must contain a relations array.");
+      } else {
+        const seen = new Set<string>();
+        for (const raw of relationsData.relations) {
+          const entry = normalizeRelationRecord(raw);
+          if (!entry) {
+            addIssue(issues, "error", "invalid_relation", relationsRel(campaignPath), "Every relation needs string id, from, type, and to fields.");
+            continue;
+          }
+          const id = String(entry.id);
+          if (seen.has(id)) {
+            addIssue(issues, "error", "duplicate_relation", relationsRel(campaignPath), `Duplicate relation id: ${id}.`);
+          }
+          seen.add(id);
+        }
+      }
     }
 
     // ---- Phase 2: live smoke test (only if Phase 1 passed) ----

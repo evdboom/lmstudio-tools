@@ -720,3 +720,92 @@ export async function removeFolder(
     return err(toError(e));
   }
 }
+
+// ---------------------------------------------------------------------------
+// Workflow tools
+// ---------------------------------------------------------------------------
+
+export async function workflowOpen(
+  root: string,
+  workflowPath: string,
+  workflowRunDir = ".workflow-runs"
+): Promise<ToolResult> {
+  try {
+    const { workflowOpen: wfOpen } = await import("./workflow.js");
+    return await wfOpen(root, workflowPath, workflowRunDir);
+  } catch (e) {
+    return err(toError(e));
+  }
+}
+
+export async function listWorkflows(
+  root: string,
+  workflowsPath: string = "Workflows"
+): Promise<ToolResult> {
+  try {
+    const { listWorkflows: wfList } = await import("./workflow.js");
+    return await wfList(root, workflowsPath);
+  } catch (e) {
+    return err(toError(e));
+  }
+}
+
+export async function workflowCurrentStep(
+  root: string,
+  runId: string,
+  workflowRunDir = ".workflow-runs"
+): Promise<ToolResult> {
+  try {
+    const { workflowCurrentStep: wfStep } = await import("./workflow.js");
+    return await wfStep(root, runId, workflowRunDir);
+  } catch (e) {
+    return err(toError(e));
+  }
+}
+
+export async function workflowSubmitStep(
+  root: string,
+  runId: string,
+  workflowRunDir: string,
+  output: string,
+  verified: boolean = false
+): Promise<ToolResult> {
+  try {
+    const { workflowSubmitStep: wfSubmit } = await import("./workflow.js");
+    return await wfSubmit(root, runId, workflowRunDir, output, verified);
+  } catch (e) {
+    return err(toError(e));
+  }
+}
+
+export async function workflowStatus(root: string, runId: string, workflowRunDir = ".workflow-runs"): Promise<ToolResult> {
+  try {
+    const { workflowStatus: wfStatus } = await import("./workflow.js");
+    return await wfStatus(root, runId, workflowRunDir);
+  } catch (e) {
+    return err(toError(e));
+  }
+}
+
+export async function workflowBlock(
+  root: string,
+  runId: string,
+  workflowRunDir: string,
+  reason: string
+): Promise<ToolResult> {
+  try {
+    const { workflowBlock: wfBlock } = await import("./workflow.js");
+    return await wfBlock(root, runId, workflowRunDir, reason);
+  } catch (e) {
+    return err(toError(e));
+  }
+}
+
+export async function workflowUnblock(root: string, runId: string, workflowRunDir = ".workflow-runs"): Promise<ToolResult> {
+  try {
+    const { workflowUnblock: wfUnblock } = await import("./workflow.js");
+    return await wfUnblock(root, runId, workflowRunDir);
+  } catch (e) {
+    return err(toError(e));
+  }
+}

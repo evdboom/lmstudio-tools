@@ -25,6 +25,13 @@ import {
   showPlan,
   updateJson,
   updatePlanTask,
+  listWorkflows,
+  workflowOpen,
+  workflowCurrentStep,
+  workflowSubmitStep,
+  workflowStatus,
+  workflowBlock,
+  workflowUnblock,
   type ToolResult,
 } from "./tools.js";
 import { DEFAULT_MAX_BYTES } from "./io.js";
@@ -386,6 +393,121 @@ export function registerTools(
     wrap(
       "remove_folder",
       ({ path: rel, recursive }) => removeFolder(root, rel, recursive),
+      log
+    )
+  );
+
+
+}
+
+export function registerWorkflowTools(
+  server: McpServer,
+  root: string,
+  log: Logger = () => {},
+  options: ToolPrefixOptions = {},
+  defaultWorkflowsPath = "Workflows",
+  workflowRunDir = ".workflow-runs"
+): void {
+  const toolName = (name: string) => prefixedToolName(name, options.prefix);
+  const WORKFLOW_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+  const normalizeWorkflowRef = (workflowRef: string): string => {
+    const name = workflowRef.startsWith("/") ? workflowRef.slice(1) : workflowRef;
+    if (!WORKFLOW_NAME_RE.test(name)) {
+      throw new Error(`Invalid workflow name: ${JSON.stringify(workflowRef)}. Use a bare name like \"game-crafter-workflow\".`);
+    }
+    return `${defaultWorkflowsPath}/${name}.md`;
+  };
+
+  server.tool(
+    toolName("list_workflows"),
+    "List available workflows by name and basic metadata (name, title, description, step count).",
+    {},
+    wrap(
+      "list_workflows",
+      () => listWorkflows(root, defaultWorkflowsPath),
+      log
+    )
+  );
+
+  server.tool(
+    toolName("workflow_open"),
+    "Open a workflow by name and start or resume a run. Use a bare name (e.g., 'game-crafter-workflow') without folder or extension.",
+    {
+      workflow_path: z.string().min(1).describe("Workflow name only (same style as skills). Example: 'game-crafter-workflow' or '/game-crafter-workflow'."),
+    },
+    wrap(
+      "workflow_open",
+      ({ workflow_path }) =>
+        workflowOpen(root, normalizeWorkflowRef(workflow_path), workflowRunDir),
+      log
+    )
+  );
+
+  server.tool(
+    toolName("workflow_current_step"),
+    "Get the instructions for the current step in an active workflow run.",
+    {
+      run_id: z.string().min(1).describe("Workflow run id returned by workflow_open."),
+    },
+    wrap(
+      "workflow_current_step",
+      ({ run_id }) => workflowCurrentStep(root, run_id, workflowRunDir),
+      log
+    )
+  );
+
+  server.tool(
+    toolName("workflow_submit_step"),
+    "Submit output for the current step. If the step has a Verify section and verified=false, returns the verify prompt. Call again with verified=true to proceed to the next step.",
+    {
+      run_id: z.string().min(1).describe("Workflow run id returned by workflow_open."),
+      output: z.string().min(1).describe("Your submission output (artifacts, decisions, or results)."),
+      verified: z.boolean().default(false).describe("Set to true after confirming the verify checklist."),
+    },
+    wrap(
+      "workflow_submit_step",
+      ({ run_id, output, verified }) =>
+        workflowSubmitStep(root, run_id, workflowRunDir, output, verified),
+      log
+    )
+  );
+
+  server.tool(
+    toolName("workflow_status"),
+    "Get status and history of a workflow run, including completed steps and current state.",
+    {
+      run_id: z.string().min(1).describe("Workflow run id returned by workflow_open."),
+    },
+    wrap(
+      "workflow_status",
+      ({ run_id }) => workflowStatus(root, run_id, workflowRunDir),
+      log
+    )
+  );
+
+  server.tool(
+    toolName("workflow_block"),
+    "Block a workflow at the current step (e.g., waiting for user decision or external confirmation).",
+    {
+      run_id: z.string().min(1).describe("Workflow run id returned by workflow_open."),
+      reason: z.string().min(1).describe("Reason for blocking (e.g., 'Waiting for user approval')."),
+    },
+    wrap(
+      "workflow_block",
+      ({ run_id, reason }) => workflowBlock(root, run_id, workflowRunDir, reason),
+      log
+    )
+  );
+
+  server.tool(
+    toolName("workflow_unblock"),
+    "Resume a blocked workflow at the current step so the user can retry.",
+    {
+      run_id: z.string().min(1).describe("Workflow run id returned by workflow_open."),
+    },
+    wrap(
+      "workflow_unblock",
+      ({ run_id }) => workflowUnblock(root, run_id, workflowRunDir),
       log
     )
   );

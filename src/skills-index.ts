@@ -16,14 +16,20 @@ import { DEFAULT_MAX_BYTES } from "./io.js";
 import { makeLogger, type Logger } from "./log.js";
 import { prefixedToolName, validateToolPrefix, type ToolPrefixOptions } from "./tool-prefix.js";
 
+import { registerWorkflowTools } from "./index.js";
+
 interface CliArgs {
   roots: string[];
   quiet: boolean;
   prefix?: string;
+  workflowRunDir?: string;
 }
 
+const SKILL_DIR_CANDIDATES = ["Skills"];
+const WORKFLOW_DIR_CANDIDATES = ["Workflows"];
+
 function parseArgs(argv: string[]): CliArgs {
-  const out: CliArgs = { roots: [], quiet: false };
+  const out: CliArgs = { roots: [], quiet: false, workflowRunDir: undefined };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--root") {
@@ -34,6 +40,10 @@ function parseArgs(argv: string[]): CliArgs {
       out.prefix = argv[++i];
     } else if (a.startsWith("--prefix=")) {
       out.prefix = a.slice("--prefix=".length);
+    } else if (a === "--workflow-run-dir") {
+      out.workflowRunDir = argv[++i];
+    } else if (a.startsWith("--workflow-run-dir=")) {
+      out.workflowRunDir = a.slice("--workflow-run-dir=".length);
     } else if (a === "--quiet" || a === "-q") {
       out.quiet = true;
     }
@@ -51,7 +61,7 @@ async function resolveRoot(raw: string): Promise<string> {
   return await fs.realpath(abs);
 }
 
-async function resolveRoots(cli: CliArgs): Promise<string[]> {
+async function resolveWorkspaceRoots(cli: CliArgs): Promise<string[]> {
   const rawRoots = cli.roots.length > 0
     ? cli.roots
     : (process.env.MCP_SKILLS_ROOTS ?? process.env.MCP_SKILLS_ROOT)
@@ -59,7 +69,7 @@ async function resolveRoots(cli: CliArgs): Promise<string[]> {
         .filter(Boolean) ?? [];
   if (rawRoots.length === 0) {
     throw new Error(
-      "Skills root not set. Pass one or more --root <path> values, or set MCP_SKILLS_ROOTS/MCP_SKILLS_ROOT env."
+      "Workspace root not set. Pass one or more --root <path> values, or set MCP_SKILLS_ROOTS/MCP_SKILLS_ROOT env."
     );
   }
   const roots: string[] = [];
@@ -68,6 +78,50 @@ async function resolveRoots(cli: CliArgs): Promise<string[]> {
     if (!roots.includes(root)) roots.push(root);
   }
   return roots;
+}
+
+async function findFirstExistingRelativeDir(root: string, candidates: readonly string[]): Promise<string | undefined> {
+  for (const rel of candidates) {
+    const abs = path.join(root, rel);
+    const st = await fs.stat(abs).catch(() => null);
+    if (st?.isDirectory()) return rel;
+  }
+  return undefined;
+}
+
+interface DiscoveredRoots {
+  skillRoots: string[];
+  workflowRoot?: string;
+  workflowPath?: string;
+  workspaceRoots: string[];
+}
+
+async function discoverRoots(workspaceRoots: readonly string[]): Promise<DiscoveredRoots> {
+  const skillRoots: string[] = [];
+  let workflowRoot: string | undefined;
+  let workflowPath: string | undefined;
+
+  for (const workspaceRoot of workspaceRoots) {
+    const skillRel = await findFirstExistingRelativeDir(workspaceRoot, SKILL_DIR_CANDIDATES);
+    const workflowRel = await findFirstExistingRelativeDir(workspaceRoot, WORKFLOW_DIR_CANDIDATES);
+
+    if (skillRel) {
+      const skillAbs = await resolveRoot(path.join(workspaceRoot, skillRel));
+      if (!skillRoots.includes(skillAbs)) skillRoots.push(skillAbs);
+    }
+
+    if (!workflowRoot && workflowRel) {
+      workflowRoot = workspaceRoot;
+      workflowPath = workflowRel;
+    }
+  }
+
+  return {
+    skillRoots,
+    workflowRoot,
+    workflowPath,
+    workspaceRoots: [...workspaceRoots],
+  };
 }
 
 function okText(text: string) {
@@ -211,31 +265,50 @@ export function registerSkillTools(
 }
 
 export async function createServer(
-  roots: SkillRoots,
+  roots: string[],
   log: Logger = () => {},
-  options: ToolPrefixOptions = {}
+  options: ToolPrefixOptions = {},
+  workflowRunDir = ".workflow-runs"
 ): Promise<McpServer> {
+  const discovered = await discoverRoots(roots);
   const server = new McpServer({
     name: "lmstudio-skills",
     version: "0.1.0",
   });
-  registerSkillTools(server, roots, log, options);
+  registerSkillTools(server, discovered.skillRoots as SkillRoots, log, options);
+  if (discovered.workflowRoot && discovered.workflowPath) {
+    registerWorkflowTools(
+      server,
+      discovered.workflowRoot,
+      log,
+      options,
+      discovered.workflowPath,
+      workflowRunDir
+    );
+  }
   return server;
 }
 
 async function main() {
   const cli = parseArgs(process.argv.slice(2));
-  const roots = await resolveRoots(cli);
+  const roots = await resolveWorkspaceRoots(cli);
+  const discovered = await discoverRoots(roots);
   const log = makeLogger("lmstudio-skills", cli.quiet);
-  const server = await createServer(roots, log, { prefix: cli.prefix });
+  const server = await createServer(roots, log, { prefix: cli.prefix }, cli.workflowRunDir ?? ".workflow-runs");
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  const startupDetails = [
+    `Workspaces: ${discovered.workspaceRoots.join(path.delimiter)}`,
+    `Skills: ${discovered.skillRoots.join(path.delimiter) || "(none found)"}`,
+    `Workflows: ${discovered.workflowRoot && discovered.workflowPath ? `${discovered.workflowRoot}${path.sep}${discovered.workflowPath}` : "(none found)"}`,
+    cli.prefix ? `Prefix: ${cli.prefix}` : undefined,
+    cli.workflowRunDir ? `Workflow runs: ${cli.workflowRunDir}` : undefined,
+    cli.quiet ? "(quiet)" : undefined,
+  ]
+    .filter((item): item is string => Boolean(item))
+    .join(" ");
   console.error(
-    `lmstudio-skills MCP server ready. Roots: ${roots.join(path.delimiter)}${
-      cli.prefix ? ` Prefix: ${cli.prefix}` : ""
-    }${
-      cli.quiet ? " (quiet)" : ""
-    }`
+    `lmstudio-skills MCP server ready. ${startupDetails}`
   );
 }
 

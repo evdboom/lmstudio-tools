@@ -402,8 +402,9 @@ and using a distinct `--prefix`:
 This keeps the sandbox model simple — every path is unambiguously inside one
 known root, no merge rules, no name collisions.
 
-The skills server can merge multiple skill roots into one MCP surface by
-repeating `--root`:
+The skills server accepts one or more **workspace roots** by repeating `--root`.
+For each root, it tries to discover `Skills/` and `Workflows/` folders. Missing
+folders are allowed: that root simply contributes no skills and/or no workflows.
 
 ```json
 {
@@ -413,9 +414,9 @@ repeating `--root`:
       "args": [
         "[lm studio tools folder]\\dist\\skills-index.js",
         "--root",
-        "C:\\Tools\\lmstudio-tools\\Skills",
+        "C:\\Tools\\lmstudio-tools",
         "--root",
-        "C:\\Personal\\Skills",
+        "C:\\Personal",
       ]
     }
   }
@@ -423,9 +424,13 @@ repeating `--root`:
 ```
 
 The skills server also accepts `MCP_SKILLS_ROOTS`, separated by the platform
-path delimiter (`;` on Windows, `:` on macOS/Linux). Duplicate skill folder
-names across configured roots are reported as an error so `load_skill` remains
-unambiguous.
+path delimiter (`;` on Windows, `:` on macOS/Linux). These values are treated
+as workspace roots with the same auto-discovery behavior.
+
+Workflow run state is stored separately from source files. Pass
+`--workflow-run-dir <path>` to `skills-index.js` to choose the directory used
+for workflow run JSON files; if omitted, it defaults to `.workflow-runs` in the
+workspace root.
 
 ### Logging
 
@@ -538,7 +543,7 @@ validation.
       "args": [
         "[lm studio tools folder]\\dist\\skills-index.js",
         "--root",
-        "C:\\path\\to\\your\\skills"
+        "C:\\path\\to\\your\\workspace"
       ]
     }
   }
@@ -546,6 +551,19 @@ validation.
 ```
 
 Or use the `MCP_SKILLS_ROOT` env var instead of `--root`. CLI wins if both set.
+
+Expected workspace structure (if present):
+
+```text
+<workspace-root>/
+  Skills/
+    <skill-name>/SKILL.md
+  Workflows/
+    <workflow-name>.md
+```
+
+If `Skills/` is missing, `list_skills` returns an empty list for that root. If
+`Workflows/` is missing, workflow tools are not registered from that root.
 
 ### Recommended system prompt
 

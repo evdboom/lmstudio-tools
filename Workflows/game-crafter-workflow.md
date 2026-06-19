@@ -20,6 +20,10 @@ Multi-step structured workflow to create high-quality RPG games. Each step produ
 
 Ask the user for tone, setting, premise, content limits, length, game kind, and authoring mode. Lock these decisions into a brief.json artifact so later steps can't drift.
 
+```step-meta
+{ "validator": "brief" }
+```
+
 **Instructions:**
 
 1. Ask the user:
@@ -126,15 +130,31 @@ With the brief locked in, create the game's **north star** (the player fantasy),
 - All three fit the brief's tone, setting, and authoring mode
 - No contradictions with brief.json
 
-## Step 3: Story Spine (3–7 Beats)
+## Step 3: Story Spine (Beats)
 
 Create a lightweight beat map (not full prose, not scenes). Each beat names a reveal or decision point that advances the hidden truth or pressure. Beats drive the per-turn loop.
+
+```step-meta
+{ "validator": "beats", "reads": ["authoring_mode"], "skip_when": { "authoring_mode": { "in": ["procedural"] } } }
+```
+
+**How many beats — this depends on the authoring mode from Step 1:**
+
+<<when authoring_mode in [fixed, guided, fixed-endpoint]>>
+This game is authored, so map the full story: at least one beat, as many as the story needs (no upper cap). Every declared end condition should be reachable through these beats.
+<<end>>
+<<when authoring_mode in [open-world]>>
+This is a sandbox: beats are optional. Add 0 or a few loose milestones; the world does not require a fixed plot.
+<<end>>
+<<when authoring_mode in [procedural-startpoint]>>
+This game grows in play: author at most one opening beat (0 or 1). The rest emerges live.
+<<end>>
 
 **Instructions:**
 
 1. Read `<artifact_root>/brief.json` and `<artifact_root>/north_star.json` (including approved mechanics_pitch).
 
-2. Outline 3–7 **beats** (story milestones). Each beat should:
+2. Outline **beats** (story milestones) at the count your mode calls for above. Each beat should:
    - Reveal something about the hidden truth OR escalate the core pressure
    - Be triggered by a player action or a fixed trigger (e.g., "turn 5" or "player visits the manor")
    - Change what the player knows, what tools they have, or what risks exist
@@ -172,14 +192,17 @@ Create a lightweight beat map (not full prose, not scenes). Each beat names a re
 - Each beat has a clear trigger (player action or fixed event)
 - Beats progress toward the hidden truth
 - Beats are compatible with the approved mechanics (especially resolution model and resource pressure)
-- Beats align with authoring mode (e.g., "guided" mode has a clear thread; "procedural" has loose triggers)
-- At least 3 beats, at most 7
+- Beats align with authoring mode (the engine enforces the per-mode count: fixed/guided/fixed-endpoint ≥1 with no upper cap, open-world 0+, procedural-startpoint 0–1, procedural skips this step)
 - No beat contradicts the north_star or hidden_truth
 - Consequence of each beat is concrete
 
 ## Step 4: Runtime Contract
 
-Define the game's state shape, runtime collections, relation types, and win/lose/abandon conditions. This is the schema—the playing model will reference these constantly.
+Define the game's state shape, runtime collections, relation types, win/lose/abandon conditions, and the content categories this game must contain. This is the schema—the playing model will reference these constantly.
+
+```step-meta
+{ "validator": "runtime_contract", "reads": ["authoring_mode"] }
+```
 
 **Instructions:**
 
@@ -230,11 +253,17 @@ Define the game's state shape, runtime collections, relation types, and win/lose
     "win": "Player solves mystery and confronts culprit with evidence",
     "lose": "Time runs out or key witness dies",
     "abandon": "Player gives up or story becomes impossible"
+  },
+  "content_targets": {
+    "clues": { "min_count": 3, "authored": true },
+    "suspects": { "min_count": 3, "authored": true }
   }
 }
 ```
 
-**How to submit:** Save this JSON as `<artifact_root>/runtime_contract.json`. The collections and state_shape will be passed to `scaffold()` in Step 8.
+`content_targets` declares every content category the finished game MUST contain and how many. Each key here MUST also be a `runtime_collections` entry — declaring "quests" forces a quests collection. The engine raises each collection's min_count to its target, so a game that "forgot" a declared category fails verify_campaign. Use it to lock the bigger picture (quests, monsters, etc.) so later steps can't silently drop it.
+
+**How to submit:** Save this JSON as `<artifact_root>/runtime_contract.json`. The collections, state_shape, and content_targets will be passed to `scaffold()` in Step 8.
 
 ### Verify
 
@@ -301,6 +330,10 @@ Generate **only** the minimum boot content needed for this authoring mode. For f
 ## Step 6: Play Loop Writer
 
 Write the PLAY.md system prompt for the playing model. This is the game's per-turn recipe. Must be runnable end-to-end with the generic play tools.
+
+```step-meta
+{ "validator": "playmd" }
+```
 
 **Instructions:**
 

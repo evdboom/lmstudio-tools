@@ -5,3 +5,6 @@ dist/
 .env
 games/
 .workflow-runs/
+web/test-results/
+web/playwright-report/
+web/.vite/

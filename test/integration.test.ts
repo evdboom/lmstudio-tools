@@ -197,15 +197,15 @@ describe("MCP integration over stdio", () => {
   it("skills server supports repeated roots and prefixed tool names", async () => {
     const otherRoot = await fs.mkdtemp(path.join(path.dirname(root), "skills-"));
     try {
-      await fs.mkdir(path.join(root, "alpha"), { recursive: true });
+      await fs.mkdir(path.join(root, "Skills", "alpha"), { recursive: true });
       await fs.writeFile(
-        path.join(root, "alpha", "SKILL.md"),
+        path.join(root, "Skills", "alpha", "SKILL.md"),
         "---\ndescription: A\n---\nalpha body",
         "utf8"
       );
-      await fs.mkdir(path.join(otherRoot, "zebra"), { recursive: true });
+      await fs.mkdir(path.join(otherRoot, "Skills", "zebra"), { recursive: true });
       await fs.writeFile(
-        path.join(otherRoot, "zebra", "SKILL.md"),
+        path.join(otherRoot, "Skills", "zebra", "SKILL.md"),
         "---\ndescription: Z\n---\nzebra body",
         "utf8"
       );

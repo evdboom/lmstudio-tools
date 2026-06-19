@@ -458,7 +458,7 @@ export function registerWorkflowTools(
 
   server.tool(
     toolName("workflow_submit_step"),
-    "Submit output for the current step. If the step has a Verify section and verified=false, returns the verify prompt. Call again with verified=true to proceed to the next step.",
+    "Submit output for the current step. Steps with a machine validator are checked by the engine: it reads the step's artifact, validates schema/cross-references, and either FAILS with a problem list (fix and resubmit — verified is ignored) or PASSES and echoes what it parsed for you to cross-check before advancing. Steps without a validator fall back to the Verify section: if verified=false, returns the verify prompt; call again with verified=true to proceed. Some steps auto-skip based on earlier decisions (e.g. authoring mode).",
     {
       run_id: z.string().min(1).describe("Workflow run id returned by workflow_open."),
       output: z.string().min(1).describe("Your submission output (artifacts, decisions, or results)."),

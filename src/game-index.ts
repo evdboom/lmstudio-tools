@@ -12,10 +12,17 @@ import {
   createLocation,
   createNpc,
   createQuest,
+} from "./game.js";
+import {
   createSaveSlot,
   listSaveSlots,
   runtimeCampaignPath,
-} from "./game.js";
+} from "./runtime-shared.js";
+import {
+  createCheckpoint,
+  listCheckpoints,
+  restoreCheckpoint,
+} from "./checkpoints.js";
 import {
   gameCommit,
   gameOpen,
@@ -347,15 +354,17 @@ export function registerPlayerTools(
 
   server.tool(
     toolName("game_scene"),
-    "Return the current scene packet for the active save slot: selected state fields, summaries of each runtime collection the game declares, a rolling recap, and recent journal entries. Call at the start of each turn. Use focus to load only some collections for a cheap turn.",
+    "Return the current scene packet for the active save slot. The engine auto-resolves what the turn needs so you rarely need game_read: selected state fields, the current location's full entity, related entities one hop away (exits, monsters, npcs) via relations, a compact mechanics reminder, win/lose/abandon status, declared collection summaries, a rolling recap, and recent journal. Call at the start of each turn. Use focus to load only some collections; lean=true drops collection summaries for a cheap turn; include limits the packet to named blocks (e.g. ['current_location']).",
     {
       campaign_path: campaignPath,
       save_slot: saveSlot,
       focus: z.array(z.string()).optional().describe("Optional list of collection names to include (default: all declared)."),
       journal_limit: z.number().int().positive().max(50).default(5).describe("Recent journal entries to include."),
+      lean: z.boolean().optional().describe("If true, omit collection summaries (location + related + mechanics usually suffice)."),
+      include: z.array(z.string()).optional().describe("Restrict the packet to these blocks, e.g. ['current_location','mechanics']. state is always included."),
     },
-    wrap("game_scene", ({ campaign_path, save_slot, focus, journal_limit }) =>
-      gameScene(root, runtimeCampaignPath(campaign_path, save_slot), { focus, journalLimit: journal_limit }), log)
+    wrap("game_scene", ({ campaign_path, save_slot, focus, journal_limit, lean, include }) =>
+      gameScene(root, runtimeCampaignPath(campaign_path, save_slot), { focus, journalLimit: journal_limit, lean, include }), log)
   );
 
   server.tool(
@@ -434,7 +443,7 @@ export function registerPlayerTools(
 
   server.tool(
     toolName("game_commit"),
-    "End the turn: bump the turn counter, deep-merge state_patch into state, set last_summary, and append a journal entry. A pre-turn snapshot is saved so the turn can be undone with game_rewind. Make durable entity changes with game_write before committing.",
+    "End the turn: bump the turn counter, deep-merge state_patch into state, set last_summary, and append a journal entry. A pre-turn snapshot is saved so the turn can be undone with game_rewind. The engine guards the commit: if state_patch would drop a required state field it is rejected with a corrective problems list (re-send including that field); declared auto-clocks advance; declared win/lose/abandon conditions are evaluated and a met terminal is recorded on state.outcome (returned as `resolved`). Make durable entity changes with game_write before committing.",
     {
       campaign_path: campaignPath,
       save_slot: saveSlot,
@@ -476,19 +485,35 @@ export function registerPlayerTools(
 
   server.tool(
     toolName("game_save"),
-    "Manage playthrough save slots. action 'create' copies the campaign template runtime into a new slot; action 'list' returns existing slots with turn/summary metadata.",
+    "Manage saves. Slot actions: 'create' copies the campaign template runtime into a new playthrough slot; 'list' returns slots with turn/summary metadata. Checkpoint actions (named manual saves inside a slot, distinct from automatic per-turn snapshots): 'checkpoint' names the current runtime, 'checkpoints' lists them, 'restore' rolls the slot back to one (auto-saving a pre-restore checkpoint first). Checkpoint actions require save_slot.",
     {
       campaign_path: campaignPath,
-      action: z.enum(["create", "list"]).default("list"),
+      action: z.enum(["create", "list", "checkpoint", "checkpoints", "restore"]).default("list"),
+      save_slot: z.string().min(1).optional().describe("Save slot id. Required for checkpoint/checkpoints/restore."),
       slot_id: z.string().min(1).optional().describe("Slot id for create. Generated from label/character if omitted."),
-      label: z.string().optional().describe("Human-readable save label."),
+      name: z.string().min(1).optional().describe("Checkpoint name for checkpoint/restore."),
+      label: z.string().optional().describe("Human-readable save/checkpoint label."),
       character: z.record(z.unknown()).optional().describe("Free-form protagonist metadata for this playthrough."),
-      overwrite: z.boolean().default(false).describe("If true, replace an existing slot with the same id."),
+      overwrite: z.boolean().default(false).describe("If true, replace an existing slot or checkpoint with the same id."),
     },
-    wrap("game_save", ({ campaign_path, action, slot_id, label, character, overwrite }) =>
-      action === "create"
-        ? createSaveSlot(root, campaign_path, { slotId: slot_id, label, character, overwrite })
-        : listSaveSlots(root, campaign_path), log)
+    wrap("game_save", ({ campaign_path, action, save_slot, slot_id, name, label, character, overwrite }) => {
+      if (action === "create") {
+        return createSaveSlot(root, campaign_path, { slotId: slot_id, label, character, overwrite });
+      }
+      if (action === "list") return listSaveSlots(root, campaign_path);
+      if (!save_slot) {
+        return Promise.resolve({ ok: false as const, error: `action "${action}" requires save_slot.` });
+      }
+      const runtimePath = runtimeCampaignPath(campaign_path, save_slot);
+      if (action === "checkpoint") {
+        if (!name) return Promise.resolve({ ok: false as const, error: "checkpoint requires name." });
+        return createCheckpoint(root, runtimePath, { name, label, overwrite });
+      }
+      if (action === "checkpoints") return listCheckpoints(root, runtimePath);
+      // restore
+      if (!name) return Promise.resolve({ ok: false as const, error: "restore requires name." });
+      return restoreCheckpoint(root, runtimePath, name);
+    }, log)
   );
 }
 

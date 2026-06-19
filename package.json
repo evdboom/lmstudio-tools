@@ -15,6 +15,7 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
+    "api": "tsx src/web-api.ts --root .",
     "test": "vitest run",
     "test:watch": "vitest"
   },

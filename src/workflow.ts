@@ -33,6 +33,7 @@ import * as path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { safeResolve, SandboxError } from "./sandbox.js";
 import { readTextFile, ReadError } from "./io.js";
+import { getStepValidator, type ArtifactCheckContext } from "./workflow-validators.js";
 
 export type ToolResult = { ok: true; text: string } | { ok: false; error: string };
 
@@ -43,11 +44,20 @@ export interface WorkflowFrontmatter {
   [key: string]: unknown;
 }
 
+/** Machine-readable per-step metadata parsed from a ```step-meta JSON fence. */
+export interface StepMeta {
+  reads?: string[];
+  skip_when?: Record<string, { in?: unknown[]; equals?: unknown }>;
+  validator?: string;
+  [key: string]: unknown;
+}
+
 export interface WorkflowStep {
   number: number;
   title: string;
   instruction: string; // Raw Markdown
   verify?: string; // Raw Markdown verify section if present
+  meta?: StepMeta; // Optional branching/validation metadata
 }
 
 export interface WorkflowSpec {
@@ -56,16 +66,29 @@ export interface WorkflowSpec {
   steps: WorkflowStep[];
 }
 
+export interface StepValidationRecord {
+  at: string;
+  pass: boolean;
+  errors: string[];
+  echo: Record<string, unknown>;
+}
+
 export interface WorkflowRun {
   run_id: string;
   workflow_path: string; // Relative to root
   workflow_id: string; // Derived from workflow file name
   current_step: number; // 1-indexed; 0 = not started
-  completed_steps: Record<number, { submitted_at: string; output?: string; notes?: string }>;
+  completed_steps: Record<number, { submitted_at: string; output?: string; notes?: string; skipped?: boolean }>;
   started_at: string;
   last_updated: string;
   status: "active" | "blocked" | "completed";
   blocked_reason?: string;
+  /** Set in step 1 from the submitted artifact path (games/<slug>/). */
+  artifact_root?: string;
+  /** Facts derived from validated artifacts; drives branching + later validators. */
+  decisions?: Record<string, unknown>;
+  /** Per-step machine-validation results, for audit. */
+  step_validations?: Record<number, StepValidationRecord>;
 }
 
 const GAME_CRAFTER_ROOT_ARTIFACT_PATTERN =
@@ -102,6 +125,22 @@ function workflowActivationGuidance(runId: string): string[] {
 const WORKFLOW_FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
 const STEP_HEADING_RE = /^##\s+Step\s+(\d+):\s+(.+?)(?:\r?\n|$)/im;
 const VERIFY_HEADING_RE = /^###\s+Verify\s*(?:\r?\n|$)/im;
+const STEP_META_RE = /```step-meta\s*\r?\n([\s\S]*?)```/i;
+
+/** Extract and strip a ```step-meta JSON fence from a step's instruction. */
+function extractStepMeta(instruction: string): { instruction: string; meta?: StepMeta } {
+  const m = STEP_META_RE.exec(instruction);
+  if (!m) return { instruction };
+  let meta: StepMeta | undefined;
+  try {
+    const parsed = JSON.parse(m[1]);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) meta = parsed as StepMeta;
+  } catch {
+    // Malformed step-meta is ignored (treated as no meta).
+  }
+  const stripped = (instruction.slice(0, m.index) + instruction.slice(m.index + m[0].length)).trim();
+  return { instruction: stripped, meta };
+}
 
 export function parseWorkflow(text: string): WorkflowSpec {
   // Extract frontmatter
@@ -161,10 +200,52 @@ export function parseWorkflow(text: string): WorkflowSpec {
       verify = stepContent.substring(verifyMatch.index! + verifyMatch[0].length).trim();
     }
 
-    steps.push({ number, title, instruction, verify });
+    const { instruction: cleanInstruction, meta } = extractStepMeta(instruction);
+    steps.push({ number, title, instruction: cleanInstruction, verify, meta });
   }
 
   return { frontmatter, overview, steps };
+}
+
+// ---------------------------------------------------------------------------
+// Branching: conditional rendering + skip evaluation + artifact root
+// ---------------------------------------------------------------------------
+
+const WHEN_BLOCK_RE = /<<when\s+([a-z0-9_]+)\s+in\s+\[([^\]]*)\]>>([\s\S]*?)<<end>>/gi;
+const VAR_RE = /<<var\s+([a-z0-9_]+)>>/gi;
+
+/** Resolve <<when KEY in [a,b]>>…<<end>> blocks and <<var KEY>> against decisions. */
+export function renderStep(instruction: string, decisions: Record<string, unknown> = {}): string {
+  let out = instruction.replace(WHEN_BLOCK_RE, (_m, key: string, listRaw: string, body: string) => {
+    const allowed = listRaw.split(",").map((s) => s.trim()).filter(Boolean);
+    const value = decisions[key];
+    return allowed.includes(String(value)) ? body.trim() : "";
+  });
+  out = out.replace(VAR_RE, (_m, key: string) => {
+    const value = decisions[key];
+    return value === undefined || value === null ? "" : String(value);
+  });
+  // Collapse the blank lines a removed block may leave behind.
+  return out.replace(/\n{3,}/g, "\n\n").trim();
+}
+
+/** True when a step's skip_when matches the current decisions. */
+export function shouldSkip(meta: StepMeta | undefined, decisions: Record<string, unknown> = {}): boolean {
+  if (!meta || !meta.skip_when) return false;
+  for (const [key, cond] of Object.entries(meta.skip_when)) {
+    const value = decisions[key];
+    if (Array.isArray(cond.in) && cond.in.map(String).includes(String(value))) return true;
+    if ("equals" in cond && String(cond.equals) === String(value)) return true;
+  }
+  return false;
+}
+
+const ARTIFACT_ROOT_RE = /games\/([a-z0-9][a-z0-9-]*)\b/i;
+
+/** Pull `games/<slug>` out of a step-1 submission so later validators can read artifacts. */
+export function extractArtifactRoot(output: string): string | undefined {
+  const m = ARTIFACT_ROOT_RE.exec(output);
+  return m ? `games/${m[1]}` : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -282,7 +363,7 @@ export async function workflowOpen(
       spec.overview,
       "",
       `## ${step.title}`,
-      step.instruction,
+      renderStep(step.instruction, run.decisions),
       ...(step.verify ? ["", "### Verify", step.verify] : []),
       "",
       `**Execute now:** Perform this step immediately and then call workflow_submit_step with your output.`,
@@ -371,19 +452,6 @@ export async function workflowSubmitStep(
       return { ok: false, error: `Step ${run.current_step} not found` };
     }
 
-    // If this step has a verify section and not yet verified, return verify prompt
-    if (step.verify && !verified) {
-      return {
-        ok: true,
-        text: [
-          `## Verify Step ${step.number}`,
-          step.verify,
-          "",
-          `Call workflow_submit_step again with verified=true to proceed.`,
-        ].join("\n"),
-      };
-    }
-
     // Hard guard for game-crafter: reject root-level artifact references.
     // The workflow requires all artifacts under games/<game-slug>/...
     if (run.workflow_id === "game-crafter-workflow") {
@@ -401,35 +469,131 @@ export async function workflowSubmitStep(
       }
     }
 
-    // Record completion
-    run.completed_steps[run.current_step] = {
-      submitted_at: new Date().toISOString(),
-      output,
-    };
-
-    // Move to next step
-    const nextStepNum = run.current_step + 1;
-    const nextStep = spec.steps.find((s) => s.number === nextStepNum);
-
-    if (!nextStep) {
-      // Workflow complete
-      run.status = "completed";
-      run.current_step = 0;
-    } else {
-      run.current_step = nextStepNum;
+    // Capture the artifact root from the submission (so later validators can read files).
+    run.decisions ??= {};
+    if (!run.artifact_root) {
+      const ar = extractArtifactRoot(output);
+      if (ar) run.artifact_root = ar;
     }
 
+    // Machine validation path: read the step's artifact, check it, echo back.
+    const validator = getStepValidator(run.workflow_id, step.number);
+    if (validator) {
+      const ctx: ArtifactCheckContext = {
+        root,
+        artifactRoot: run.artifact_root,
+        output,
+        decisions: run.decisions,
+      };
+      const result = await validator(ctx);
+      run.step_validations ??= {};
+      run.step_validations[step.number] = {
+        at: new Date().toISOString(),
+        pass: result.pass,
+        errors: result.errors,
+        echo: result.echo,
+      };
+
+      if (!result.pass) {
+        run.last_updated = new Date().toISOString();
+        await writeRunState(root, workflowRunDir, runId, run);
+        return {
+          ok: true,
+          text: [
+            `## Step ${step.number} validation FAILED`,
+            "The engine checked your artifact and found problems. Fix them and call workflow_submit_step again.",
+            "",
+            "Problems:",
+            ...result.errors.map((e) => `- ${e}`),
+            ...(result.warnings.length ? ["", "Warnings:", ...result.warnings.map((w) => `- ${w}`)] : []),
+            "",
+            "What the engine parsed (cross-check against your intent):",
+            "```json",
+            JSON.stringify(result.echo, null, 2),
+            "```",
+          ].join("\n"),
+        };
+      }
+
+      if (result.decisions) Object.assign(run.decisions, result.decisions);
+      run.completed_steps[run.current_step] = { submitted_at: new Date().toISOString(), output };
+      const advance = advanceWithSkips(run, spec);
+      run.last_updated = new Date().toISOString();
+      await writeRunState(root, workflowRunDir, runId, run);
+
+      const reflection = [
+        `## Step ${step.number} validated`,
+        "The engine validated your artifact. Cross-check this against your working context before continuing:",
+        "```json",
+        JSON.stringify(result.echo, null, 2),
+        "```",
+        ...(result.warnings.length ? ["", "Warnings:", ...result.warnings.map((w) => `- ${w}`)] : []),
+        ...(advance.skipped.length ? ["", `Skipped step(s) ${advance.skipped.join(", ")} (not applicable to authoring mode).`] : []),
+        "",
+        run.status === "completed"
+          ? "✓ Workflow completed — every step validated."
+          : `Moving to step ${run.current_step}: ${advance.nextStep?.title}.`,
+      ].join("\n");
+      return { ok: true, text: reflection };
+    }
+
+    // No machine validator: fall back to the self-attested verify gate.
+    if (step.verify && !verified) {
+      return {
+        ok: true,
+        text: [
+          `## Verify Step ${step.number}`,
+          step.verify,
+          "",
+          `Call workflow_submit_step again with verified=true to proceed.`,
+        ].join("\n"),
+      };
+    }
+
+    run.completed_steps[run.current_step] = { submitted_at: new Date().toISOString(), output };
+    const advance = advanceWithSkips(run, spec);
     run.last_updated = new Date().toISOString();
     await writeRunState(root, workflowRunDir, runId, run);
 
     const msg =
       run.status === "completed"
         ? `✓ Workflow completed!`
-        : `✓ Step ${step.number} submitted. Moving to step ${nextStepNum}: ${nextStep?.title}`;
+        : `✓ Step ${step.number} submitted.${advance.skipped.length ? ` Skipped ${advance.skipped.join(", ")}.` : ""} Moving to step ${run.current_step}: ${advance.nextStep?.title}`;
 
     return { ok: true, text: msg };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * Advance current_step past the just-completed step, auto-skipping any steps
+ * whose skip_when matches the run's decisions. Sets completed status when no
+ * applicable step remains.
+ */
+function advanceWithSkips(run: WorkflowRun, spec: WorkflowSpec): { nextStep?: WorkflowStep; skipped: number[] } {
+  const skipped: number[] = [];
+  let n = run.current_step + 1;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const step = spec.steps.find((s) => s.number === n);
+    if (!step) {
+      run.status = "completed";
+      run.current_step = 0;
+      return { skipped };
+    }
+    if (shouldSkip(step.meta, run.decisions ?? {})) {
+      run.completed_steps[n] = {
+        submitted_at: new Date().toISOString(),
+        skipped: true,
+        notes: "skip_when matched decisions",
+      };
+      skipped.push(n);
+      n += 1;
+      continue;
+    }
+    run.current_step = n;
+    return { nextStep: step, skipped };
   }
 }
 
@@ -462,7 +626,7 @@ export async function workflowCurrentStep(
         ...workflowActivationGuidance(runId),
         "",
         `## Step ${step.number}: ${step.title}`,
-        step.instruction,
+        renderStep(step.instruction, run.decisions),
         ...(step.verify ? ["", "### Verify", step.verify] : []),
         "",
         `**Execute now:** Perform this step immediately and then call workflow_submit_step with your output.`,

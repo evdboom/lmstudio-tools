@@ -15,7 +15,13 @@ import {
   listSaveSlots,
   deepMerge,
   templateCampaignPath,
-} from "./game.js";
+} from "./runtime-shared.js";
+import {
+  evaluateConditions,
+  validateCommit,
+  applyAutoClocks,
+} from "./runtime-contract.js";
+import { listCheckpoints } from "./checkpoints.js";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -60,6 +66,8 @@ export interface CollectionSpec {
   min_count?: number;
   boot_required?: boolean;
   summary_fields?: string[];
+  /** Optional semantic role; "location" marks the collection game_scene resolves. */
+  role?: string;
 }
 
 export interface BootSpec {
@@ -74,6 +82,65 @@ export interface PacketRecipe {
   state_fields?: string[];
   collections?: string[];
   journal?: { limit?: number };
+  // Rich auto-context additions (all optional; safe defaults keep old games unchanged).
+  location_field?: string;            // state field holding the current location id (default "location")
+  resolve_current_location?: boolean; // default true
+  location_collection?: string;       // explicit location collection; else inferred
+  location_detail_fields?: string[];  // allowlist of fields kept from the location entity
+  location_desc_chars?: number;       // truncate description to this many chars
+  include_related?: boolean;          // default true
+  related_types?: string[];           // optional relation-type filter
+  related_limit?: number;             // cap per related group (default 8)
+  mechanics_ref?: string;             // where to load the mechanics reminder from
+  mechanics_char_limit?: number;      // cap total mechanics text (default 600)
+  lean_default?: boolean;             // when true, packets omit collection summaries by default
+}
+
+/** Machine-readable mechanics reminder (source of truth; PLAY.md prose stays human-facing). */
+export interface MechanicsBlock {
+  summary?: string;
+  reminders?: string[];
+  dice?: { default?: string; thresholds?: Record<string, number> };
+}
+
+/** A tiny no-code condition the engine can evaluate against game state. */
+export interface WhenClause {
+  state?: string;
+  flag?: string;
+  eq?: unknown;
+  equals?: unknown;
+  lt?: number;
+  lte?: number;
+  gt?: number;
+  gte?: number;
+  includes?: unknown;
+  all?: WhenClause[];
+  any?: WhenClause[];
+}
+
+export interface ConditionSpec {
+  id: string;
+  label?: string;
+  when: WhenClause;
+}
+
+export interface AutoClock {
+  id: string;
+  every?: number;
+  amount?: number;
+}
+
+/** Optional declared contract: required state fields, win/lose/abandon conditions, clocks. */
+export interface RuntimeContract {
+  required_state_fields?: string[];
+  content_targets?: Record<string, { min_count?: number; authored?: boolean }>;
+  conditions?: {
+    win?: ConditionSpec[];
+    lose?: ConditionSpec[];
+    abandon?: ConditionSpec[];
+  };
+  clocks?: { auto_advance?: AutoClock[] };
+  audit?: boolean;
 }
 
 export interface Manifest {
@@ -88,6 +155,9 @@ export interface Manifest {
   boot: BootSpec;
   content_files?: string[];
   tags?: string[];
+  concept?: string;
+  mechanics?: MechanicsBlock;
+  runtime_contract?: RuntimeContract;
   [key: string]: unknown;
 }
 
@@ -103,6 +173,9 @@ export interface ScaffoldOptions {
   opening?: string;
   openingPath?: string | null;
   usesDice?: boolean;
+  concept?: string;
+  mechanics?: MechanicsBlock;
+  runtimeContract?: RuntimeContract;
 }
 
 export interface EnsureCollectionIndexOptions {
@@ -277,6 +350,16 @@ export async function scaffoldCampaign(root: string, options: ScaffoldOptions): 
     const pitch = options.pitch?.trim() || "A schema-flexible game scaffold, ready for authoring.";
     const authoringMode = normalizeAuthoringMode(options.authoringMode);
     const collections = normalizeScaffoldCollections(options.collections);
+    // content_targets in the contract raise the matching collection's min_count
+    // so "declared but unauthored" content is a hard verify failure.
+    if (options.runtimeContract?.content_targets) {
+      for (const [cat, target] of Object.entries(options.runtimeContract.content_targets)) {
+        const min = typeof target.min_count === "number" ? target.min_count : 0;
+        if (collections[cat]) {
+          collections[cat].min_count = Math.max(collections[cat].min_count ?? 0, min);
+        }
+      }
+    }
     const openingPath = options.openingPath === null ? null : (options.openingPath?.trim() || "20-story/opening-scene.md");
 
     const rawState = isRecord(options.state) ? options.state : {};
@@ -320,6 +403,9 @@ export async function scaffoldCampaign(root: string, options: ScaffoldOptions): 
       content_files: openingPath ? [openingPath] : [],
       tags: [],
     };
+    if (options.concept?.trim()) manifest.concept = options.concept.trim();
+    if (isRecord(options.mechanics)) manifest.mechanics = options.mechanics;
+    if (isRecord(options.runtimeContract)) manifest.runtime_contract = options.runtimeContract;
 
     const created: string[] = [];
     await writeJsonAt(root, rel(campaignPath, "game.manifest.json"), manifest, "wx");
@@ -476,10 +562,17 @@ export function validateManifestShape(manifest: unknown): string[] {
   if (typeof mode === "string" && !AUTHORING_MODES.includes(mode as (typeof AUTHORING_MODES)[number])) {
     problems.push(`authoring_mode must be one of ${AUTHORING_MODES.join(", ")} (got ${mode}).`);
   }
+  // Optional blocks: only structurally checked when present (never required here).
+  if ("mechanics" in manifest && manifest.mechanics !== undefined && !isRecord(manifest.mechanics)) {
+    problems.push("mechanics must be a JSON object when present.");
+  }
+  if ("runtime_contract" in manifest && manifest.runtime_contract !== undefined && !isRecord(manifest.runtime_contract)) {
+    problems.push("runtime_contract must be a JSON object when present.");
+  }
   return problems;
 }
 
-function collectionSpecs(manifest: Manifest): Array<{ name: string; spec: CollectionSpec }> {
+export function collectionSpecs(manifest: Manifest): Array<{ name: string; spec: CollectionSpec }> {
   const out: Array<{ name: string; spec: CollectionSpec }> = [];
   if (!isRecord(manifest.runtime_collections)) return out;
   for (const [name, spec] of Object.entries(manifest.runtime_collections)) {
@@ -501,7 +594,7 @@ function indexArrayKey(index: JsonRecord): string {
   return "items";
 }
 
-function readIndexEntries(index: JsonRecord | undefined): { key: string; entries: JsonRecord[] } {
+export function readIndexEntries(index: JsonRecord | undefined): { key: string; entries: JsonRecord[] } {
   if (!index) return { key: "items", entries: [] };
   const key = indexArrayKey(index);
   const raw = index[key];
@@ -645,6 +738,14 @@ export async function gameOpen(
       const opening = await openingText(root, campaignPath, manifest);
       if (opening !== undefined) payload.opening = opening;
     }
+    const checkpoints = await listCheckpoints(root, runtimePath);
+    if (checkpoints.ok) {
+      const list = (JSON.parse(checkpoints.text) as JsonRecord).checkpoints;
+      if (Array.isArray(list) && list.length > 0) {
+        payload.checkpoints = list;
+        payload.next = "Restore a checkpoint with game_save action=\"restore\", or continue with game_scene.";
+      }
+    }
     return ok(json(payload));
   } catch (e) {
     return err(toError(e));
@@ -670,6 +771,167 @@ async function openingText(root: string, templatePath: string, manifest: Manifes
 export interface SceneOptions {
   focus?: string[];
   journalLimit?: number;
+  /** Drop collection summaries — location + related + mechanics usually suffice. */
+  lean?: boolean;
+  /** Restrict the packet to these blocks (state is always included). */
+  include?: string[];
+}
+
+const DEFAULT_LOCATION_FIELDS = [
+  "id", "name", "summary", "description", "exits", "features",
+  "hazards", "present_npcs", "npcs", "tags", "status",
+];
+
+/** Find the collection game_scene should resolve as "the current location". */
+function inferLocationCollection(
+  manifest: Manifest,
+  recipe: PacketRecipe
+): { name: string; spec: CollectionSpec } | undefined {
+  const specs = collectionSpecs(manifest);
+  if (recipe.location_collection) {
+    return specs.find((c) => c.name === recipe.location_collection);
+  }
+  return (
+    specs.find((c) => c.spec.role === "location")
+    ?? specs.find((c) => c.spec.boot_required)
+    ?? specs.find((c) => c.name === "locations" || c.name === "rooms")
+  );
+}
+
+/** Normalize exits whether the entity stores them as an object, array, or nothing. */
+function deriveExits(entry: JsonRecord | null): JsonRecord[] {
+  if (!entry) return [];
+  const exits = entry.exits;
+  if (Array.isArray(exits)) {
+    return exits.map((e) => (isRecord(e) ? e : { id: String(e) }));
+  }
+  if (isRecord(exits)) {
+    return Object.entries(exits).map(([key, value]) =>
+      isRecord(value) ? { key, ...value } : { key, id: String(value) }
+    );
+  }
+  return [];
+}
+
+async function resolveCurrentLocation(
+  root: string,
+  runtimePath: string,
+  manifest: Manifest,
+  recipe: PacketRecipe,
+  state: JsonRecord
+): Promise<{ entry: JsonRecord | null; collection?: string; id?: string }> {
+  if (recipe.resolve_current_location === false) return { entry: null };
+  const field = recipe.location_field || "location";
+  const locId = asString(state[field]);
+  if (!locId) return { entry: null };
+  const locColl = inferLocationCollection(manifest, recipe);
+  if (!locColl) return { entry: null };
+  const dir = displayPath(path.dirname(locColl.spec.index));
+  const full = await readRecordOptional(root, rel(runtimePath, dir, `${locId}.json`));
+  if (!full) return { entry: null, collection: locColl.name, id: locId };
+
+  const fields = recipe.location_detail_fields ?? DEFAULT_LOCATION_FIELDS;
+  const out: JsonRecord = {};
+  for (const f of fields) if (f in full) out[f] = full[f];
+  if (Object.keys(out).length === 0) Object.assign(out, full);
+  if (!("id" in out)) out.id = locId;
+  const descCap = recipe.location_desc_chars ?? 600;
+  if (typeof out.description === "string" && out.description.length > descCap) {
+    out.description = `${out.description.slice(0, descCap)}…`;
+  }
+  return { entry: out, collection: locColl.name, id: locId };
+}
+
+async function resolveRelated(
+  root: string,
+  runtimePath: string,
+  manifest: Manifest,
+  recipe: PacketRecipe,
+  locationEntry: JsonRecord | null,
+  collection?: string,
+  id?: string
+): Promise<JsonRecord> {
+  const limit = Math.max(1, Math.min(recipe.related_limit ?? 8, 25));
+  const typeFilter = Array.isArray(recipe.related_types) && recipe.related_types.length > 0
+    ? new Set(recipe.related_types)
+    : undefined;
+  const related: JsonRecord = {};
+
+  const exits = deriveExits(locationEntry);
+  if (exits.length > 0) related.exits = exits.slice(0, limit);
+
+  if (collection && id) {
+    const selfRef = `${collection}/${id}`;
+    const doc = await readRelationsDocument(root, runtimePath);
+    const groups: Record<string, JsonRecord[]> = {};
+    for (const entry of relationEntries(doc)) {
+      const from = String(entry.from);
+      const to = String(entry.to);
+      const type = String(entry.type);
+      if (typeFilter && !typeFilter.has(type)) continue;
+      let otherRef: string | undefined;
+      if (from === selfRef) otherRef = to;
+      else if (to === selfRef) otherRef = from;
+      if (!otherRef) continue;
+      (groups[type] ??= []).push(await endpointSummary(root, runtimePath, manifest, otherRef));
+    }
+    for (const [type, list] of Object.entries(groups)) {
+      if (type === "exits") continue; // never clobber entity-derived exits
+      related[type] = list.slice(0, limit);
+    }
+  }
+  return related;
+}
+
+async function loadMechanics(
+  root: string,
+  runtimePath: string,
+  manifest: Manifest,
+  recipe: PacketRecipe
+): Promise<string[] | undefined> {
+  const ref = recipe.mechanics_ref;
+  let lines: string[] = [];
+  const block = isRecord(manifest.mechanics) ? (manifest.mechanics as MechanicsBlock) : undefined;
+
+  const flattenBlock = (b: MechanicsBlock): string[] => {
+    const out: string[] = [];
+    if (typeof b.summary === "string" && b.summary.trim()) out.push(b.summary.trim());
+    if (Array.isArray(b.reminders)) {
+      for (const r of b.reminders) if (typeof r === "string" && r.trim()) out.push(r.trim());
+    }
+    return out;
+  };
+
+  if (typeof ref === "string" && (ref.includes("/") || ref.endsWith(".json"))) {
+    // Runtime file path: {lines:[...]} or a mechanics block shape.
+    const data = await readRecordOptional(root, rel(runtimePath, ref.replace(/^30-runtime\//, "")));
+    if (data) {
+      if (Array.isArray((data as JsonRecord).lines)) {
+        lines = ((data as JsonRecord).lines as unknown[]).filter((l): l is string => typeof l === "string");
+      } else {
+        lines = flattenBlock(data as MechanicsBlock);
+      }
+    }
+  } else if (block) {
+    lines = flattenBlock(block);
+  }
+
+  if (lines.length === 0) {
+    const usesDice = isRecord(manifest.boot) && (manifest.boot as BootSpec).uses_dice;
+    if (usesDice) lines = ["Risky actions are resolved with a dice roll; the GM sets the difficulty."];
+  }
+  if (lines.length === 0) return undefined;
+
+  // Char-cap the reminder so it never dominates the packet.
+  const cap = recipe.mechanics_char_limit ?? 600;
+  const capped: string[] = [];
+  let total = 0;
+  for (const line of lines) {
+    if (total + line.length > cap && capped.length > 0) break;
+    capped.push(line);
+    total += line.length;
+  }
+  return capped;
 }
 
 async function scenePacket(
@@ -683,6 +945,12 @@ async function scenePacket(
     ? (manifest.boot.packet as PacketRecipe)
     : {}) ?? {};
 
+  const includeSet = Array.isArray(options.include) && options.include.length > 0
+    ? new Set(options.include)
+    : undefined;
+  const wants = (block: string) => (includeSet ? includeSet.has(block) : true);
+  const lean = options.lean ?? recipe.lean_default ?? false;
+
   // State fields: declared subset, or the whole state object.
   let stateView: JsonRecord;
   if (Array.isArray(recipe.state_fields) && recipe.state_fields.length > 0) {
@@ -691,32 +959,55 @@ async function scenePacket(
   } else {
     stateView = state;
   }
+  const packet: JsonRecord = { state: stateView };
 
-  // Collections: declared subset (or recipe.collections), narrowed by focus.
-  const specs = collectionSpecs(manifest);
-  const recipeNames = Array.isArray(recipe.collections) && recipe.collections.length > 0
-    ? new Set(recipe.collections)
-    : undefined;
-  const focusNames = options.focus && options.focus.length > 0 ? new Set(options.focus) : undefined;
-
-  const collections: JsonRecord = {};
-  for (const { name, spec } of specs) {
-    if (recipeNames && !recipeNames.has(name)) continue;
-    if (focusNames && !focusNames.has(name)) continue;
-    const index = await readRecordOptional(root, rel(runtimePath, spec.index));
-    const { entries } = readIndexEntries(index);
-    collections[name] = entries.map((e) => buildSummary(e, spec.summary_fields));
+  // Current location + one-hop related entities (auto-resolved so the model needn't chain reads).
+  const loc = await resolveCurrentLocation(root, runtimePath, manifest, recipe, state);
+  if (wants("current_location")) {
+    packet.current_location = loc.entry;
+  }
+  if (wants("related") && recipe.include_related !== false) {
+    const related = await resolveRelated(root, runtimePath, manifest, recipe, loc.entry, loc.collection, loc.id);
+    if (Object.keys(related).length > 0) packet.related = related;
   }
 
-  const journalLimit = options.journalLimit ?? recipe.journal?.limit ?? 5;
-  const journal = await recentJournal(root, runtimePath, journalLimit);
+  // Collections: declared subset (or recipe.collections), narrowed by focus. Dropped when lean.
+  if (wants("collections") && !lean) {
+    const specs = collectionSpecs(manifest);
+    const recipeNames = Array.isArray(recipe.collections) && recipe.collections.length > 0
+      ? new Set(recipe.collections)
+      : undefined;
+    const focusNames = options.focus && options.focus.length > 0 ? new Set(options.focus) : undefined;
+    const collections: JsonRecord = {};
+    for (const { name, spec } of specs) {
+      if (recipeNames && !recipeNames.has(name)) continue;
+      if (focusNames && !focusNames.has(name)) continue;
+      const index = await readRecordOptional(root, rel(runtimePath, spec.index));
+      const { entries } = readIndexEntries(index);
+      collections[name] = entries.map((e) => buildSummary(e, spec.summary_fields));
+    }
+    packet.collections = collections;
+  }
 
-  const packet: JsonRecord = {
-    state: stateView,
-    collections,
-    recent_journal: journal,
-  };
-  if (typeof state.recap === "string" && state.recap.trim()) packet.recap = state.recap;
+  // Mechanics reminder (machine-readable source; keeps the model on-rules without re-reading PLAY.md).
+  if (wants("mechanics")) {
+    const mechanics = await loadMechanics(root, runtimePath, manifest, recipe);
+    if (mechanics) packet.mechanics = mechanics;
+  }
+
+  // Win/lose/abandon status, when the game declares conditions.
+  if (wants("conditions")) {
+    const conditions = evaluateConditions(state, manifest.runtime_contract as RuntimeContract | undefined);
+    if (conditions) packet.conditions = conditions;
+  }
+
+  if (wants("recent_journal")) {
+    const journalLimit = options.journalLimit ?? recipe.journal?.limit ?? 5;
+    packet.recent_journal = await recentJournal(root, runtimePath, journalLimit);
+  }
+  if (wants("recap") && typeof state.recap === "string" && state.recap.trim()) {
+    packet.recap = state.recap;
+  }
   return packet;
 }
 
@@ -1078,11 +1369,13 @@ export async function gameCommit(
 ): Promise<ToolResult> {
   try {
     await ensureCampaignFolder(root, runtimePath);
+    const prevState = await readState(root, runtimePath);
     let state = await readState(root, runtimePath);
     const fromTurn = asNumber(state.turn) ?? 0;
-
-    // Snapshot the pre-turn runtime so this turn can be undone.
-    await snapshotRuntime(root, runtimePath, fromTurn);
+    const manifest = await loadManifest(root, runtimePath).catch(() => undefined);
+    const contract = manifest && isRecord(manifest.runtime_contract)
+      ? (manifest.runtime_contract as RuntimeContract)
+      : undefined;
 
     if (options.incrementTurn !== false) state.turn = fromTurn + 1;
     if (typeof options.summary === "string") state.last_summary = options.summary;
@@ -1093,6 +1386,25 @@ export async function gameCommit(
       state = merged;
     }
 
+    // Guardrail: reject before writing if the patch would drop a required field.
+    const problems = validateCommit(prevState, state, contract);
+    if (problems.length > 0) {
+      return err(json({
+        committed: false,
+        error: "Commit rejected: required state fields would be dropped.",
+        problems,
+      }));
+    }
+
+    // Auto-fill last_summary from the journal entry when the model omitted it.
+    if (typeof options.summary !== "string" && isRecord(options.journal)) {
+      const fallback = asString(options.journal.summary) ?? asString(options.journal.outcome);
+      if (fallback) state.last_summary = fallback;
+    }
+
+    // Snapshot the pre-turn runtime so this turn can be undone (after guardrails pass).
+    await snapshotRuntime(root, runtimePath, fromTurn);
+
     if (options.journal !== undefined) {
       const entry = isRecord(options.journal)
         ? { ts: new Date().toISOString(), turn: state.turn ?? 0, ...options.journal }
@@ -1100,14 +1412,55 @@ export async function gameCommit(
       await appendJournal(root, runtimePath, entry);
     }
 
+    // Advance declared auto clocks (no-op when none declared).
+    const ticked = await applyAutoClocks(root, runtimePath, contract, asNumber(state.turn) ?? 0);
+
+    // Evaluate win/lose/abandon; a newly-resolved terminal is recorded on state.
+    const conditions = evaluateConditions(state, contract);
+    if (conditions?.resolved && !isRecord(state.outcome)) {
+      state.outcome = { resolved: conditions.resolved, condition_id: conditions.resolved_id, turn: state.turn ?? 0 };
+      await appendJournal(root, runtimePath, {
+        ts: new Date().toISOString(),
+        turn: state.turn ?? 0,
+        kind: "resolution",
+        resolved: conditions.resolved,
+        condition_id: conditions.resolved_id,
+      });
+    }
+
     const recap = await compactJournalIfNeeded(root, runtimePath, state);
     if (recap !== undefined) state.recap = recap;
 
     await writeState(root, runtimePath, state);
-    return ok(json({ committed: true, turn: state.turn ?? 0, state }));
+
+    // Opt-in append-only audit log (keys only, behind runtime_contract.audit).
+    if (contract?.audit) {
+      await appendTurnLog(root, runtimePath, {
+        turn: state.turn ?? 0,
+        ts: new Date().toISOString(),
+        summary: typeof state.last_summary === "string" ? state.last_summary : undefined,
+        state_patch_keys: isRecord(options.statePatch) ? Object.keys(options.statePatch) : [],
+        resolved: conditions?.resolved ?? null,
+      });
+    }
+
+    const payload: JsonRecord = { committed: true, turn: state.turn ?? 0, state };
+    if (ticked.length > 0) payload.clocks_advanced = ticked;
+    if (conditions?.resolved) payload.resolved = conditions.resolved;
+    return ok(json(payload));
   } catch (e) {
     return err(toError(e));
   }
+}
+
+function turnLogRel(runtimePath: string): string {
+  return rel(runtimePath, RUNTIME_DIR, "turn-log.jsonl");
+}
+
+async function appendTurnLog(root: string, runtimePath: string, entry: unknown): Promise<void> {
+  const abs = await safeResolve(root, turnLogRel(runtimePath));
+  await fs.mkdir(path.dirname(abs), { recursive: true });
+  await fs.appendFile(abs, `${JSON.stringify(entry)}\n`, "utf8");
 }
 
 function snapshotsDirRel(runtimePath: string): string {
@@ -1280,7 +1633,7 @@ function addIssue(issues: VerifyIssue[], severity: VerifyIssue["severity"], code
   issues.push({ severity, code, path: displayPath(p), message });
 }
 
-function parsePlaySections(text: string): Map<string, string> {
+export function parsePlaySections(text: string): Map<string, string> {
   const sections = new Map<string, string>();
   const lines = text.split(/\r?\n/);
   let current: string | null = null;
@@ -1440,10 +1793,45 @@ export async function verifyCampaign(root: string, campaignPath: string): Promis
       }
     }
 
-    // ---- Phase 2: live smoke test (only if Phase 1 passed) ----
+    // Concept + mechanics presence (warnings: the crafter workflow guarantees
+    // these for new games; old games still verify).
+    if (typeof manifest.concept !== "string" || !manifest.concept.trim()) {
+      addIssue(issues, "warning", "missing_concept", MANIFEST_FILE, "manifest.concept is empty; a crafted game should state its one-sentence concept.");
+    }
+    if (!isRecord(manifest.mechanics)) {
+      addIssue(issues, "warning", "missing_mechanics", MANIFEST_FILE, "manifest.mechanics is absent; add a machine-readable mechanics reminder so game_scene can surface it.");
+    }
+    if (playText !== undefined) {
+      const sections = parsePlaySections(playText);
+      if (sections.get("Game mechanics") === undefined) {
+        addIssue(issues, "warning", "missing_play_mechanics", playRel, 'PLAY.md has no "## Game mechanics" section; the playing model relies on it for the rules.');
+      }
+    }
+
+    // content_targets: every declared content category must have a collection
+    // that meets its min_count. Makes "forgot quests/monsters" a hard failure.
+    const contract = isRecord(manifest.runtime_contract) ? (manifest.runtime_contract as RuntimeContract) : undefined;
+    if (contract?.content_targets) {
+      for (const [cat, target] of Object.entries(contract.content_targets)) {
+        const min = typeof target.min_count === "number" ? target.min_count : 0;
+        const spec = collectionSpecs(manifest).find((c) => c.name === cat);
+        if (!spec) {
+          addIssue(issues, "error", "content_target_no_collection", MANIFEST_FILE, `content_targets declares "${cat}" but no runtime_collections entry exists for it.`);
+          continue;
+        }
+        const idxData = await readJsonOptional(root, rel(campaignPath, spec.spec.index));
+        const count = isRecord(idxData) ? readIndexEntries(idxData).entries.length : 0;
+        if (count < min) {
+          addIssue(issues, "error", "content_target_below_min", rel(campaignPath, spec.spec.index), `content_targets requires "${cat}" >= ${min}; found ${count}.`);
+        }
+      }
+    }
+
+    // ---- Phase 2: live smoke test + multi-turn playtest (only if Phase 1 passed) ----
     let smoke: JsonRecord | undefined;
     if (issues.filter((i) => i.severity === "error").length === 0) {
       smoke = await runSmokeTest(root, campaignPath, manifest, issues);
+      smoke.playtest = await runPlaytest(root, campaignPath, manifest, issues);
     } else {
       smoke = { ran: false, reason: "Skipped: fix contract errors first." };
     }
@@ -1520,6 +1908,86 @@ async function runSmokeTest(
     }
   } finally {
     // 6. Teardown.
+    await fs.rm(await safeResolve(root, slotPath), { recursive: true, force: true }).catch(() => {});
+  }
+  return steps;
+}
+
+const PLAYTEST_SLOT = "playtest-check";
+const PLAYTEST_TURNS = 3;
+
+/**
+ * Multi-turn scripted playtest: boots a throwaway slot and drives the generic
+ * play loop for several turns using ONLY player verbs, asserting the loop works
+ * (turn advances, journal grows, a collection entry can be written, required
+ * contract state fields survive, win/lose are reachable). Deterministic — no
+ * model — so it runs in CI. This approximates "a fresh chat with the play tools
+ * can actually play this game".
+ */
+async function runPlaytest(
+  root: string,
+  campaignPath: string,
+  manifest: Manifest,
+  issues: VerifyIssue[]
+): Promise<JsonRecord> {
+  const steps: JsonRecord = { ran: true, turns: PLAYTEST_TURNS };
+  const slotPath = rel(campaignPath, "40-saves", PLAYTEST_SLOT);
+  const contract = isRecord(manifest.runtime_contract) ? (manifest.runtime_contract as RuntimeContract) : undefined;
+  const specs = collectionSpecs(manifest);
+  const writeColl = specs[0]?.name;
+  try {
+    const created = await createSaveSlot(root, campaignPath, { slotId: PLAYTEST_SLOT, label: "playtest", overwrite: true });
+    if (!created.ok) {
+      addIssue(issues, "error", "playtest_create_slot_failed", `40-saves/${PLAYTEST_SLOT}`, created.error);
+      return { ...steps, create_slot: false };
+    }
+
+    let loopOk = true;
+    for (let turn = 1; turn <= PLAYTEST_TURNS; turn++) {
+      const scene = await gameScene(root, slotPath, {});
+      if (!scene.ok) {
+        addIssue(issues, "error", "playtest_scene_failed", `40-saves/${PLAYTEST_SLOT}`, scene.error);
+        loopOk = false;
+        break;
+      }
+      if (writeColl) {
+        const w = await gameWrite(root, slotPath, `${writeColl}/playtest-${turn}`, { id: `playtest-${turn}`, name: `Playtest ${turn}`, status: "active" }, "merge");
+        if (!w.ok) {
+          addIssue(issues, "error", "playtest_write_failed", `40-saves/${PLAYTEST_SLOT}`, w.error);
+          loopOk = false;
+          break;
+        }
+      }
+      const before = asNumber((await readState(root, slotPath)).turn) ?? 0;
+      const commit = await gameCommit(root, slotPath, { summary: `playtest turn ${turn}`, journal: { summary: `playtest turn ${turn}` } });
+      const after = asNumber((await readState(root, slotPath)).turn) ?? 0;
+      if (!commit.ok || after !== before + 1) {
+        addIssue(issues, "error", "playtest_commit_failed", `40-saves/${PLAYTEST_SLOT}`, commit.ok ? "Turn did not advance during playtest." : commit.error);
+        loopOk = false;
+        break;
+      }
+    }
+    steps.loop = loopOk;
+
+    // Required contract state fields survived the loop.
+    if (contract?.required_state_fields?.length) {
+      const finalState = await readState(root, slotPath);
+      const missing = contract.required_state_fields.filter((f) => !(f in finalState) || finalState[f] === null);
+      if (missing.length > 0) {
+        addIssue(issues, "error", "playtest_state_fields_lost", `40-saves/${PLAYTEST_SLOT}`, `Required state fields missing after playtest: ${missing.join(", ")}.`);
+      }
+      steps.state_fields_kept = missing.length === 0;
+    }
+
+    // Win/lose reachability: declared, non-empty, distinct ids.
+    if (contract?.conditions) {
+      const win = contract.conditions.win ?? [];
+      const lose = contract.conditions.lose ?? [];
+      if (win.length === 0) addIssue(issues, "warning", "playtest_no_win", "runtime_contract", "No win condition declared; players cannot reach a victory state.");
+      if (lose.length === 0) addIssue(issues, "warning", "playtest_no_lose", "runtime_contract", "No lose condition declared.");
+      steps.conditions_declared = win.length > 0 && lose.length > 0;
+    }
+  } finally {
     await fs.rm(await safeResolve(root, slotPath), { recursive: true, force: true }).catch(() => {});
   }
   return steps;

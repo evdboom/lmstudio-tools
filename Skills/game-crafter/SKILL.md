@@ -85,11 +85,27 @@ This is the single source of truth. Declare only the runtime collections this ga
     }
   },
   "content_files": ["10-world/world.md"],
-  "tags": ["mystery"]
+  "tags": ["mystery"],
+  "concept": "One-sentence design concept (what the game is about).",
+  "mechanics": {
+    "summary": "One-line rules reminder game_scene surfaces each turn.",
+    "reminders": ["Short cue.", "Another cue."]
+  },
+  "runtime_contract": {
+    "required_state_fields": ["location"],
+    "conditions": {
+      "win":  [{ "id": "solved", "label": "Case solved", "when": { "flag": "case_solved", "equals": true } }],
+      "lose": [{ "id": "timeout", "label": "Time ran out", "when": { "state": "timer", "lte": 0 } }]
+    },
+    "content_targets": { "suspects": { "min_count": 3 } }
+  }
 }
 ```
 
 Key notes:
+- `concept` + `mechanics` (optional but recommended): `concept` is the one-sentence pitch; `mechanics` is a machine-readable reminder the engine includes in every `game_scene` so the playing model stays on-rules without re-reading PLAY.md.
+- `runtime_contract` (optional, powerful): declare `required_state_fields` (the engine rejects a `game_commit` that drops them), `conditions` (win/lose/abandon — the engine evaluates these each commit using a tiny `when` DSL: `{state:"hp",lte:0}` / `{flag:"x",equals:true}` / `all`/`any`, and records the outcome), and `content_targets` (every category the finished game MUST contain, with a min_count — declaring `quests` here forces a `quests` collection and makes "forgot quests" a hard verify failure). No stats are assumed — a combo/puzzle game uses flags + a clock + conditions, never hp.
+- `mechanics`/`conditions` make `game_scene` richer: it auto-resolves the current location's full entity, related entities (exits/monsters/npcs via relations), the mechanics reminder, and condition status — so a small playing model reads less and reasons less.
 - `runtime_collections`: each entry names a collection the playing model can read/write with `game_write target="<collection>/<id>"`. `summary_fields` are what appear in the cheap scene packet — keep them short. `min_count` and `boot_required` are checked by the harness. Declare a collection only if the game uses it.
 - Runtime collections are the player's allowed durable entity types. If play needs monsters, explored places, combo recipes, rumors, or suspects, declare `monsters`, `locations`, `combos`, `rumors`, or `suspects` here. Then PLAY.md can tell the player model to create/update them with `game_write target="monsters/<id>"` or `game_write target="combos/<id>"`.
 - `boot.start_location`: set to a location id only if you declare a locations-style collection with `boot_required: true`.
@@ -118,6 +134,7 @@ For live state arrays such as `encountered_monsters`, `explored_locations`, or `
 The per-game system prompt for the playing model. Plain prose and short bullets. Required `##` sections (the harness checks they exist and are non-empty):
 
 - `## Premise` — spoiler-light setup the player sees.
+- `## Game mechanics` — the core rules: how a turn resolves, what resource/pressure drives it, the one special rule this game is built around. Mirror this in the manifest `mechanics` block (below) so `game_scene` can surface a reminder each turn.
 - `## Loop` — the exact per-turn procedure for THIS game, using only the generic play tools (`game_scene`, `game_read`, `game_write`, `game_commit`, `game_roll`). State the order. This is where detective ≠ dungeon. It must be runnable end to end — the harness smoke-tests it.
 - `## State Shape` — name the custom `state.json` fields this game keeps, so the model knows what to write back via `game_write target="state"`.
 - `## Tone` — voice, pacing, content limits. You own tone here.
@@ -140,7 +157,7 @@ Do not restate the player-boundary in PLAY.md; the player skill owns it. If they
 
 ## authoring_mode
 
-Pick one. It sets how much you pre-author and what the `## Loop` tells the player model to generate. Set higher `min_count`s for authored content, low (0) for what the model will create in play.
+Pick one. It sets how much you pre-author and what the `## Loop` tells the player model to generate. Set higher `min_count`s for authored content, low (0) for what the model will create in play. It also sets how many story beats to author: `fixed`/`guided`/`fixed-endpoint` author the full spine (any number ≥1); `open-world` needs none; `procedural-startpoint` authors at most one opening beat; `procedural` authors none. Lock the categories the finished game must contain via `runtime_contract.content_targets` so nothing gets silently dropped.
 
 - `fixed` — author the full world and plot. Loop: advance existing content; create new records only on a genuine new thread.
 - `guided` (rode draad) — author a through-line: the spine, the hidden truth/goal, and 3-5 key beats (store them in a `beats` collection or in state). Author a small starting world. Loop: play freely, but keep surfacing the next beat and pulling toward the truth. The thread is fixed; the path is loose.
@@ -156,7 +173,7 @@ Write final player-facing prose only, plain text (no Markdown emphasis, no menus
 ## Verify
 
 - Call `verify_campaign(campaign_path=<campaign>)` after the folder is built.
-- It runs contract checks AND a live smoke test (it boots a throwaway save slot and exercises the play tools). Fix every `severity="error"`, including any `smoke_*` failure, and rerun.
+- It runs contract checks, a live smoke test, AND a multi-turn playtest (it boots a throwaway slot and drives several turns with the generic verbs, checking the turn advances, a collection entry can be written, required state fields survive, and win/lose are reachable). Fix every `severity="error"`, including any `smoke_*` or `playtest_*` failure, and rerun. Warnings (e.g. missing `## Game mechanics`, no `concept`/`mechanics`) won't block but should be addressed for a clean game.
 - If validation reports `invalid_collection_index`, call `repair_collection_indexes(campaign_path=<campaign>)`, then add/fix entries with `write_collection_entry` and rerun verification.
 - Do not give the final response until `verify_campaign` reports `ok=true`.
 

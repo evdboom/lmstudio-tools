@@ -95,11 +95,28 @@ const GAME_CRAFTER_ROOT_ARTIFACT_PATTERN =
   /(^|[^/\\\w-])(brief\.json|north_star\.json|beats\.json|runtime_contract\.json|seeds_manifest\.json|PLAY\.md|opening-scene\.txt|plan\.json|campaign-[a-z0-9-]+)(?=$|[^\w.-])/gim;
 
 function detectRootArtifactRefsForGameCrafter(output: string): string[] {
+  // Extract any declared artifact_root from the output.
+  // If one exists, artifact filenames mentioned after it are implicitly nested.
+  const rootMatch = output.match(/artifact\s+root:\s*([^\s,]+)/i);
+  const declaredRoot = rootMatch ? rootMatch[1] : null;
+  const declaredRootIndex = rootMatch ? rootMatch.index! : -1;
+
   const refs = new Set<string>();
   for (const m of output.matchAll(GAME_CRAFTER_ROOT_ARTIFACT_PATTERN)) {
     const ref = m[2];
-    if (ref) refs.add(ref);
+    const matchIndex = m.index || 0;
+    
+    if (!ref) continue;
+
+    // If an artifact_root was declared before this match, the reference is implicitly nested.
+    if (declaredRoot && declaredRootIndex >= 0 && declaredRootIndex < matchIndex) {
+      continue;
+    }
+
+    // Otherwise, this is a bare root-level reference.
+    refs.add(ref);
   }
+
   return [...refs].sort((a, b) => a.localeCompare(b));
 }
 

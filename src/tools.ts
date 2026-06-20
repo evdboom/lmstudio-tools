@@ -728,11 +728,12 @@ export async function removeFolder(
 export async function workflowOpen(
   root: string,
   workflowPath: string,
-  workflowRunDir = ".workflow-runs"
+  workflowRunDir = ".workflow-runs",
+  workspaceRoot?: string
 ): Promise<ToolResult> {
   try {
     const { workflowOpen: wfOpen } = await import("./workflow.js");
-    return await wfOpen(root, workflowPath, workflowRunDir);
+    return await wfOpen(root, workflowPath, workflowRunDir, workspaceRoot);
   } catch (e) {
     return err(toError(e));
   }

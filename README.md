@@ -432,6 +432,12 @@ Workflow run state is stored separately from source files. Pass
 for workflow run JSON files; if omitted, it defaults to `.workflow-runs` in the
 workspace root.
 
+Workflow artifact verification can use a different workspace root than the
+workflow file location. Call `workflow_open` with `workspace_root` (for example
+`E:\Stories`) and that root is persisted in the run JSON. Step validators then
+read artifacts from `<workspace_root>/games/<slug>/...` while the workflow
+definition and run-state file can remain in your tools repo.
+
 ### Logging
 
 Every tool call writes one JSON line to **stderr** by default:
@@ -625,6 +631,58 @@ npx tsx src/game-player-index.ts --root C:\tmp\mcp-sandbox
 Edit `src/*.ts`, then `npm run build` and restart LM Studio's MCP server
 entry (toggle it off/on in `mcp.json`, or restart LM Studio) so the new `dist/*`
 files are loaded.
+
+## Web inspector frontend
+
+The repository includes a React inspector UI in `web/` and a read-only API server
+in `src/web-api.ts`.
+
+- Root API server: `npm run api` (defaults to `http://localhost:8787`)
+- Frontend dev server: `cd web && npm run dev` (runs on `http://localhost:5173`)
+
+### Dev mode (recommended while editing UI)
+
+Run these in two terminals:
+
+```powershell
+# terminal 1 (repo root)
+npm run api
+
+# terminal 2
+cd web
+npm install
+npm run dev
+```
+
+In dev mode, Vite proxies `/api/*` from port 5173 to the API on port 8787, so
+the browser app works without extra configuration.
+
+To target a different data root (for example `E:\Stories`), pass `--root` when
+starting the API:
+
+```powershell
+npm run api -- --root E:\Stories
+```
+
+The inspector discovers campaigns under `<root>/games`, so with the command
+above it will read from `E:\Stories\games`.
+
+### Single-port mode (serve built frontend from API server)
+
+```powershell
+cd web
+npm install
+npm run build
+
+cd ..
+npm run api
+```
+
+After the build, opening `http://localhost:8787` serves the built SPA from
+`web/dist`, and `/api/*` stays on the same server.
+
+If `web/dist` has not been built yet, the API server returns:
+"Not found. Build the SPA: cd web && npm run build."
 
 ## Tests
 

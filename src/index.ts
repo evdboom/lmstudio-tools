@@ -431,14 +431,15 @@ export function registerWorkflowTools(
 
   server.tool(
     toolName("workflow_open"),
-    "Open a workflow by name and start or resume a run. Use a bare name (e.g., 'game-crafter-workflow') without folder or extension.",
+    "Open a workflow by name and start or resume a run. Use a bare name (e.g., 'game-crafter-workflow') without folder or extension. Optionally set workspace_root to control where artifact validators read files.",
     {
       workflow_path: z.string().min(1).describe("Workflow name only (same style as skills). Example: 'game-crafter-workflow' or '/game-crafter-workflow'."),
+      workspace_root: z.string().min(1).optional().describe("Optional validation workspace root. If omitted, uses the workflow server root. Relative paths resolve from that root."),
     },
     wrap(
       "workflow_open",
-      ({ workflow_path }) =>
-        workflowOpen(root, normalizeWorkflowRef(workflow_path), workflowRunDir),
+      ({ workflow_path, workspace_root }) =>
+        workflowOpen(root, normalizeWorkflowRef(workflow_path), workflowRunDir, workspace_root),
       log
     )
   );

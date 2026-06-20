@@ -38,11 +38,13 @@ Follow the game's instructions for pacing and format. If they call for closed ch
 
 ## Syntax
 
-`*text*` = private thought (not spoken). `"text"` = speech. plain text = action. `**text**` = out-of-character question (answer it, do not advance the turn).
+`"text"` = NPC speech (quotes only — never wrap speech in italics). `*text*` = private/internal thought, not spoken aloud. plain text = action or narration. `**text**` = out-of-character question (answer it, do not advance the turn). Never combine both: `*"text"*` is wrong.
 
 ## Rules
 
-- Tool calls are private — never put tool names or JSON in narration. 120-180 words per turn.
+- Tool calls are private — never put tool names or JSON in narration.
+- **Hard word limit**: narration must be 120–180 words. Count as you write. Stop and commit the moment you reach 180 words — do not add extra paragraphs to fill space or round off the scene. If the narration requires more than 180 words, break it into multiple turns. If you reach 120 words and the scene is complete, commit immediately.
+- **No repetition within a turn**: each sentence must advance the scene. Never re-describe atmosphere, objects, or feelings you have already written in this same turn. If you notice yourself starting a sentence you have already written, stop immediately.
 - If nothing meaningful changed (a small beat), you may skip `game_commit`.
 - For state arrays such as encountered monsters, explored locations, available combos, clues found, or relationship flags, merge the whole updated array/object with `game_write target="state" patch={...}` or with `game_commit state_patch={...}`.
 - For new durable entities, use a declared collection target such as `monsters/ash-wight`, `locations/old-mill`, `combos/salt-and-spark`, or `npcs/mara`. `game_write` refreshes the index.

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { promises as fs } from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import {
   parseWorkflow,
@@ -209,5 +210,57 @@ describe("game-crafter machine validation + branching (end to end)", () => {
     const s3 = await workflowSubmitStep(root, runId, RUN_DIR, "beats saved", false);
     if (s3.ok) expect(s3.text).toContain("validation FAILED");
     expect((await readRun(runId)).current_step).toBe(3);
+  });
+
+  it("validates artifacts from workflow_open workspace_root", async () => {
+    const extBase = await fs.mkdtemp(path.join(os.tmpdir(), "lmstudio-tools-wf-"));
+    const workspaceRoot = await fs.realpath(extBase);
+    try {
+      await write(WF, workflowMd);
+      const opened = await workflowOpen(root, WF, RUN_DIR, workspaceRoot);
+      if (!opened.ok) throw new Error(opened.error);
+      const runId = runIdFrom(opened.text);
+
+      const briefAbs = path.join(workspaceRoot, "games", "g", "brief.json");
+      await fs.mkdir(path.dirname(briefAbs), { recursive: true });
+      await fs.writeFile(briefAbs, JSON.stringify({
+        tone: "grim", setting: "harbor", premise: "p", content_limits: "none",
+        estimated_length: "short", game_kind: "detective", authoring_mode: "fixed",
+        design_concept: "A forged letter.",
+      }, null, 2) + "\n", "utf8");
+
+      const s1 = await workflowSubmitStep(root, runId, RUN_DIR, "Saved games/g/brief.json", false);
+      expect(s1.ok).toBe(true);
+      if (s1.ok) expect(s1.text).toContain("validated");
+
+      const run = await readRun(runId);
+      expect(run.workspace_root).toBe(workspaceRoot);
+      expect(run.artifact_root).toBe("games/g");
+      expect(run.decisions?.authoring_mode).toBe("fixed");
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not reject prose mentions like 'brief.json created at games/.../brief.json'", async () => {
+    const runId = await start();
+    await writeJson("games/g/brief.json", {
+      tone: "grim", setting: "harbor", premise: "p", content_limits: "none",
+      estimated_length: "short", game_kind: "detective", authoring_mode: "fixed",
+      design_concept: "A forged letter.",
+    });
+
+    const s1 = await workflowSubmitStep(
+      root,
+      runId,
+      RUN_DIR,
+      "Step 1 complete: brief.json created at games/g/brief.json and intake finalized.",
+      false
+    );
+    expect(s1.ok).toBe(true);
+    if (s1.ok) {
+      expect(s1.text).toContain("validated");
+      expect(s1.text).not.toContain("root-level artifact path(s) detected");
+    }
   });
 });

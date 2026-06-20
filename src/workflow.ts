@@ -83,6 +83,8 @@ export interface WorkflowRun {
   last_updated: string;
   status: "active" | "blocked" | "completed";
   blocked_reason?: string;
+  /** Root used for artifact verification (defaults to workflow root if unset). */
+  workspace_root?: string;
   /** Set in step 1 from the submitted artifact path (games/<slug>/). */
   artifact_root?: string;
   /** Facts derived from validated artifacts; drives branching + later validators. */
@@ -91,8 +93,14 @@ export interface WorkflowRun {
   step_validations?: Record<number, StepValidationRecord>;
 }
 
-const GAME_CRAFTER_ROOT_ARTIFACT_PATTERN =
-  /(^|[^/\\\w-])(brief\.json|north_star\.json|beats\.json|runtime_contract\.json|seeds_manifest\.json|PLAY\.md|opening-scene\.txt|plan\.json|campaign-[a-z0-9-]+)(?=$|[^\w.-])/gim;
+const GAME_CRAFTER_ARTIFACT_NAME_RE =
+  /(brief\.json|north_star\.json|beats\.json|runtime_contract\.json|seeds_manifest\.json|PLAY\.md|opening-scene\.txt|plan\.json)$/i;
+
+const GAME_CRAFTER_PATHY_REF_RE =
+  /((?:\.{1,2}[\\/])?(?:[^\\/\s]+[\\/])+[^\s,;:)\]\}"'`]+)/g;
+
+const GAME_CRAFTER_CAMPAIGN_DIR_RE =
+  /(^|[^/\\\w-])(campaign-[a-z0-9-]+)(?=$|[^\w.-])/gim;
 
 function detectRootArtifactRefsForGameCrafter(output: string): string[] {
   // Extract any declared artifact_root from the output.
@@ -102,18 +110,33 @@ function detectRootArtifactRefsForGameCrafter(output: string): string[] {
   const declaredRootIndex = rootMatch ? rootMatch.index! : -1;
 
   const refs = new Set<string>();
-  for (const m of output.matchAll(GAME_CRAFTER_ROOT_ARTIFACT_PATTERN)) {
+
+  // Only treat path-like references as enforceable. Plain prose mentions like
+  // "beats.json created at games/x/beats.json" should not be rejected.
+  for (const m of output.matchAll(GAME_CRAFTER_PATHY_REF_RE)) {
+    const rawRef = m[1];
+    const matchIndex = m.index || 0;
+    if (!rawRef) continue;
+    const normalized = rawRef.replace(/\\/g, "/");
+    const lower = normalized.toLowerCase();
+
+    const fileName = normalized.slice(normalized.lastIndexOf("/") + 1);
+    if (!GAME_CRAFTER_ARTIFACT_NAME_RE.test(fileName)) continue;
+
+    // If an artifact_root was declared before this match, references after it are implicitly nested.
+    if (declaredRoot && declaredRootIndex >= 0 && declaredRootIndex < matchIndex) continue;
+
+    if (!lower.startsWith("games/")) {
+      refs.add(fileName);
+    }
+  }
+
+  // Campaign directory references are still considered root-level unless nested under games/.
+  for (const m of output.matchAll(GAME_CRAFTER_CAMPAIGN_DIR_RE)) {
     const ref = m[2];
     const matchIndex = m.index || 0;
-    
     if (!ref) continue;
-
-    // If an artifact_root was declared before this match, the reference is implicitly nested.
-    if (declaredRoot && declaredRootIndex >= 0 && declaredRootIndex < matchIndex) {
-      continue;
-    }
-
-    // Otherwise, this is a bare root-level reference.
+    if (declaredRoot && declaredRootIndex >= 0 && declaredRootIndex < matchIndex) continue;
     refs.add(ref);
   }
 
@@ -307,6 +330,21 @@ async function collectWorkflowFiles(root: string, baseDir: string, relDir = ""):
   return out;
 }
 
+async function resolveWorkspaceRoot(root: string, requested?: string): Promise<string> {
+  if (!requested || requested.trim().length === 0) return root;
+  const candidate = requested.trim();
+  const abs = path.isAbsolute(candidate) ? candidate : path.resolve(root, candidate);
+  const st = await fs.stat(abs).catch(() => null);
+  if (!st || !st.isDirectory()) {
+    throw new Error(`workspace_root is not an existing directory: ${requested}`);
+  }
+  return await fs.realpath(abs);
+}
+
+async function runWorkspaceRoot(root: string, run: WorkflowRun): Promise<string> {
+  return await resolveWorkspaceRoot(root, run.workspace_root);
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -318,7 +356,8 @@ async function collectWorkflowFiles(root: string, baseDir: string, relDir = ""):
 export async function workflowOpen(
   root: string,
   workflowPath: string,
-  workflowRunDir = ".workflow-runs"
+  workflowRunDir = ".workflow-runs",
+  workspaceRoot?: string
 ): Promise<ToolResult> {
   try {
     // Read workflow file
@@ -345,6 +384,7 @@ export async function workflowOpen(
     const workflowId = path.basename(absWf, path.extname(absWf));
 
     const runId = randomUUID();
+    const resolvedWorkspaceRoot = await resolveWorkspaceRoot(root, workspaceRoot);
     const run: WorkflowRun = {
       run_id: runId,
       workflow_path: workflowPath,
@@ -354,6 +394,7 @@ export async function workflowOpen(
       started_at: new Date().toISOString(),
       last_updated: new Date().toISOString(),
       status: "active",
+      workspace_root: resolvedWorkspaceRoot,
     };
 
     // Persist run state
@@ -375,6 +416,7 @@ export async function workflowOpen(
       `Run id: **${runId}**`,
       `Current Step: **${step.number}. ${step.title}**`,
       `Run storage: ${workflowRunDir}/${runId}.json`,
+      `Workspace root: ${resolvedWorkspaceRoot}`,
       "",
       `## Overview`,
       spec.overview,
@@ -458,6 +500,7 @@ export async function workflowSubmitStep(
 ): Promise<ToolResult> {
   try {
     const run = await readRunState(root, workflowRunDir, runId);
+    const workspaceRoot = await runWorkspaceRoot(root, run);
     // Load workflow spec and run state
     const absWf = await safeResolve(root, run.workflow_path);
     const r = await readTextFile(absWf);
@@ -497,7 +540,7 @@ export async function workflowSubmitStep(
     const validator = getStepValidator(run.workflow_id, step.number);
     if (validator) {
       const ctx: ArtifactCheckContext = {
-        root,
+        root: workspaceRoot,
         artifactRoot: run.artifact_root,
         output,
         decisions: run.decisions,
@@ -672,6 +715,8 @@ export async function workflowStatus(root: string, runId: string, workflowRunDir
     const output = [
       `# Workflow Run Status`,
       `Workflow: ${run.workflow_path}`,
+      `Workspace root: ${run.workspace_root ?? root}`,
+      ...(run.artifact_root ? [`Artifact root: ${run.artifact_root}`] : []),
       `Status: **${run.status}**`,
       `Current Step: ${run.current_step === 0 ? "completed" : run.current_step}`,
       `Started: ${run.started_at}`,

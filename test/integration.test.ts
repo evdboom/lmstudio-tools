@@ -282,6 +282,8 @@ describe("MCP integration over stdio", () => {
     expect(names).toEqual(
       [
         "game_commit",
+        "game_director_next",
+        "game_director_submit",
         "game_open",
         "game_read",
         "game_relation",

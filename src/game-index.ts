@@ -37,6 +37,7 @@ import {
   writeRelation,
   verifyCampaign,
 } from "./runtime-engine.js";
+import { gameDirectorNext, gameDirectorSubmit } from "./director.js";
 import { registerTools } from "./index.js";
 import { type ToolResult } from "./tools.js";
 import { makeLogger, type Logger } from "./log.js";
@@ -166,6 +167,7 @@ export function registerCreatorTools(
       opening: z.string().optional().describe("Opening scene text, or inline opening when opening_path is null."),
       opening_path: z.string().nullable().optional().describe("Opening file path relative to campaign. Defaults to 20-story/opening-scene.md; null stores opening inline."),
       uses_dice: z.boolean().default(false).describe("Whether PLAY.md will call game_roll."),
+      director: z.record(z.unknown()).optional().describe("Optional director config (manifest.director): default_mechanic, intent_mechanics, option_count, selection, and an objective graph. When an objective is declared, scaffold seeds objective_progress/turns_since_progress/encounter state."),
     },
     wrap("scaffold", ({
       campaign_path,
@@ -179,6 +181,7 @@ export function registerCreatorTools(
       opening,
       opening_path,
       uses_dice,
+      director,
     }) => scaffoldCampaign(root, {
       campaignPath: campaign_path,
       campaignId: campaign_id,
@@ -191,6 +194,7 @@ export function registerCreatorTools(
       opening,
       openingPath: opening_path,
       usesDice: uses_dice,
+      director,
     }), log)
   );
 
@@ -459,6 +463,31 @@ export function registerPlayerTools(
         journal,
         incrementTurn: increment_turn,
       }), log)
+  );
+
+  server.tool(
+    toolName("game_director_next"),
+    "Director loop step 1. Submit the player's action; the engine classifies it, selects the active mechanic, and returns a strict request contract (request_id + json_schema) describing exactly what to produce this turn. When an encounter is active it returns a resolution schema instead. Fill the schema and send it to game_director_submit. Do not narrate yet.",
+    {
+      campaign_path: campaignPath,
+      save_slot: saveSlot,
+      player_action: z.string().min(1).describe("The player's stated action for this turn."),
+    },
+    wrap("game_director_next", ({ campaign_path, save_slot, player_action }) =>
+      gameDirectorNext(root, runtimeCampaignPath(campaign_path, save_slot), player_action), log)
+  );
+
+  server.tool(
+    toolName("game_director_submit"),
+    "Director loop step 2. Send the request_id from game_director_next plus the payload that fills its json_schema. The engine validates, selects/resolves the outcome, and writes canonical state (encounter, progress). Returns accepted=true with canonical_outcome to narrate, or accepted=false with problems to fix and resend. Narrate only the returned canonical_outcome, then call game_commit.",
+    {
+      campaign_path: campaignPath,
+      save_slot: saveSlot,
+      request_id: z.string().min(1).describe("The request_id returned by game_director_next."),
+      payload: z.record(z.unknown()).describe("JSON payload matching the request's json_schema."),
+    },
+    wrap("game_director_submit", ({ campaign_path, save_slot, request_id, payload }) =>
+      gameDirectorSubmit(root, runtimeCampaignPath(campaign_path, save_slot), request_id, payload), log)
   );
 
   server.tool(

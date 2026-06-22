@@ -11,6 +11,8 @@ Multi-step structured workflow to create high-quality RPG games. Each step produ
 
 **Why this matters:** Smaller models struggle with large, open-ended tasks. Explicit steps + verification gates dramatically improve coherence and reduce hallucination.
 
+**Engine-first principle (critical):** Do not ask the model to plan the whole game up front. The engine owns long-horizon consistency, mode rules, and progression checks. The model handles short-horizon work: scene narration, 2-4 options, and one-turn consequences.
+
 **Path discipline (critical):**
 - Create one project artifact root folder early: `games/<game-slug>/`
 - Store **all** workflow artifacts under that folder (brief, beats, seeds, PLAY, opening, final campaign)
@@ -89,13 +91,19 @@ With the brief locked in, create the game's **north star** (the player fantasy),
    - **Resource pressure:** what forces trade-offs (time, heat, stamina, clues, morale, etc.).
    - **Special rule:** one unique mechanic this game is built around.
 
-4. Present this mechanics pitch to the user and ask for explicit approval.
+4. Add a **mechanics contract** for local-model reliability:
+   - **Encounter grammar:** exact required fields per encounter result (e.g., `encounter_id`, `threat`, `required_combo`, `fail_timer`, `success_patch`, `failure_patch`).
+   - **Combo resolution:** if combat is combo-based, define ordered prerequisite actions and valid alternate paths.
+   - **Fail timer script:** exact escalating consequences at each timer step (e.g., 3 -> warning, 2 -> partial restraint, 1 -> severe restraint, 0 -> failure state).
+   - **Goal pull rule:** every generated encounter must either reveal a clue, unlock access, or change a gate tied to the main objective.
+
+5. Present this mechanics pitch and mechanics contract to the user and ask for explicit approval.
    - If approved: continue.
    - If not approved: revise once using feedback, then reconfirm.
 
-5. Ensure north star, hidden truth, core pressure, and mechanics are aligned with brief and authoring mode.
+6. Ensure north star, hidden truth, core pressure, and mechanics are aligned with brief and authoring mode.
 
-6. Create `north_star.json`:
+7. Create `north_star.json`:
 
 ```json
 {
@@ -107,6 +115,17 @@ With the brief locked in, create the game's **north star** (the player fantasy),
       "resolution_model": "...",
       "resource_pressure": "...",
       "special_rule": "..."
+   },
+   "mechanics_contract": {
+      "encounter_required_fields": ["encounter_id", "threat", "required_combo", "fail_timer", "success_patch", "failure_patch"],
+      "combo_rule": "Ordered steps required for success, with optional alternates",
+      "fail_timer_script": {
+        "3": "...",
+        "2": "...",
+        "1": "...",
+        "0": "..."
+      },
+      "goal_pull_rule": "Each encounter must advance clue, access, or objective gate"
    },
    "mechanics_approved": true,
    "mechanics_feedback": "approved or short feedback summary",
@@ -126,6 +145,7 @@ With the brief locked in, create the game's **north star** (the player fantasy),
 - Hidden truth aligns with the game kind (e.g., detective has a secret culprit, dungeon has a dragon/trap, slice-of-life has an NPC crisis)
 - Core pressure is concrete, time-bound or resource-bound
 - Mechanics pitch has concrete rules (loop, resolution, pressure, special rule)
+- Mechanics contract is explicit (required fields, combo rule, fail timer script, goal pull rule)
 - Mechanics are explicitly user-approved (or revised from user feedback and then approved)
 - All three fit the brief's tone, setting, and authoring mode
 - No contradictions with brief.json
@@ -232,13 +252,20 @@ Define the game's state shape, runtime collections, relation types, win/lose/aba
 ```json
 {
   "authoring_mode": "...",
+   "objective": {
+      "primary_goal": "Find the missing princess",
+      "gates": ["identify abductors", "reach hidden court", "secure proof"]
+   },
   "state_shape": {
     "campaign_id": "string (required)",
     "turn": "number (required)",
     "schema": "string (required)",
     "location": "string (where player is)",
     "time_of_day": "string",
-    "flags": "object (player discoveries and state)"
+      "flags": "object (player discoveries and state)",
+      "goal_progress": "object (gate -> unlocked true/false)",
+      "encounter_timer": "number (current fail timer when in timed encounter)",
+      "encounter_combo_state": "object (which combo steps are satisfied)"
   },
   "runtime_collections": {
     "collection_name": {
@@ -257,6 +284,11 @@ Define the game's state shape, runtime collections, relation types, win/lose/aba
   "content_targets": {
     "clues": { "min_count": 3, "authored": true },
     "suspects": { "min_count": 3, "authored": true }
+   },
+   "progress_rules": {
+      "encounter_must_touch_objective": true,
+      "max_consecutive_non_progress_turns": 2,
+      "required_progress_event_types": ["clue", "gate_unlock", "location_unlock"]
   }
 }
 ```
@@ -274,36 +306,44 @@ Define the game's state shape, runtime collections, relation types, win/lose/aba
 - Relation types are concrete (e.g., "contains", not "related_to")
 - Win/lose/abandon are distinct and reachable
 - min_count is high (≥2) for authored content, low (=0) for procedural growth
+- Objective and gate progress are explicit in state
+- Timed/combo mechanics can be represented without free-form narration state
+- Progress rules prevent drift away from the primary goal
 
-## Step 5: Seed Content Pack
+## Step 5: Minimal Boot + Mechanic Templates
 
-Generate **only** the minimum boot content needed for this authoring mode. For fixed/guided, author the (opening) NPCs/locations/clues. For procedural, write almost nothing.
+Generate only the minimum boot content needed for this authoring mode, plus reusable mechanic templates. Do not pre-author a full world unless the mode requires it.
 
 **Instructions:**
 
 1. Read all prior artifacts from `<artifact_root>/` (brief.json, north_star.json, beats.json, runtime_contract.json).
 
 2. For your authoring_mode, decide what to author now:
-   - **fixed:** all locations, all NPCs, most clues
-   - **guided:** 1–2 key NPCs, 2–3 key locations, 3–5 key clues
+   - **fixed:** all core locations, core NPCs, required clues
+   - **guided:** 1-2 key NPCs, 2-3 key locations, 3-5 key clues
    - **fixed-endpoint:** just the end condition state + 1 starting location
-   - **open-world:** world locations + NPCs, no required plot
+   - **open-world:** starter locations + anchor NPCs, no fixed full plot
    - **procedural-startpoint:** 1 opening scene NPC + 1 starting location
-   - **procedural:** only the opening text + tone (let the model create the world)
+   - **procedural:** only opening state, tone, and mechanic templates
 
-3. For each seed entity (NPC, location, clue, etc.), create a JSON file:
+3. Create mechanic templates for on-demand growth:
+   - `<artifact_root>/mechanics/encounter-template.json`
+   - `<artifact_root>/mechanics/fail-timer-template.json`
+   - `<artifact_root>/mechanics/combo-template.json`
+
+4. For each authored boot entity (NPC, location, clue, etc.), create a JSON file:
    - NPCs: id, name, role, location, visible_mood, motive, summary
    - Locations: id, name, visible_features, exits, summary
    - Clues: id, title, status, points_to_suspect (if detective), summary
    - (Use the appropriate collection names from runtime_contract.json)
 
-4. Create a `<artifact_root>/seeds/` folder and populate it:
+5. Create a `<artifact_root>/seeds/` folder and populate it:
    - `<artifact_root>/seeds/npcs/npc_1.json`
    - `<artifact_root>/seeds/locations/location_1.json`
    - `<artifact_root>/seeds/clues/clue_1.json`
    - (or whatever your collections are)
 
-5. Document which seeds link to which beats. Example:
+6. Document which seeds link to which beats and objective gates. Example:
 
 ```json
 {
@@ -312,7 +352,10 @@ Generate **only** the minimum boot content needed for this authoring mode. For f
       { "id": "npc_1", "beat_introduced": "beat_1", "file": "<artifact_root>/seeds/npcs/npc_1.json" }
     ],
     "locations": [...],
-    "clues": [...]
+      "clues": [...],
+      "objective_links": [
+         { "entity": "clues/clue_1", "unlocks_gate": "identify abductors" }
+      ]
   }
 }
 ```
@@ -326,6 +369,8 @@ Generate **only** the minimum boot content needed for this authoring mode. For f
 - Each seed has id, title, and summary (lean)
 - No seed contradicts the north_star or hidden_truth
 - Seeds fit the brief's tone and setting
+- Mechanic templates exist and are valid JSON
+- At least one authored or generated path can progress each objective gate
 
 ## Step 6: Play Loop Writer
 
@@ -412,7 +457,7 @@ Write the opening prose text only (plain player-facing prose, no Markdown emphas
 
 ## Step 8: Assembler
 
-Assemble all artifacts into the final campaign folder structure. Call scaffold() to create the manifest, state, PLAY.md, and collection indexes. Then copy seed entities into the runtime collections.
+Assemble all artifacts into the final campaign folder structure. Call scaffold() to create the manifest, state, PLAY.md, and collection indexes. Then copy minimal seeds and mechanic templates.
 
 **Instructions:**
 
@@ -421,7 +466,8 @@ Assemble all artifacts into the final campaign folder structure. Call scaffold()
    - north_star.json
    - beats.json
    - runtime_contract.json
-   - seeds/ folder (with entities)
+   - seeds/ folder (minimal boot entities)
+   - mechanics/ folder (encounter, combo, fail-timer templates)
    - PLAY.md
    - opening-scene.txt
 
@@ -446,7 +492,7 @@ Assemble all artifacts into the final campaign folder structure. Call scaffold()
 
    **Result:** Scaffold creates the game skeleton with `game.manifest.json`, `PLAY.md`, `30-runtime/state.json`, empty collection indexes, and the `40-saves/` folder.
 
-4. Populate seed entities into their runtime collections using **game-specific tools**:
+4. Populate minimal boot seed entities into their runtime collections using **game-specific tools**:
    - `create_npc(campaign_path, npc={...})` — for NPC collection
    - `create_location(campaign_path, location={...})` — for locations collection
    - `write_collection_entry(campaign_path, collection="<name>", id="<id>", entry={...})` — for any other collection (clues, suspects, rooms, etc.)
@@ -454,6 +500,10 @@ Assemble all artifacts into the final campaign folder structure. Call scaffold()
 5. Create relations between entities:
    - Link NPC to location: `write_relation(campaign_path, from="npcs/<npc_id>", type="located_at", to="locations/<location_id>")`
    - Link clue to suspect: `write_relation(campaign_path, from="clues/<clue_id>", type="points_to", to="suspects/<suspect_id>")`
+
+6. Persist mechanic templates for runtime growth:
+   - Ensure encounter generation can always load encounter-template.json and fail-timer/combo templates.
+   - Validate that template required fields match `north_star.json.mechanics_contract.encounter_required_fields`.
 
 ### Verify
 
@@ -466,6 +516,8 @@ Assemble all artifacts into the final campaign folder structure. Call scaffold()
   - 20-story/opening-scene.md (if inline) or opening prose in boot.opening.inline
 - All seed entities are in their runtime collections with correct indexes
 - Relations are bidirectional where appropriate (e.g., NPC location + location NPCs)
+- Mechanic templates are present and schema-aligned with mechanics contract
+- Campaign can generate on-demand encounters without adding new schema fields
 
 ## Step 9: Verifier and Critic Pass
 
@@ -487,6 +539,7 @@ Run verify_campaign() to validate the contract and smoke test the play loop. Fix
    - Read the opening scene: does it set up the north_star? (player fantasy)
    - Read the first beat: does it pull toward the hidden_truth?
    - Read the seed NPCs: do they have motives aligned with the hidden_truth?
+   - Check objective pull: does each early encounter path produce clue, gate unlock, or access change?
    - Look for contradictions, generic text, or alignment issues.
    - Fix any prose issues by re-reading or updating seed entities.
 

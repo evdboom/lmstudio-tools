@@ -176,6 +176,8 @@ export interface ScaffoldOptions {
   concept?: string;
   mechanics?: MechanicsBlock;
   runtimeContract?: RuntimeContract;
+  /** Optional director config (manifest.director). When it declares an objective, scaffold seeds objective_progress/turns_since_progress. */
+  director?: Record<string, unknown>;
 }
 
 export interface EnsureCollectionIndexOptions {
@@ -376,6 +378,21 @@ export async function scaffoldCampaign(root: string, options: ScaffoldOptions): 
       schema,
     };
 
+    // Director config: when it declares an objective, seed the progress-tracking
+    // state fields the director loop reads so a fresh game is immediately playable.
+    if (isRecord(options.director) && isRecord(options.director.objective)) {
+      const gates = Array.isArray(options.director.objective.gates) ? options.director.objective.gates : [];
+      if (!isRecord(state.objective_progress)) {
+        const progress: JsonRecord = {};
+        for (const g of gates) {
+          if (isRecord(g) && typeof g.id === "string") progress[g.id] = false;
+        }
+        state.objective_progress = progress;
+      }
+      if (typeof state.turns_since_progress !== "number") state.turns_since_progress = 0;
+      if (!("encounter" in state)) state.encounter = null;
+    }
+
     const collectionNames = Object.keys(collections);
     const packetStateFields = ["turn", "location", "time_of_day", "last_summary", "recap"];
     const manifest: Manifest = {
@@ -406,6 +423,7 @@ export async function scaffoldCampaign(root: string, options: ScaffoldOptions): 
     if (options.concept?.trim()) manifest.concept = options.concept.trim();
     if (isRecord(options.mechanics)) manifest.mechanics = options.mechanics;
     if (isRecord(options.runtimeContract)) manifest.runtime_contract = options.runtimeContract;
+    if (isRecord(options.director)) manifest.director = options.director;
 
     const created: string[] = [];
     await writeJsonAt(root, rel(campaignPath, "game.manifest.json"), manifest, "wx");

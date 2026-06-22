@@ -144,7 +144,7 @@ describe("MCP integration over stdio", () => {
     await cleanup();
   });
 
-  it("tools/list returns all 18 tools", async () => {
+  it("tools/list returns all 19 tools", async () => {
     const resp = await client.request("tools/list");
     const result = resp.result as { tools: Array<{ name: string }> };
     const names = result.tools.map((t) => t.name).sort();
@@ -154,6 +154,7 @@ describe("MCP integration over stdio", () => {
         "add_folder",
         "add_json",
         "append_file",
+        "get_root",
         "list_files",
         "list_folders",
         "plan_add_task",

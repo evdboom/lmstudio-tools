@@ -117,7 +117,13 @@ function detectRootArtifactRefsForGameCrafter(output: string): string[] {
     const rawRef = m[1];
     const matchIndex = m.index || 0;
     if (!rawRef) continue;
-    const normalized = rawRef.replace(/\\/g, "/");
+    // Strip Markdown/quote wrappers and a leading "./" the greedy regex may
+    // have captured (e.g. `games/x/brief.json` in a code span), so the
+    // games/ prefix check below sees the real path start.
+    const normalized = rawRef
+      .replace(/\\/g, "/")
+      .replace(/^[\s'"`([{<]+/, "")
+      .replace(/^\.\//, "");
     const lower = normalized.toLowerCase();
 
     const fileName = normalized.slice(normalized.lastIndexOf("/") + 1);
@@ -488,6 +494,28 @@ export async function listWorkflows(
 }
 
 /**
+ * Render the full, ready-to-execute body for an active step. Shared by
+ * workflow_current_step and the success path of workflow_submit_step so the
+ * model receives the next step's complete instructions without a second call.
+ */
+function renderActiveStep(step: WorkflowStep, decisions: Record<string, unknown>, runId: string): string[] {
+  return [
+    ...workflowActivationGuidance(runId),
+    "",
+    `## Step ${step.number}: ${step.title}`,
+    renderStep(step.instruction, decisions),
+    ...(step.verify ? ["", "### Verify", step.verify] : []),
+    "",
+    `**Execute now:** Perform this step immediately and then call workflow_submit_step with your output.`,
+    "",
+    "### Next Response Contract (Must Follow)",
+    "1. Do not repeat or paraphrase this tool output.",
+    "2. Do not explain the workflow or step metadata.",
+    "3. Send only the immediate user-facing action for this step.",
+  ];
+}
+
+/**
  * Submit output for the current step and move to the next step or blocked state.
  * Optionally accept a user-provided verify confirmation.
  */
@@ -593,8 +621,11 @@ export async function workflowSubmitStep(
         run.status === "completed"
           ? "✓ Workflow completed — every step validated."
           : `Moving to step ${run.current_step}: ${advance.nextStep?.title}.`,
-      ].join("\n");
-      return { ok: true, text: reflection };
+      ];
+      if (run.status !== "completed" && advance.nextStep) {
+        reflection.push("", "---", "", ...renderActiveStep(advance.nextStep, run.decisions, runId));
+      }
+      return { ok: true, text: reflection.join("\n") };
     }
 
     // No machine validator: fall back to the self-attested verify gate.
@@ -620,7 +651,11 @@ export async function workflowSubmitStep(
         ? `✓ Workflow completed!`
         : `✓ Step ${step.number} submitted.${advance.skipped.length ? ` Skipped ${advance.skipped.join(", ")}.` : ""} Moving to step ${run.current_step}: ${advance.nextStep?.title}`;
 
-    return { ok: true, text: msg };
+    const lines = [msg];
+    if (run.status !== "completed" && advance.nextStep) {
+      lines.push("", "---", "", ...renderActiveStep(advance.nextStep, run.decisions, runId));
+    }
+    return { ok: true, text: lines.join("\n") };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
@@ -682,20 +717,7 @@ export async function workflowCurrentStep(
 
     return {
       ok: true,
-      text: [
-        ...workflowActivationGuidance(runId),
-        "",
-        `## Step ${step.number}: ${step.title}`,
-        renderStep(step.instruction, run.decisions),
-        ...(step.verify ? ["", "### Verify", step.verify] : []),
-        "",
-        `**Execute now:** Perform this step immediately and then call workflow_submit_step with your output.`,
-        "",
-        "### Next Response Contract (Must Follow)",
-        "1. Do not repeat or paraphrase this tool output.",
-        "2. Do not explain the workflow or step metadata.",
-        "3. Send only the immediate user-facing action for this step.",
-      ].join("\n"),
+      text: renderActiveStep(step, run.decisions ?? {}, runId).join("\n"),
     };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };

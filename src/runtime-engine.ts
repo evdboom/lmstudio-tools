@@ -286,7 +286,9 @@ function normalizeScaffoldCollections(collections: ScaffoldOptions["collections"
     if (!COLLECTION_NAME_RE.test(name)) {
       throw new Error(`Invalid collection name "${name}". Use lowercase letters, numbers, hyphens, or underscores.`);
     }
-    const index = spec.index ?? rel(RUNTIME_DIR, name, "index.json");
+    // Always persist a posix ("/") index path so the manifest is portable;
+    // path.join would otherwise bake in Windows backslashes and break reads on macOS/Linux.
+    const index = displayPath(spec.index ?? rel(RUNTIME_DIR, name, "index.json"));
     out[name] = {
       index,
       id_pattern: spec.id_pattern ?? DEFAULT_ENTITY_ID_PATTERN,
@@ -337,7 +339,7 @@ function directorPlay(title: string): string {
     "## Tone",
     "Replace with the game's voice, pacing, and content limits in 1-2 sentences.",
     "## Setup",
-    "Ask 2-4 in-world questions before the first turn.",
+    "Ask 2-4 in-world questions before the first turn. The opening scene arrives in the game_open result when you open a fresh save_slot — never read it from a file. Phrase setup from the premise above, not from the opening.",
   ].join("\n\n") + "\n";
 }
 
@@ -1071,6 +1073,10 @@ export async function gameScene(
 // game_read
 // ---------------------------------------------------------------------------
 
+// Top-level campaign areas that game_read must never reach: it is scoped to the
+// runtime save. Story/meta files (and the opening scene) are delivered by game_open.
+const NON_RUNTIME_READ_AREAS = new Set(["00-meta", "10-world", "20-story", "40-saves"]);
+
 function runtimeScopedRel(runtimePath: string, target: string): string {
   const normalized = target.replace(/\\/g, "/").replace(/^\/+/, "");
   const scoped = normalized.startsWith(`${RUNTIME_DIR}/`) || normalized === RUNTIME_DIR
@@ -1078,7 +1084,6 @@ function runtimeScopedRel(runtimePath: string, target: string): string {
     : `${RUNTIME_DIR}/${normalized}`;
   return rel(runtimePath, scoped);
 }
-
 export async function gameRead(
   root: string,
   runtimePath: string,
@@ -1087,6 +1092,12 @@ export async function gameRead(
 ): Promise<ToolResult> {
   try {
     await ensureCampaignFolder(root, runtimePath);
+    const firstSeg = target.replace(/\\/g, "/").replace(/^\/+/, "").split("/")[0];
+    if (NON_RUNTIME_READ_AREAS.has(firstSeg)) {
+      throw new Error(
+        `game_read only reads runtime state under ${RUNTIME_DIR}/. The opening scene is returned by game_open with a save_slot on a fresh slot; PLAY.md and the manifest come back in the game_open result. Do not read story or meta files directly.`
+      );
+    }
     const fileRel = runtimeScopedRel(runtimePath, target);
     if (property && property.trim()) {
       return await readJsonTool(root, fileRel, property);
@@ -1843,6 +1854,45 @@ export async function verifyCampaign(root: string, campaignPath: string): Promis
     if (!isRecord(manifest.mechanics)) {
       addIssue(issues, "warning", "missing_mechanics", MANIFEST_FILE, "manifest.mechanics is absent; add a machine-readable mechanics reminder so game_scene can surface it.");
     }
+
+    // Director objective graph: declared gates must be reachable and well-formed.
+    // A gate only unlocks when a progress vector in its unlocked_by arrives AND all
+    // gate ids in its requires are already unlocked. So an empty unlocked_by makes a
+    // gate permanently locked, and a requires entry that is not a declared gate id
+    // (e.g. a stat expression like "power_level >= 3") can never be satisfied.
+    const director = isRecord(manifest.director) ? manifest.director : undefined;
+    const objective = director && isRecord(director.objective) ? (director.objective as JsonRecord) : undefined;
+    if (objective && Array.isArray(objective.gates)) {
+      const gateIds = new Set<string>();
+      for (const g of objective.gates) {
+        if (isRecord(g) && typeof g.id === "string" && g.id.trim()) gateIds.add(g.id.trim());
+      }
+      for (const g of objective.gates) {
+        if (!isRecord(g) || typeof g.id !== "string" || !g.id.trim()) {
+          addIssue(issues, "error", "invalid_gate", MANIFEST_FILE, "Every director.objective gate needs a non-empty string id.");
+          continue;
+        }
+        const unlockedBy = Array.isArray(g.unlocked_by)
+          ? g.unlocked_by.filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+          : [];
+        if (unlockedBy.length === 0) {
+          addIssue(issues, "error", "unreachable_gate", MANIFEST_FILE, `Gate "${g.id}" has no unlocked_by progress vectors, so it can never unlock. Add at least one event vector the mechanics emit (e.g. one of progress_policy.required_event_types).`);
+        }
+        const requires = Array.isArray(g.requires) ? g.requires.filter((v): v is string => typeof v === "string") : [];
+        for (const req of requires) {
+          if (!gateIds.has(req.trim())) {
+            addIssue(issues, "error", "invalid_gate_requirement", MANIFEST_FILE, `Gate "${g.id}" requires "${req}", which is not a declared gate id. requires lists prerequisite gate ids, not stat expressions.`);
+          }
+        }
+      }
+      const wantsAllGates = isRecord(objective.terminal)
+        && isRecord((objective.terminal as JsonRecord).win)
+        && ((objective.terminal as JsonRecord).win as JsonRecord).all_gates === true;
+      if (wantsAllGates && objective.gates.length === 0) {
+        addIssue(issues, "error", "unreachable_win", MANIFEST_FILE, "terminal.win.all_gates is true but no gates are declared, so the game can never be won.");
+      }
+    }
+
     if (playText !== undefined) {
       const sections = parsePlaySections(playText);
       if (sections.get("Game mechanics") === undefined) {

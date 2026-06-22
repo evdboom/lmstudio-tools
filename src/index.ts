@@ -125,6 +125,17 @@ export function registerTools(
   const toolName = (name: string) => prefixedToolName(name, options.prefix);
 
   server.tool(
+    toolName("get_root"),
+    "Return the absolute filesystem root this server resolves all relative paths against. Use it to discover where files are written so you can pass the value as workspace_root to workflow_open when the workflow validators run on a different server.",
+    {},
+    wrap(
+      "get_root",
+      () => Promise.resolve({ ok: true as const, text: root }),
+      log
+    )
+  );
+
+  server.tool(
     toolName("list_files"),
     "List files (not folders) inside a directory relative to the sandbox root. Set recursive=true to return files in all nested folders as paths relative to the requested directory.",
     {

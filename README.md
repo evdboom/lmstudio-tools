@@ -21,6 +21,7 @@ All speak **stdio** and plug into LM Studio's built-in MCP client.
 
 | Tool            | Purpose                                                                 |
 | --------------- | ----------------------------------------------------------------------- |
+| `get_root`      | Return the absolute root all relative paths resolve against.            |
 | `list_files`    | List files in a directory. Set `recursive: true` for nested files.      |
 | `list_folders`  | List subfolders. Set `recursive: true` for nested folders.              |
 | `read_file`     | Read the UTF-8 contents of a file.                                      |
@@ -450,6 +451,12 @@ workflow file location. Call `workflow_open` with `workspace_root` (for example
 `E:\Stories`) and that root is persisted in the run JSON. Step validators then
 read artifacts from `<workspace_root>/games/<slug>/...` while the workflow
 definition and run-state file can remain in your tools repo.
+
+If your game/file MCP server writes to a different root than the skills server
+(e.g. games land in `C:\tmp\stories` but `Workflows/` lives in your tools repo),
+call `get_root` on the file/game server to read its absolute root, then pass
+that value as `workspace_root` to `workflow_open` so validators read artifacts
+where the game server actually wrote them.
 
 ### Logging
 

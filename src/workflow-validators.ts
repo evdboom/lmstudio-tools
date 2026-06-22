@@ -150,6 +150,56 @@ const validateBeats: StepValidator = async (ctx) => {
 // Step 4: runtime_contract.json (content_targets cross-ref — the "forgot quests" fix)
 // ---------------------------------------------------------------------------
 
+/**
+ * Canonical `runtime_collections` is an object keyed by collection name. Models
+ * frequently emit the natural array forms (`["npcs", ...]` or `[{ name, ... }]`)
+ * instead — normalize those into the object form so the check can proceed, and
+ * report `coerced` so the caller can nudge toward the canonical shape.
+ */
+function normalizeCollections(raw: unknown): { value: Record<string, unknown>; coerced: boolean } {
+  if (isRecord(raw)) return { value: raw, coerced: false };
+  if (!Array.isArray(raw)) return { value: {}, coerced: false };
+  const out: Record<string, unknown> = {};
+  for (const entry of raw) {
+    const named = collectionEntryToNamed(entry);
+    if (named) out[named.name] = named.spec;
+  }
+  return { value: out, coerced: true };
+}
+
+/** Map a single `runtime_collections` array entry to a `{ name, spec }` pair, or undefined to skip. */
+function collectionEntryToNamed(entry: unknown): { name: string; spec: Record<string, unknown> } | undefined {
+  if (typeof entry === "string") return entry ? { name: entry, spec: {} } : undefined;
+  if (!isRecord(entry)) return undefined;
+  const name = asString(entry.name) || asString(entry.id) || asString(entry.collection);
+  if (!name) return undefined;
+  const spec: Record<string, unknown> = { ...entry };
+  delete spec.name;
+  delete spec.id;
+  delete spec.collection;
+  return { name, spec };
+}
+
+/**
+ * Canonical `end_states` is `{ win, lose, abandon }` with three distinct strings.
+ * Tolerate the common array-of-`{ type, ... }` form by folding each entry into
+ * that object keyed by its `type`.
+ */
+function normalizeEndStates(raw: unknown): { value: Record<string, unknown> | undefined; coerced: boolean } {
+  if (isRecord(raw)) return { value: raw, coerced: false };
+  if (Array.isArray(raw)) {
+    const out: Record<string, unknown> = {};
+    for (const entry of raw) {
+      if (!isRecord(entry)) continue;
+      const type = asString(entry.type).toLowerCase();
+      if (type !== "win" && type !== "lose" && type !== "abandon") continue;
+      out[type] = asString(entry.description) || asString(entry.summary) || asString(entry.id) || type;
+    }
+    return { value: Object.keys(out).length > 0 ? out : undefined, coerced: true };
+  }
+  return { value: undefined, coerced: false };
+}
+
 const validateRuntimeContract: StepValidator = async (ctx) => {
   const file = "runtime_contract.json";
   const doc = await readArtifact(ctx, file);
@@ -168,8 +218,15 @@ const validateRuntimeContract: StepValidator = async (ctx) => {
     }
   }
 
-  const collections = isRecord(doc.runtime_collections) ? doc.runtime_collections : {};
+  const collNorm = normalizeCollections(doc.runtime_collections);
+  const collections = collNorm.value;
   const collectionNames = Object.keys(collections);
+  if (collNorm.coerced) {
+    warnings.push(
+      'runtime_collections must be an object keyed by collection name, e.g. {"npcs": {"purpose": "...", "min_count": 2}}. '
+      + "An array was provided and coerced for this check — emit the object form.",
+    );
+  }
   if (collectionNames.length === 0) warnings.push("runtime_collections is empty; this game declares no entity collections.");
 
   const relationTypes = Array.isArray(doc.relation_types) ? doc.relation_types.map((t) => asString(t)) : [];
@@ -177,13 +234,26 @@ const validateRuntimeContract: StepValidator = async (ctx) => {
     if (t === "related_to" || t === "related") errors.push(`relation type "${t}" is too vague; use a concrete type like "contains" or "connects_to".`);
   }
 
-  const endStates = isRecord(doc.end_states) ? doc.end_states : undefined;
+  const endNorm = normalizeEndStates(doc.end_states);
+  const endStates = endNorm.value;
+  if (endNorm.coerced && endStates) {
+    warnings.push(
+      'end_states must be an object, e.g. {"win": "...", "lose": "...", "abandon": "..."}. '
+      + "An array was provided and coerced for this check — emit the object form.",
+    );
+  }
   if (!endStates) {
-    errors.push("end_states is required with distinct win/lose/abandon.");
+    errors.push(
+      'end_states is required and must be an object with three distinct strings: '
+      + '{"win": "...", "lose": "...", "abandon": "..."} (not an array).',
+    );
   } else {
     const vals = ["win", "lose", "abandon"].map((k) => asString(endStates[k]));
-    if (vals.some((v) => !v)) errors.push("end_states must define win, lose, and abandon.");
-    else if (new Set(vals).size < 3) errors.push("end_states win/lose/abandon must be distinct.");
+    if (vals.some((v) => !v)) {
+      errors.push('end_states must define non-empty "win", "lose", and "abandon" strings.');
+    } else if (new Set(vals).size < 3) {
+      errors.push('end_states "win", "lose", and "abandon" must be three distinct strings.');
+    }
   }
 
   // content_targets: every declared content category must have a runtime collection.

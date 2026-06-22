@@ -14,9 +14,11 @@ Multi-step structured workflow to create high-quality role playing games. Each s
 **Engine-first principle (critical):** Do not ask the model to plan the whole game up front. The engine owns long-horizon consistency, mode rules, and progression checks. The model handles short-horizon work: scene narration, 2-4 options, and one-turn consequences.
 
 **Path discipline (critical):**
-- Create one project artifact root folder early: `games/<game-slug>/`
-- Store **all** workflow artifacts under that folder (brief, beats, seeds, PLAY, opening, final campaign)
-- Do **not** write workflow artifacts directly to workspace root
+- The finished, playable game lives **directly** at `games/<game-slug>/` — one level, no `campaign-` prefix, no extra nesting. `scaffold` writes the manifest, PLAY.md, and runtime here.
+- Workflow scratch artifacts (brief, beats, north_star, seeds, opening) are **ephemeral**. Keep them in a separate `craft/<game-slug>/` working folder so they never ship inside the playable game. `scaffold` refuses a non-empty target, so scratch and the campaign must not share a folder.
+- Set `artifact_root = craft/<game-slug>/` for all scratch artifacts; set `campaign_path = games/<game-slug>/` for the final scaffold.
+- Do **not** write workflow artifacts directly to workspace root.
+- If the file/game tools run on a different MCP server than this workflow, the step validators won't find your artifacts unless they share a root. Call `get_root` on the file/game server and pass that absolute path as `workspace_root` when you call `workflow_open`, so validators read artifacts where you actually wrote them.
 
 ## Step 1: Intake and Design Constraints
 
@@ -41,7 +43,7 @@ Ask the user for tone, setting, premise, content limits, length, game kind, and 
 
 3. Derive a stable game slug from the concept/setting (lowercase, kebab-case, e.g., `harbor-letter`).
 
-4. Set `artifact_root = games/<game-slug>/` and create that folder before writing any artifacts.
+4. Set `artifact_root = craft/<game-slug>/` (scratch) and `campaign_path = games/<game-slug>/` (final playable game). Create `artifact_root` before writing any artifacts; leave `campaign_path` for `scaffold` in Step 8 — it must be empty when scaffold runs.
 
 5. If their answers create a real design fork or contradiction, ask ONE clarifying follow-up. Otherwise, confirm the design and ask them to approve.
 
@@ -264,10 +266,7 @@ Define the game's state shape, runtime collections, relation types, win/lose/aba
     "schema": "string (required)",
     "location": "string (where player is)",
     "time_of_day": "string",
-      "flags": "object (player discoveries and state)",
-      "goal_progress": "object (gate -> unlocked true/false)",
-      "encounter_timer": "number (current fail timer when in timed encounter)",
-      "encounter_combo_state": "object (which combo steps are satisfied)"
+      "flags": "object (player discoveries and state)"
   },
   "runtime_collections": {
     "collection_name": {
@@ -297,7 +296,21 @@ Define the game's state shape, runtime collections, relation types, win/lose/aba
 
 `content_targets` declares every content category the finished game MUST contain and how many. Each key here MUST also be a `runtime_collections` entry — declaring "quests" forces a quests collection. The engine raises each collection's min_count to its target, so a game that "forgot" a declared category fails verify_campaign. Use it to lock the bigger picture (quests, monsters, etc.) so later steps can't silently drop it.
 
-> **Director mapping (required):** the `objective` (primary_goal + gates) and `progress_rules` here map directly to the manifest `director` block: `objective.gates` → `director.objective.gates` (with `unlocked_by` vectors and `requires` prerequisites), `progress_rules.max_consecutive_non_progress_turns` → `director.objective.progress_policy`, and win/lose → `director.objective.terminal`. Always carry these into the `director={…}` argument passed to `scaffold` in Step 8.
+> **Shape rules (the validator rejects arrays here):** `runtime_collections` and `end_states` are **objects**, never arrays.
+>
+> - ✅ `"runtime_collections": { "npcs": { "purpose": "...", "min_count": 2 } }`
+>   ❌ `"runtime_collections": ["npcs", "locations"]`
+> - ✅ `"end_states": { "win": "...", "lose": "...", "abandon": "..." }` (three distinct strings)
+>   ❌ `"end_states": [ { "id": "ascension_win", "type": "win" }, ... ]`
+
+
+> **Director mapping (required):** the `objective` (primary_goal + gates) and `progress_rules` here map directly to the manifest `director` block: `objective.gates` → `director.objective.gates`, `progress_rules.max_consecutive_non_progress_turns` → `director.objective.progress_policy`, and win/lose → `director.objective.terminal`. Always carry these into the `director={…}` argument passed to `scaffold` in Step 8.
+>
+> **Gate shape (verify rejects malformed gates):** each `director.objective.gates[]` entry is `{ "id": "...", "unlocked_by": [...], "requires": [...] }`.
+> - `unlocked_by` = one or more **progress-event vectors** the mechanics emit. Use the names from `progress_rules.required_event_types` (e.g. `"clue"`, `"gate_unlock"`, `"location_unlock"`). A gate with an **empty `unlocked_by` can never unlock** → `verify_campaign` error `unreachable_gate`.
+> - `requires` = ids of **other gates** that must unlock first (prerequisites). It is **not** a stat expression — there is no expression evaluator, so `"power_level >= 3"` is invalid. A `requires` entry that is not a declared gate id → `verify_campaign` error `invalid_gate_requirement`. To gate on a stat, emit the matching progress vector from the mechanic when the stat is reached and list that vector in `unlocked_by`.
+> - ✅ `{ "id": "secure_proof", "unlocked_by": ["clue"], "requires": ["identify_abductors"] }`
+> - ❌ `{ "id": "secure_proof", "requires": ["power_level >= 3"] }` (no `unlocked_by`; `requires` holds a stat expression)
 
 **How to submit:** Save this JSON as `<artifact_root>/runtime_contract.json`. The collections, state_shape, and content_targets will be passed to `scaffold()` in Step 8.
 
@@ -470,24 +483,28 @@ Assemble all artifacts into the final campaign folder structure. Call scaffold()
    - PLAY.md (only if you hand-wrote custom prose sections; otherwise scaffold writes it)
    - opening-scene.txt
 
-2. Decide the campaign folder name under artifact root: `<artifact_root>/campaign-<setting-slug>` (e.g., `games/harbor-letter/campaign-detective-shanghai-1920`).
+2. The final game folder is `campaign_path = games/<game-slug>/` — directly under `games/`, single level, no `campaign-` prefix. It must be empty when scaffold runs (scratch lives in `craft/<game-slug>/`).
 
 3. Call `scaffold()` to create the skeleton:
 
    ```
    scaffold(
-   campaign_path="<artifact_root>/campaign-detective-shanghai-1920",
+     campaign_path="games/<game-slug>",
      campaign_id="<slug>",
      title="Game Title",
      pitch="One-sentence spoiler-light pitch from north_star.json",
+     concept="One-sentence concept (design_concept from brief.json)",
      authoring_mode="guided",
      collections={...from runtime_contract.json...},
      state={...initial state from runtime_contract.json...},
      director={...required: intent_mechanics + objective from Steps 2 and 4...},
+     mechanics={...machine-readable reminder mirroring director.intent_mechanics...},
      opening="...opening-scene.txt content...",
      uses_dice=false
    )
    ```
+
+   > **Pass `concept` and `mechanics`** — without them `verify_campaign` emits `missing_concept` and `missing_mechanics` warnings on every game. `concept` = brief.json `design_concept`; `mechanics` = a small object mirroring `director.intent_mechanics` so `game_scene` can surface the rules without re-reading PLAY.md.
 
    **Result:** Scaffold creates the game skeleton with `game.manifest.json`, the director `PLAY.md`, `30-runtime/state.json` (with objective progress fields), empty collection indexes, and the `40-saves/` folder.
 
@@ -533,6 +550,8 @@ Run verify_campaign() to validate the contract and smoke test the play loop. Fix
 2. If any check fails (severity="error"), fix it and re-run:
    - Missing manifest key? Use `update_json(path='game.manifest.json', patch={...})`
    - Broken index? Call `repair_collection_indexes(campaign_path="...", collection="<name>")`
+   - `unreachable_gate`? The gate has an empty `unlocked_by`; add at least one progress vector from `progress_rules.required_event_types`.
+   - `invalid_gate_requirement`? A `requires` entry is not a declared gate id (often a stat expression like `"power_level >= 3"`). Replace it with a prerequisite gate id, or move the stat trigger into the mechanic's emitted vector.
    - Bad PLAY.md? Edit the file and save.
    - Re-run `verify_campaign` until ok=true
 

@@ -122,6 +122,24 @@ describe("game-crafter machine validation + branching (end to end)", () => {
     return runIdFrom(opened.text);
   }
 
+  it("on a successful submit, returns the next step's full instructions inline", async () => {
+    const runId = await start();
+    await writeJson("games/g/brief.json", {
+      tone: "grim", setting: "harbor", premise: "p", content_limits: "none",
+      estimated_length: "short", game_kind: "detective", authoring_mode: "fixed",
+      design_concept: "A forged letter.",
+    });
+    const s1 = await workflowSubmitStep(root, runId, RUN_DIR, "Saved games/g/brief.json", false);
+    expect(s1.ok).toBe(true);
+    if (s1.ok) {
+      // Advanced to step 2 and the full body is inlined (not just the title).
+      expect(s1.text).toContain("## Step 2: North Star");
+      expect(s1.text).toContain("Define north star.");
+      expect(s1.text).toContain("Execute now");
+    }
+    expect((await readRun(runId)).current_step).toBe(2);
+  });
+
   it("rejects a step-4 contract whose content_targets has no matching collection", async () => {
     const runId = await start();
     // Step 1: brief with authoring_mode fixed.
@@ -192,6 +210,39 @@ describe("game-crafter machine validation + branching (end to end)", () => {
     expect((await readRun(runId)).status).toBe("completed");
   });
 
+  it("tolerates array-shaped end_states and runtime_collections, coercing with a warning", async () => {
+    const runId = await start();
+    await writeJson("games/g/brief.json", {
+      tone: "t", setting: "s", premise: "p", content_limits: "none",
+      estimated_length: "long", game_kind: "other", authoring_mode: "procedural",
+      design_concept: "Anything can happen.",
+    });
+    await workflowSubmitStep(root, runId, RUN_DIR, "Saved games/g/brief.json", false); // step 1 -> 2
+    await workflowSubmitStep(root, runId, RUN_DIR, "north star", false); // step 2 -> skip 3 -> 4
+    expect((await readRun(runId)).current_step).toBe(4);
+
+    // Natural-but-wrong shapes: arrays instead of objects.
+    await writeJson("games/g/runtime_contract.json", {
+      authoring_mode: "procedural",
+      state_shape: { campaign_id: "s", turn: "n", schema: "s" },
+      runtime_collections: ["npcs", "locations", "offspring"],
+      relation_types: ["knows"],
+      end_states: [
+        { id: "ascension_win", type: "win" },
+        { id: "defection_lose", type: "lose" },
+        { id: "banishment_abandon", type: "abandon" },
+      ],
+    });
+    const s4 = await workflowSubmitStep(root, runId, RUN_DIR, "contract saved", false);
+    expect(s4.ok).toBe(true);
+    if (s4.ok) {
+      expect(s4.text).not.toContain("validation FAILED");
+      // Coerced collections are echoed back by name.
+      expect(s4.text).toContain("npcs");
+    }
+    expect((await readRun(runId)).status).toBe("completed");
+  });
+
   it("procedural-startpoint accepts 0-1 beats and rejects 5", async () => {
     const runId = await start();
     await writeJson("games/g/brief.json", {
@@ -255,6 +306,28 @@ describe("game-crafter machine validation + branching (end to end)", () => {
       runId,
       RUN_DIR,
       "Step 1 complete: brief.json created at games/g/brief.json and intake finalized.",
+      false
+    );
+    expect(s1.ok).toBe(true);
+    if (s1.ok) {
+      expect(s1.text).toContain("validated");
+      expect(s1.text).not.toContain("root-level artifact path(s) detected");
+    }
+  });
+
+  it("does not reject a nested path wrapped in Markdown backticks", async () => {
+    const runId = await start();
+    await writeJson("games/g/brief.json", {
+      tone: "grim", setting: "harbor", premise: "p", content_limits: "none",
+      estimated_length: "short", game_kind: "detective", authoring_mode: "fixed",
+      design_concept: "A forged letter.",
+    });
+
+    const s1 = await workflowSubmitStep(
+      root,
+      runId,
+      RUN_DIR,
+      "Created `games/g/brief.json` with the locked design constraints.",
       false
     );
     expect(s1.ok).toBe(true);

@@ -399,9 +399,15 @@ Enforcement:
 - `turns_since_progress` resets on any progress vector; otherwise increments.
 - When it hits the cap (non-open modes), the next `game_director_next` sets
   `progress_required_this_turn = true` and restricts `allowed_outcome_types` to
-  progress-capable ones.
-- Open-world: cap ignored; instead the engine biases option selection toward
-  progress without forcing it (soft pressure).
+  progress-capable ones (drops `blocked`).
+- Open-world: cap ignored; instead the engine biases option selection toward an
+  option that advances an open gate without forcing it, when
+  `open_world_soft_pressure` is true (soft pressure).
+- `terminal` is evaluated after every accepted turn. `win.all_gates` records
+  `state.outcome = { resolved: "win", … }` once all gates unlock; `lose` records
+  `{ resolved: "lose", … }` when `state[lose.state]` (or `state.flags[lose.state]`)
+  equals `lose.eq`. `state.objective_complete` is always set when every gate is
+  unlocked, even without a `terminal` block.
 
 ---
 
@@ -455,7 +461,9 @@ Enforcement:
 
 Copy this into a director-driven game's PLAY.md. The per-turn loop is deliberately
 short: the engine hands the model its schema, so PLAY.md never re-describes
-mechanics. Replace the bracketed bits.
+mechanics. Replace the bracketed bits. `scaffold` writes this template
+automatically (with the bracketed bits as fill-in prompts) whenever the manifest
+declares a `director` block and no explicit `play` is supplied.
 
 ```markdown
 ## Premise
@@ -506,8 +514,9 @@ turns_since_progress, encounter (null when idle).
 
 Pass the whole block to `scaffold(director=…)`; when it declares an `objective`,
 scaffold seeds `objective_progress`, `turns_since_progress`, and `encounter`.
-Implemented mechanics: `timer_combo`, `discovery`, `dice_check`, `social_gate`.
-`travel_hazard` (encounter chaining) is a planned plugin — map `travel` to
-`timer_combo` until it ships.
+Implemented mechanics: `timer_combo`, `discovery`, `dice_check`, `social_gate`,
+`travel_hazard`. `travel_hazard` is a generation mechanic: each option declares a
+`chain_mechanic` + `chain_payload`, and the engine delegates `init` to that
+mechanic so the road encounter chains straight into (e.g.) a `timer_combo`.
 
 

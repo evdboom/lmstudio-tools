@@ -225,4 +225,246 @@ describe("director loop", () => {
     const res = await gameDirectorSubmit(root, campaign, "req_does_not_exist", threeOptions());
     expect(res.ok).toBe(false);
   });
+
+  it("offers max_words_per_summary and trims blocked when progress is required", async () => {
+    await scaffoldGame();
+    const open = unwrap(await gameDirectorNext(root, campaign, "I wander aimlessly"));
+    expect((open.constraints as Record<string, unknown>).max_words_per_summary).toBe(40);
+    expect(open.allowed_outcome_types).toEqual(["start_encounter", "discovery", "blocked"]);
+
+    await scaffoldGame({ turns_since_progress: 2 });
+    const pressured = unwrap(await gameDirectorNext(root, campaign, "I wander aimlessly"));
+    expect(pressured.allowed_outcome_types).toEqual(["start_encounter", "discovery"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// terminal win/lose
+// ---------------------------------------------------------------------------
+
+async function scaffoldTerminalGame(stateExtra: Record<string, unknown> = {}): Promise<void> {
+  await writeJson(`${campaign}/game.manifest.json`, {
+    manifest_version: 1,
+    campaign_id: campaign,
+    title: "The Lost Princess",
+    pitch: "Find her.",
+    authoring_mode: "guided",
+    play_instructions: "PLAY.md",
+    initial_state: "30-runtime/state.json",
+    runtime_collections: {},
+    boot: { scene_packet_tool: "game_scene", packet: {} },
+    director: {
+      default_mechanic: "timer_combo",
+      intent_mechanics: { travel: "timer_combo", fight: "timer_combo" },
+      option_count: 3,
+      selection: "first",
+      objective: {
+        objective_id: "find_princess",
+        primary_goal: "Find the missing princess",
+        gates: [{ id: "identify abductors", unlocked_by: ["clue_found"], requires: [] }],
+        terminal: { win: { all_gates: true }, lose: { state: "captured", eq: true } },
+        progress_policy: { mode: "guided", max_consecutive_non_progress_turns: 2, open_world_soft_pressure: false },
+      },
+    },
+  });
+  await writeJson(`${campaign}/30-runtime/state.json`, {
+    campaign_id: campaign,
+    turn: 0,
+    schema: "director-v1",
+    location: "forest",
+    turns_since_progress: 0,
+    ...stateExtra,
+  });
+}
+
+describe("director terminal conditions", () => {
+  it("records a win outcome when all gates unlock", async () => {
+    await scaffoldTerminalGame();
+    const gen = unwrap(await gameDirectorNext(root, campaign, "I head into the swamp"));
+    unwrap(await gameDirectorSubmit(root, campaign, gen.request_id as string, threeOptions()));
+    const r2 = unwrap(await gameDirectorNext(root, campaign, "I freeze it"));
+    unwrap(await gameDirectorSubmit(root, campaign, r2.request_id as string, { attempted_step: "freeze", freeform_action: "frost" }));
+    const r3 = unwrap(await gameDirectorNext(root, campaign, "I strike it"));
+    unwrap(await gameDirectorSubmit(root, campaign, r3.request_id as string, { attempted_step: "strike", freeform_action: "sword" }));
+
+    const state = await readState();
+    expect(state.objective_complete).toBe(true);
+    expect((state.outcome as Record<string, unknown>).resolved).toBe("win");
+  });
+
+  it("records a lose outcome when the failure state is reached", async () => {
+    // A loss-on-failure encounter: failure_patch sets the captured flag.
+    await scaffoldTerminalGame();
+    const gen = unwrap(await gameDirectorNext(root, campaign, "I head into the swamp"));
+    const losing = {
+      options: [0, 1, 2].map((n) => {
+        const o = slimeOption(`opt_${n}`, "identify abductors");
+        o.mechanic_payload.failure_patch = { flags: { captured: true } };
+        o.mechanic_payload.timer_start = 1;
+        o.mechanic_payload.timer_events = { "1": "It lunges.", "0": "You are taken." };
+        return o;
+      }),
+    };
+    unwrap(await gameDirectorSubmit(root, campaign, gen.request_id as string, losing));
+    const r2 = unwrap(await gameDirectorNext(root, campaign, "I panic"));
+    unwrap(await gameDirectorSubmit(root, campaign, r2.request_id as string, { attempted_step: "other", freeform_action: "flail" }));
+
+    const state = await readState();
+    expect((state.flags as Record<string, unknown>).captured).toBe(true);
+    expect((state.outcome as Record<string, unknown>).resolved).toBe("lose");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// open-world soft pressure
+// ---------------------------------------------------------------------------
+
+function clueOption(id: string, clueId: string, gate: string) {
+  return {
+    option_id: id,
+    summary: `You spot ${clueId}.`,
+    mechanic_payload: { clue_id: clueId, title: clueId, detail: "A detail." },
+    progress: { vector: "clue_found", gate },
+  };
+}
+
+async function scaffoldSoftPressureGame(): Promise<void> {
+  await writeJson(`${campaign}/game.manifest.json`, {
+    manifest_version: 1,
+    campaign_id: campaign,
+    title: "Open Roads",
+    pitch: "Wander.",
+    authoring_mode: "open-world",
+    play_instructions: "PLAY.md",
+    initial_state: "30-runtime/state.json",
+    runtime_collections: {},
+    boot: { scene_packet_tool: "game_scene", packet: {} },
+    director: {
+      default_mechanic: "discovery",
+      intent_mechanics: { investigate: "discovery" },
+      option_count: 3,
+      selection: "first",
+      objective: {
+        objective_id: "obj",
+        primary_goal: "Find the truth",
+        gates: [{ id: "open_gate", unlocked_by: ["clue_found"], requires: [] }],
+        progress_policy: { mode: "open-world", max_consecutive_non_progress_turns: 2, open_world_soft_pressure: true },
+      },
+    },
+  });
+  await writeJson(`${campaign}/30-runtime/state.json`, {
+    campaign_id: campaign,
+    turn: 0,
+    schema: "director-v1",
+    location: "road",
+    turns_since_progress: 0,
+    flags: {},
+  });
+}
+
+describe("director soft pressure", () => {
+  it("biases selection toward a progressing option in open-world mode", async () => {
+    await scaffoldSoftPressureGame();
+    const gen = unwrap(await gameDirectorNext(root, campaign, "I look around"));
+    // First option targets a non-open gate; the third advances the open gate.
+    const payload = {
+      options: [
+        clueOption("a", "clue_dead_end", "nowhere"),
+        clueOption("b", "clue_dead_end_2", "nowhere"),
+        clueOption("c", "clue_real", "open_gate"),
+      ],
+    };
+    unwrap(await gameDirectorSubmit(root, campaign, gen.request_id as string, payload));
+    const state = await readState();
+    // Soft pressure should have picked option "c", setting its clue flag and gate.
+    expect((state.flags as Record<string, unknown>).clue_real).toBe(true);
+    expect((state.objective_progress as Record<string, unknown>).open_gate).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// travel_hazard chaining
+// ---------------------------------------------------------------------------
+
+async function scaffoldTravelGame(): Promise<void> {
+  await writeJson(`${campaign}/game.manifest.json`, {
+    manifest_version: 1,
+    campaign_id: campaign,
+    title: "The Road",
+    pitch: "Travel.",
+    authoring_mode: "guided",
+    play_instructions: "PLAY.md",
+    initial_state: "30-runtime/state.json",
+    runtime_collections: {},
+    boot: { scene_packet_tool: "game_scene", packet: {} },
+    director: {
+      default_mechanic: "discovery",
+      intent_mechanics: { travel: "travel_hazard" },
+      option_count: 3,
+      selection: "first",
+      objective: {
+        objective_id: "obj",
+        primary_goal: "Reach the city",
+        gates: [{ id: "identify abductors", unlocked_by: ["clue_found"], requires: [] }],
+        progress_policy: { mode: "guided", max_consecutive_non_progress_turns: 2, open_world_soft_pressure: false },
+      },
+    },
+  });
+  await writeJson(`${campaign}/30-runtime/state.json`, {
+    campaign_id: campaign,
+    turn: 0,
+    schema: "director-v1",
+    location: "road",
+    turns_since_progress: 0,
+  });
+}
+
+function travelOption(id: string) {
+  const inner = slimeOption(id, "identify abductors").mechanic_payload;
+  return {
+    option_id: id,
+    summary: `A hazard on the road (${id}).`,
+    mechanic_payload: { hazard_name: "Bog Slime", chain_mechanic: "timer_combo", chain_payload: inner },
+    progress: { vector: "clue_found", gate: "identify abductors" },
+  };
+}
+
+describe("director travel_hazard", () => {
+  it("chains a road hazard into a timer_combo encounter", async () => {
+    await scaffoldTravelGame();
+    const gen = unwrap(await gameDirectorNext(root, campaign, "I take the road east"));
+    expect(gen.mechanic_type).toBe("travel_hazard");
+    const submit = unwrap(await gameDirectorSubmit(root, campaign, gen.request_id as string, {
+      options: [travelOption("h1"), travelOption("h2"), travelOption("h3")],
+    }));
+    expect(submit.accepted).toBe(true);
+
+    const state = await readState();
+    const encounter = state.encounter as Record<string, unknown>;
+    // The chained timer_combo now owns the active encounter.
+    expect(encounter.mechanic_type).toBe("timer_combo");
+    expect(encounter.next_step).toBe("freeze");
+
+    // Resolution routes to the chained mechanic.
+    const r2 = unwrap(await gameDirectorNext(root, campaign, "I freeze it"));
+    expect(r2.mechanic_type).toBe("timer_combo");
+    const s2 = unwrap(await gameDirectorSubmit(root, campaign, r2.request_id as string, { attempted_step: "freeze", freeform_action: "frost" }));
+    expect((s2.canonical_outcome as Record<string, any>).outcome_type).toBe("step_progress");
+  });
+
+  it("rejects a travel_hazard option whose chain payload is invalid", async () => {
+    await scaffoldTravelGame();
+    const gen = unwrap(await gameDirectorNext(root, campaign, "I take the road east"));
+    const bad = {
+      options: [0, 1, 2].map((n) => ({
+        option_id: `h${n}`,
+        summary: `Hazard ${n}.`,
+        mechanic_payload: { hazard_name: "Thing", chain_mechanic: "timer_combo", chain_payload: { threat_id: "x" } },
+        progress: { vector: "clue_found", gate: "identify abductors" },
+      })),
+    };
+    const res = unwrap(await gameDirectorSubmit(root, campaign, gen.request_id as string, bad));
+    expect(res.accepted).toBe(false);
+    expect((res.problems as unknown[]).length).toBeGreaterThan(0);
+  });
 });

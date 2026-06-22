@@ -105,10 +105,16 @@ export interface ObjectiveGate {
   requires: string[];
 }
 
+export interface ObjectiveTerminal {
+  win?: { all_gates?: boolean };
+  lose?: { state: string; eq: unknown };
+}
+
 export interface ObjectiveGraph {
   objective_id: string;
   primary_goal: string;
   gates: ObjectiveGate[];
+  terminal?: ObjectiveTerminal;
   progress_policy: {
     mode: string;
     max_consecutive_non_progress_turns: number;
@@ -124,6 +130,15 @@ export interface DirectorConfig {
   selection?: "first" | "random";
 }
 
+function parseTerminal(value: unknown): ObjectiveTerminal | undefined {
+  if (!isRecord(value)) return undefined;
+  const win = isRecord(value.win) ? { all_gates: value.win.all_gates === true } : undefined;
+  const lose = isRecord(value.lose) && typeof value.lose.state === "string"
+    ? { state: value.lose.state, eq: "eq" in value.lose ? value.lose.eq : true }
+    : undefined;
+  return { win, lose };
+}
+
 function parseObjective(value: unknown): ObjectiveGraph | undefined {
   if (!isRecord(value)) return undefined;
   const gatesRaw = Array.isArray(value.gates) ? value.gates : [];
@@ -137,6 +152,7 @@ function parseObjective(value: unknown): ObjectiveGraph | undefined {
     objective_id: typeof value.objective_id === "string" ? value.objective_id : "objective",
     primary_goal: typeof value.primary_goal === "string" ? value.primary_goal : "",
     gates,
+    terminal: parseTerminal(value.terminal),
     progress_policy: {
       mode: typeof policy.mode === "string" ? policy.mode : "guided",
       max_consecutive_non_progress_turns:
@@ -179,6 +195,39 @@ function progressRequired(state: JsonRecord, objective: ObjectiveGraph | undefin
   return since >= objective.progress_policy.max_consecutive_non_progress_turns;
 }
 
+/** True when state[key] (or state.flags[key]) strictly equals the target value. */
+function stateValueMatches(state: JsonRecord, key: string, eq: unknown): boolean {
+  if (state[key] === eq) return true;
+  const flags = isRecord(state.flags) ? state.flags : {};
+  return flags[key] === eq;
+}
+
+/**
+ * Evaluate the objective's terminal win/lose and record state.outcome once.
+ * The legacy objective_complete flag is always kept; state.outcome is only
+ * written when the objective declares an explicit terminal block (so games that
+ * rely on manifest-level win/lose conditions are left untouched).
+ */
+function evaluateTerminal(state: JsonRecord, objective: ObjectiveGraph | undefined): void {
+  if (!objective) return;
+  const progress = isRecord(state.objective_progress) ? state.objective_progress : {};
+  const allGates = objective.gates.length > 0 && objective.gates.every((g) => progress[g.id] === true);
+  if (allGates) state.objective_complete = true;
+
+  const terminal = objective.terminal;
+  if (!terminal || isRecord(state.outcome)) return;
+  const turn = typeof state.turn === "number" ? state.turn : 0;
+
+  const lose = terminal.lose;
+  if (lose && stateValueMatches(state, lose.state, lose.eq)) {
+    state.outcome = { resolved: "lose", condition_id: objective.objective_id, turn };
+    return;
+  }
+  if (terminal.win?.all_gates === true && allGates) {
+    state.outcome = { resolved: "win", condition_id: objective.objective_id, turn };
+  }
+}
+
 /** Apply progress vectors: unlock eligible gates, update the no-progress counter. */
 function applyProgress(state: JsonRecord, objective: ObjectiveGraph | undefined, vectors: ProgressVector[]): void {
   if (objective) {
@@ -194,12 +243,10 @@ function applyProgress(state: JsonRecord, objective: ObjectiveGraph | undefined,
       }
     }
     state.objective_progress = progress;
-    if (objective.gates.length > 0 && objective.gates.every((g) => progress[g.id] === true)) {
-      state.objective_complete = true;
-    }
   }
   const since = typeof state.turns_since_progress === "number" ? state.turns_since_progress : 0;
   state.turns_since_progress = vectors.length > 0 ? 0 : since + 1;
+  evaluateTerminal(state, objective);
 }
 
 // ---------------------------------------------------------------------------
@@ -641,6 +688,73 @@ const socialGate: MechanicPlugin = {
 
 registerMechanic(socialGate);
 
+// ---------------------------------------------------------------------------
+// travel_hazard plugin (generation: 3 road encounters that chain into another
+// mechanic; the engine picks one and delegates init to the chained mechanic)
+// ---------------------------------------------------------------------------
+
+const CHAINABLE_MECHANICS = ["timer_combo", "dice_check", "social_gate", "discovery"];
+
+const travelHazard: MechanicPlugin = {
+  type: "travel_hazard",
+  ...noResolution,
+
+  optionPayloadSchema() {
+    return {
+      type: "object",
+      required: ["hazard_name", "chain_mechanic", "chain_payload"],
+      properties: {
+        hazard_name: { type: "string" },
+        chain_mechanic: { enum: [...CHAINABLE_MECHANICS] },
+        chain_payload: { type: "object", description: "Payload matching the chosen chain_mechanic's option schema." },
+      },
+    };
+  },
+
+  validateOption(payload, ctx) {
+    const problems: Problem[] = [];
+    if (typeof payload.hazard_name !== "string" || !payload.hazard_name) {
+      problems.push({ path: "hazard_name", message: "hazard_name is required." });
+    }
+    const chainType = typeof payload.chain_mechanic === "string" ? payload.chain_mechanic : "";
+    if (chainType === "travel_hazard") {
+      problems.push({ path: "chain_mechanic", message: "chain_mechanic cannot be travel_hazard." });
+      return problems;
+    }
+    const chain = getMechanic(chainType);
+    if (!chain) {
+      problems.push({ path: "chain_mechanic", message: `chain_mechanic must be one of ${CHAINABLE_MECHANICS.join(", ")}.` });
+      return problems;
+    }
+    if (!isRecord(payload.chain_payload)) {
+      problems.push({ path: "chain_payload", message: "chain_payload must be an object." });
+      return problems;
+    }
+    for (const p of chain.validateOption(payload.chain_payload, ctx)) {
+      problems.push({ path: `chain_payload.${p.path ?? ""}`.replace(/\.$/, ""), message: p.message });
+    }
+    return problems;
+  },
+
+  init(option, ctx) {
+    const mp = option.mechanic_payload;
+    const chainType = String(mp.chain_mechanic);
+    const chain = getMechanic(chainType);
+    if (!chain) throw new Error(`Unknown chain_mechanic "${chainType}".`);
+    // Delegate to the chained mechanic. Its init owns the encounter (with its own
+    // mechanic_type), so subsequent resolution turns route straight to it.
+    const chainOption: SelectedOption = {
+      option_id: option.option_id,
+      summary: option.summary,
+      mechanic_payload: isRecord(mp.chain_payload) ? mp.chain_payload : {},
+      progress: option.progress,
+    };
+    return chain.init(chainOption, ctx);
+  },
+};
+
+registerMechanic(travelHazard);
+
 
 export function classifyIntent(action: string): string {
   const a = action.toLowerCase();
@@ -811,6 +925,7 @@ export async function gameDirectorNext(
         },
       },
       constraints: {
+        max_words_per_summary: 40,
         must_reference_objective: ctx.progressRequired,
         no_narration: true,
       },
@@ -822,7 +937,9 @@ export async function gameDirectorNext(
             progress_required_this_turn: ctx.progressRequired,
           }
         : null,
-      allowed_outcome_types: ["start_encounter", "discovery", "blocked"],
+      allowed_outcome_types: ctx.progressRequired
+        ? ["start_encounter", "discovery"]
+        : ["start_encounter", "discovery", "blocked"],
     }));
   } catch (e) {
     return err(toError(e));
@@ -847,6 +964,30 @@ function asOptions(value: unknown): SelectedOption[] {
 
 function rejection(requestId: string, problems: Problem[]): ToolResult {
   return ok(json({ accepted: false, request_id: requestId, problems, retry: true }));
+}
+
+/**
+ * Pick one generated option. Open-world soft pressure biases selection toward an
+ * option that advances an open gate (without forcing it, unlike the hard
+ * progress-required gate). Falls back to the configured first/random policy.
+ */
+function selectOption(
+  options: SelectedOption[],
+  director: DirectorConfig,
+  objective: ObjectiveGraph | undefined,
+  state: JsonRecord
+): SelectedOption {
+  if (objective?.progress_policy.open_world_soft_pressure) {
+    const openGates = computeOpenGates(state, objective);
+    const progressing = options.filter((o) => o.progress.vector && openGates.includes(o.progress.gate));
+    if (progressing.length > 0) {
+      return director.selection === "random"
+        ? progressing[Math.floor(Math.random() * progressing.length)]
+        : progressing[0];
+    }
+  }
+  const index = director.selection === "random" ? Math.floor(Math.random() * options.length) : 0;
+  return options[index];
 }
 
 function resolvedOutcome(
@@ -935,8 +1076,7 @@ export async function gameDirectorSubmit(
     }
     if (problems.length > 0) return rejection(requestId, problems);
 
-    const index = director.selection === "random" ? Math.floor(Math.random() * options.length) : 0;
-    const selected = options[index];
+    const selected = selectOption(options, director, objective, state);
     const { outcome, progress } = mechanic.init(selected, ctx);
     state.encounter = outcome.next_encounter;
     const merged = deepMerge(state, outcome.state_patch);

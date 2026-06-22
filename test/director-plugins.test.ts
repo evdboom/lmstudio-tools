@@ -180,4 +180,34 @@ describe("scaffold director seeding", () => {
     const manifest = JSON.parse(await fs.readFile(path.join(root, "campaign-seeded", "game.manifest.json"), "utf8")) as Record<string, unknown>;
     expect((manifest.director as Record<string, unknown>).default_mechanic).toBe("timer_combo");
   });
+
+  it("writes a director-mode PLAY.md when director config is present", async () => {
+    const res = await scaffoldCampaign(root, {
+      campaignPath: "campaign-director-play",
+      title: "Director Play",
+      authoringMode: "guided",
+      director: { default_mechanic: "discovery", objective },
+    });
+    expect(res.ok).toBe(true);
+    const play = await fs.readFile(path.join(root, "campaign-director-play", "PLAY.md"), "utf8");
+    expect(play).toContain("## Game mechanics");
+    expect(play).toContain("game_director_next");
+    expect(play).toContain("game_director_submit");
+    // The director template includes every required section.
+    for (const section of ["Premise", "Loop", "State Shape", "Tone", "Setup"]) {
+      expect(play).toContain(`## ${section}`);
+    }
+  });
+
+  it("uses the generic PLAY.md when no director config is present", async () => {
+    const res = await scaffoldCampaign(root, {
+      campaignPath: "campaign-generic-play",
+      title: "Generic Play",
+      authoringMode: "guided",
+    });
+    expect(res.ok).toBe(true);
+    const play = await fs.readFile(path.join(root, "campaign-generic-play", "PLAY.md"), "utf8");
+    expect(play).not.toContain("game_director_next");
+    expect(play).toContain("game_scene");
+  });
 });

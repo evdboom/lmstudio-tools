@@ -318,6 +318,29 @@ function defaultPlay(title: string): string {
   ].join("\n\n") + "\n";
 }
 
+function directorPlay(title: string): string {
+  return [
+    "## Premise",
+    `${title} is ready to be filled in by the creating model. Keep this section spoiler-light: who the player is and the immediate situation, in 2 sentences.`,
+    "## Game mechanics",
+    "The engine runs the rules. Each turn it tells you exactly what to produce and resolves the outcome. You never decide success, timers, or dice yourself.",
+    "## Loop",
+    [
+      "1. Send the player's action to game_director_next.",
+      "2. Fill the returned json_schema exactly — every required field — and send it to game_director_submit with the same request_id. Do not narrate yet.",
+      "3. If accepted=false, fix the listed problems and resend the same request_id.",
+      "4. When accepted=true, narrate ONLY the canonical_outcome's narration_brief, obeying its narration_rules. Lead with the world; end on a world beat.",
+      "5. Call game_commit with a one-line summary and journal entry.",
+    ].join("\n"),
+    "## State Shape",
+    "campaign_id, turn, schema, location, flags, objective_progress, turns_since_progress, encounter (null when idle).",
+    "## Tone",
+    "Replace with the game's voice, pacing, and content limits in 1-2 sentences.",
+    "## Setup",
+    "Ask 2-4 in-world questions before the first turn.",
+  ].join("\n\n") + "\n";
+}
+
 async function writeTextAt(root: string, fileRel: string, text: string, flag: "w" | "wx" = "w"): Promise<void> {
   const abs = await safeResolve(root, fileRel);
   await fs.mkdir(path.dirname(abs), { recursive: true });
@@ -428,7 +451,8 @@ export async function scaffoldCampaign(root: string, options: ScaffoldOptions): 
     const created: string[] = [];
     await writeJsonAt(root, rel(campaignPath, "game.manifest.json"), manifest, "wx");
     created.push(displayPath(rel(campaignPath, "game.manifest.json")));
-    await writeTextAt(root, rel(campaignPath, "PLAY.md"), options.play?.trim() ? `${options.play.trimEnd()}\n` : defaultPlay(title), "wx");
+    const fallbackPlay = isRecord(options.director) ? directorPlay(title) : defaultPlay(title);
+    await writeTextAt(root, rel(campaignPath, "PLAY.md"), options.play?.trim() ? `${options.play.trimEnd()}\n` : fallbackPlay, "wx");
     created.push(displayPath(rel(campaignPath, "PLAY.md")));
     await writeJsonAt(root, rel(campaignPath, RUNTIME_DIR, "state.json"), state, "wx");
     created.push(displayPath(rel(campaignPath, RUNTIME_DIR, "state.json")));

@@ -9,7 +9,9 @@ Local **MCP (Model Context Protocol)** servers for LM Studio:
   typed helpers, and a `verify_campaign` harness for building schema-flexible games.
 - **`lmstudio-game-player`** — a slim play surface of generic verbs
   (`game_open`, `game_scene`, `game_read`, `game_write`, `game_relation`,
-  `game_commit`, `game_roll`, `game_rewind`, `game_save`) driven by each game's own `PLAY.md`.
+  `game_commit`, `game_roll`, `game_rewind`, `game_save`) wrapped around the
+  director loop (`game_director_next` / `game_director_submit`) that every game
+  runs, driven by each game's own `PLAY.md`.
 - **`lmstudio-game`** — the full RPG runtime surface, useful for development or
   debugging when context budget is less important.
 
@@ -145,7 +147,7 @@ The game runtime is split into smaller MCP servers so a small local model carrie
 | Server | Use | Tools |
 | ------ | --- | ----- |
 | `lmstudio-game-creator` | Build games | `scaffold`, `write_collection_entry`, `write_relation`, `query_relations`, `repair_collection_indexes`, `create_quest`, `create_npc`, `create_location`, `add_item`, `create_clock`, and `verify_campaign` |
-| `lmstudio-game-player` | Play games | `game_open`, `game_scene`, `game_read`, `game_write`, `game_relation`, `game_commit`, `game_roll`, `game_rewind`, `game_save` |
+| `lmstudio-game-player` | Play games | `game_open`, `game_scene`, `game_read`, `game_write`, `game_relation`, `game_commit`, `game_roll`, `game_rewind`, `game_save`, `game_director_next`, `game_director_submit` |
 | `lmstudio-game` | Full/debug | File tools + creator helpers + player verbs |
 
 The playing model only sees generic verbs. What each game does with them is described in that game's own `PLAY.md` (returned by `game_open`), not baked into the tool surface.
@@ -185,6 +187,8 @@ matching relation slice with summaries for declared collection endpoints.
 | `game_roll` | Roll dice (`NdM+K`) so outcomes are not invented. |
 | `game_rewind` | Restore a pre-turn snapshot to undo a bad turn. |
 | `game_save` | Create or list playthrough save slots. |
+| `game_director_next` | Director loop step 1: classify the player's action, pick the active mechanic, and return a strict request contract (`request_id` + `json_schema`) for the model to fill. |
+| `game_director_submit` | Director loop step 2: validate the filled payload, resolve the canonical outcome, write state (encounter, objective progress), and return the `narration_brief` to narrate. |
 
 During play, the model does not use raw `add_json`/`update_json`. It writes live
 state with `game_write target="state"`, for example a patch containing
@@ -230,6 +234,15 @@ The creating model writes the per-game playing instructions in `PLAY.md`, which 
 `state.json` requires only `campaign_id`, `turn`, and `schema` (a free-form tag the game chooses, e.g. `"detective-v1"`). Everything else is game-defined; keep it lean since the playing model reads it each turn. Protagonist setup questions live in PLAY.md's `## Setup` section — in-world questions, not generic race/ancestry/class.
 
 Player input uses a small syntax during play: `*text*` is private thought, `"text"` is speech, plain text is a visible action, and `**text**` is an out-of-character question. Narration avoids decorative Markdown so those channels stay unambiguous.
+
+### Director engine
+
+Every game runs the director loop. The engine owns the rules, timers, dice, and goal progression; the model only classifies actions, fills a schema, and narrates the outcome the engine resolves. Each game declares a `director` block in its manifest and runs the contract-driven loop:
+
+1. `game_director_next(player_action)` — the engine classifies the action, picks the active mechanic plugin, and returns a strict `json_schema` the model must fill (generate options, or act inside an active encounter). The model writes no prose yet.
+2. `game_director_submit(request_id, payload)` — the engine validates the payload, selects/resolves the outcome, writes canonical state, and returns a `canonical_outcome` (with `narration_brief` + `narration_rules`) to narrate. Rejections come back with a `problems[]` list to fix and resend.
+
+The `director` block declares `default_mechanic`, per-intent `intent_mechanics`, `option_count`, `selection`, and an `objective` graph (gates, `progress_policy`, and optional `terminal` win/lose). Built-in mechanic plugins: `timer_combo`, `dice_check`, `social_gate`, `discovery`, and `travel_hazard` (which chains a road hazard into another mechanic). `scaffold` seeds the progress-tracking state (`objective_progress`, `turns_since_progress`, `encounter`) and writes the director-mode `PLAY.md`. See [docs/director-engine-spec.md](docs/director-engine-spec.md) for the full contract.
 
 ### Verifying a game
 
@@ -657,15 +670,15 @@ npm run dev
 In dev mode, Vite proxies `/api/*` from port 5173 to the API on port 8787, so
 the browser app works without extra configuration.
 
-To target a different data root (for example `E:\Stories`), pass `--root` when
+To target a different data root (for example `C:\MyGames`), pass `--root` when
 starting the API:
 
 ```powershell
-npm run api -- --root E:\Stories
+npm run api -- --root C:\MyGames
 ```
 
 The inspector discovers campaigns under `<root>/games`, so with the command
-above it will read from `E:\Stories\games`.
+above it will read from `C:\MyGames\games`.
 
 ### Single-port mode (serve built frontend from API server)
 

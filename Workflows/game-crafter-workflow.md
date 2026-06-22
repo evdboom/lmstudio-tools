@@ -1,13 +1,13 @@
 ---
 title: Game Crafter Workflow
 name: game-crafter-workflow
-description: Multi-step structured creation of RPG games
+description: Multi-step structured creation of role playing games
 version: 1
 ---
 
 # Workflow: Game Crafter
 
-Multi-step structured workflow to create high-quality RPG games. Each step produces a small, reusable artifact that feeds into later stages, allowing weaker models to stay on-rail and catch issues early.
+Multi-step structured workflow to create high-quality role playing games. Each step produces a small, reusable artifact that feeds into later stages, allowing weaker models to stay on-rail and catch issues early.
 
 **Why this matters:** Smaller models struggle with large, open-ended tasks. Explicit steps + verification gates dramatically improve coherence and reduce hallucination.
 
@@ -96,6 +96,8 @@ With the brief locked in, create the game's **north star** (the player fantasy),
    - **Combo resolution:** if combat is combo-based, define ordered prerequisite actions and valid alternate paths.
    - **Fail timer script:** exact escalating consequences at each timer step (e.g., 3 -> warning, 2 -> partial restraint, 1 -> severe restraint, 0 -> failure state).
    - **Goal pull rule:** every generated encounter must either reveal a clue, unlock access, or change a gate tied to the main objective.
+
+> **Director engine (required):** every game runs on the engine's built-in mechanic plugins — do not invent encounter grammar, fail timers, or combo JSON by hand. Map each intent to a plugin: `timer_combo` (ordered combo + fail timer), `dice_check` (DC roll), `social_gate` (required flags), `discovery` (reveal a clue), `travel_hazard` (road options that chain into another mechanic). Your `mechanics_contract` below is just this thin mapping (intent → plugin) plus the objective graph from Step 4 — the engine owns the per-turn schema and resolution, so you never author fail-timer/combo JSON. See `docs/director-engine-spec.md`.
 
 5. Present this mechanics pitch and mechanics contract to the user and ask for explicit approval.
    - If approved: continue.
@@ -295,6 +297,8 @@ Define the game's state shape, runtime collections, relation types, win/lose/aba
 
 `content_targets` declares every content category the finished game MUST contain and how many. Each key here MUST also be a `runtime_collections` entry — declaring "quests" forces a quests collection. The engine raises each collection's min_count to its target, so a game that "forgot" a declared category fails verify_campaign. Use it to lock the bigger picture (quests, monsters, etc.) so later steps can't silently drop it.
 
+> **Director mapping (required):** the `objective` (primary_goal + gates) and `progress_rules` here map directly to the manifest `director` block: `objective.gates` → `director.objective.gates` (with `unlocked_by` vectors and `requires` prerequisites), `progress_rules.max_consecutive_non_progress_turns` → `director.objective.progress_policy`, and win/lose → `director.objective.terminal`. Always carry these into the `director={…}` argument passed to `scaffold` in Step 8.
+
 **How to submit:** Save this JSON as `<artifact_root>/runtime_contract.json`. The collections, state_shape, and content_targets will be passed to `scaffold()` in Step 8.
 
 ### Verify
@@ -310,9 +314,9 @@ Define the game's state shape, runtime collections, relation types, win/lose/aba
 - Timed/combo mechanics can be represented without free-form narration state
 - Progress rules prevent drift away from the primary goal
 
-## Step 5: Minimal Boot + Mechanic Templates
+## Step 5: Minimal Boot Content
 
-Generate only the minimum boot content needed for this authoring mode, plus reusable mechanic templates. Do not pre-author a full world unless the mode requires it.
+Generate only the minimum boot content needed for this authoring mode. The engine supplies all mechanic schemas at runtime, so do not pre-author a full world or hand-roll mechanic templates.
 
 **Instructions:**
 
@@ -324,12 +328,9 @@ Generate only the minimum boot content needed for this authoring mode, plus reus
    - **fixed-endpoint:** just the end condition state + 1 starting location
    - **open-world:** starter locations + anchor NPCs, no fixed full plot
    - **procedural-startpoint:** 1 opening scene NPC + 1 starting location
-   - **procedural:** only opening state, tone, and mechanic templates
+   - **procedural:** only opening state and tone
 
-3. Create mechanic templates for on-demand growth:
-   - `<artifact_root>/mechanics/encounter-template.json`
-   - `<artifact_root>/mechanics/fail-timer-template.json`
-   - `<artifact_root>/mechanics/combo-template.json`
+3. Do **not** hand-roll mechanic templates. The director engine already supplies the encounter, fail-timer, combo, dice, and social-gate schemas at runtime (`timer_combo`, `dice_check`, `social_gate`, `discovery`, `travel_hazard`). Author only the objective graph (Step 4) and the boot seed entities below.
 
 4. For each authored boot entity (NPC, location, clue, etc.), create a JSON file:
    - NPCs: id, name, role, location, visible_mood, motive, summary
@@ -369,12 +370,12 @@ Generate only the minimum boot content needed for this authoring mode, plus reus
 - Each seed has id, title, and summary (lean)
 - No seed contradicts the north_star or hidden_truth
 - Seeds fit the brief's tone and setting
-- Mechanic templates exist and are valid JSON
+- No hand-rolled mechanic templates were created (the engine supplies them)
 - At least one authored or generated path can progress each objective gate
 
 ## Step 6: Play Loop Writer
 
-Write the PLAY.md system prompt for the playing model. This is the game's per-turn recipe. Must be runnable end-to-end with the generic play tools.
+The playing model runs the fixed director loop every turn, and `scaffold` writes PLAY.md automatically from the `director` block (Step 8). This step exists to confirm the prose sections; you normally do not hand-write the Loop.
 
 ```step-meta
 { "validator": "playmd" }
@@ -384,32 +385,31 @@ Write the PLAY.md system prompt for the playing model. This is the game's per-tu
 
 1. Read `<artifact_root>/runtime_contract.json` to understand state, collections, and relations.
 
-2. Write PLAY.md with exactly these sections (the harness checks they exist):
+2. The director `PLAY.md` (auto-written by scaffold) has exactly these sections (the harness checks they exist):
 
    - **## Premise** (spoiler-light setup)
-   - **## Game mechanics** (core mechanics how the game works)
-   - **## Loop** (exact per-turn procedure using game_scene, game_read, game_write, game_commit, game_roll if uses_dice)
+   - **## Game mechanics** (which director mechanics this game uses, per intent)
+   - **## Loop** (the fixed director loop — identical for every game)
    - **## State Shape** (names of custom state fields)
    - **## Tone** (voice, pacing, content limits)
    - **## Setup** (spoiler-light premise + 2–4 in-world setup questions for a new run)
 
-3. For the **## Loop**, adapt this template to your game kind:
+3. The **## Loop** is fixed — do not adapt it per kind. The engine handles the differences through the `director` block:
 
    ```
    ## Loop
 
-   1. Call game_scene to see state, declared collections, and journal.
-   2. [Game-specific actions: e.g., "If player is in a location with NPCs, describe them briefly." or "Ask which clue to examine."]
-   3. Narrate the world's response (lead with the world, not the protagonist's interior thoughts).
-   4. [For dice games: If an outcome is uncertain, call game_roll (e.g., 1d20) and narrate from the result.]
-   5. Record durable changes with game_write (state, or a collection entry).
-   6. Use game_relation to link related entities if play creates new connections.
-   7. End with game_commit (summary + journal entry).
+   1. Send the player's action to game_director_next; it returns a request_id + json_schema.
+   2. Fill the schema exactly (generate options, or act inside an active encounter).
+   3. Send it to game_director_submit with the same request_id.
+   4. If accepted=false, fix the listed problems and resend the same request_id.
+   5. Narrate only the canonical_outcome.narration_brief, obeying its narration_rules.
+   6. game_commit with a short summary + a one-line journal entry.
    ```
 
-4. Keep the Loop to ~150 words. Use the generic play tools only (no game_* helpers beyond the 7 core).
+4. If you must supply custom prose for the other sections, write them and pass the result via `play=`. Otherwise omit `play=` in Step 8 and let scaffold write the director PLAY.md.
 
-5. File: `<artifact_root>/PLAY.md` (no JSON; plain Markdown).
+5. File (only if hand-writing): `<artifact_root>/PLAY.md` (no JSON; plain Markdown).
 
 **How to submit:** Save this Markdown as `<artifact_root>/PLAY.md`. You'll pass it to `scaffold()` in Step 8.
 
@@ -417,9 +417,9 @@ Write the PLAY.md system prompt for the playing model. This is the game's per-tu
 
 - All 6 required sections (Premise, Game mechanics, Loop, State Shape, Tone, Setup) are present and non-empty
 - Premise is spoiler-light and in-world
-- Game mechanics section reflects the approved mechanics_pitch
-- Loop follows the right order: scene → act → narrate → roll (if needed) → write → commit
-- Loop uses only generic play tools (game_scene, game_read, game_write, game_commit, game_roll, game_relation)
+- Game mechanics section names the director mechanics this game maps per intent
+- Loop is the fixed director loop (next → fill schema → submit → narrate canonical_outcome → commit)
+- Loop uses the director tools (game_director_next, game_director_submit, game_commit)
 - State Shape names match runtime_contract.json
 - Tone aligns with brief.json tone
 - Setup questions are in-world (not meta) and 2–4 total
@@ -457,7 +457,7 @@ Write the opening prose text only (plain player-facing prose, no Markdown emphas
 
 ## Step 8: Assembler
 
-Assemble all artifacts into the final campaign folder structure. Call scaffold() to create the manifest, state, PLAY.md, and collection indexes. Then copy minimal seeds and mechanic templates.
+Assemble all artifacts into the final campaign folder structure. Call scaffold() with the required `director` block to create the manifest, state, director PLAY.md, and collection indexes. Then copy minimal seeds.
 
 **Instructions:**
 
@@ -467,8 +467,7 @@ Assemble all artifacts into the final campaign folder structure. Call scaffold()
    - beats.json
    - runtime_contract.json
    - seeds/ folder (minimal boot entities)
-   - mechanics/ folder (encounter, combo, fail-timer templates)
-   - PLAY.md
+   - PLAY.md (only if you hand-wrote custom prose sections; otherwise scaffold writes it)
    - opening-scene.txt
 
 2. Decide the campaign folder name under artifact root: `<artifact_root>/campaign-<setting-slug>` (e.g., `games/harbor-letter/campaign-detective-shanghai-1920`).
@@ -484,13 +483,15 @@ Assemble all artifacts into the final campaign folder structure. Call scaffold()
      authoring_mode="guided",
      collections={...from runtime_contract.json...},
      state={...initial state from runtime_contract.json...},
-     play="...PLAY.md content...",
+     director={...required: intent_mechanics + objective from Steps 2 and 4...},
      opening="...opening-scene.txt content...",
      uses_dice=false
    )
    ```
 
-   **Result:** Scaffold creates the game skeleton with `game.manifest.json`, `PLAY.md`, `30-runtime/state.json`, empty collection indexes, and the `40-saves/` folder.
+   **Result:** Scaffold creates the game skeleton with `game.manifest.json`, the director `PLAY.md`, `30-runtime/state.json` (with objective progress fields), empty collection indexes, and the `40-saves/` folder.
+
+   > **Director engine (required):** always pass `director={ default_mechanic, intent_mechanics, option_count, selection, objective }` built from Steps 2 and 4. scaffold seeds `objective_progress`, `turns_since_progress`, and `encounter` into state and writes the director `PLAY.md` automatically — so omit the `play=` argument (Step 6) unless you hand-wrote custom prose sections.
 
 4. Populate minimal boot seed entities into their runtime collections using **game-specific tools**:
    - `create_npc(campaign_path, npc={...})` — for NPC collection
@@ -501,23 +502,23 @@ Assemble all artifacts into the final campaign folder structure. Call scaffold()
    - Link NPC to location: `write_relation(campaign_path, from="npcs/<npc_id>", type="located_at", to="locations/<location_id>")`
    - Link clue to suspect: `write_relation(campaign_path, from="clues/<clue_id>", type="points_to", to="suspects/<suspect_id>")`
 
-6. Persist mechanic templates for runtime growth:
-   - Ensure encounter generation can always load encounter-template.json and fail-timer/combo templates.
-   - Validate that template required fields match `north_star.json.mechanics_contract.encounter_required_fields`.
+6. Confirm the director block drives mechanics:
+   - The manifest `director` block maps each intent to a built-in plugin and declares the objective graph.
+   - The engine supplies all encounter/fail-timer/combo schemas at runtime — there are no mechanic templates to persist.
 
 ### Verify
 
 - Campaign folder exists and contains:
-  - game.manifest.json (with all declared collections)
-  - PLAY.md (with all 5 sections)
-  - 30-runtime/state.json (with required keys: campaign_id, turn, schema)
+  - game.manifest.json (with all declared collections and the required `director` block)
+  - PLAY.md (with all 6 sections, Loop = the fixed director loop)
+  - 30-runtime/state.json (with required keys: campaign_id, turn, schema, plus objective_progress, turns_since_progress, encounter)
   - 30-runtime/<collection>/index.json for each declared collection
   - 40-saves/ (empty folder)
   - 20-story/opening-scene.md (if inline) or opening prose in boot.opening.inline
 - All seed entities are in their runtime collections with correct indexes
 - Relations are bidirectional where appropriate (e.g., NPC location + location NPCs)
-- Mechanic templates are present and schema-aligned with mechanics contract
-- Campaign can generate on-demand encounters without adding new schema fields
+- The `director` block maps every intent to a built-in plugin and its objective graph matches runtime_contract.json
+- Campaign can run the director loop end to end without adding new schema fields
 
 ## Step 9: Verifier and Critic Pass
 

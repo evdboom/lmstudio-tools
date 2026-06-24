@@ -337,7 +337,9 @@ async function collectWorkflowFiles(root: string, baseDir: string, relDir = ""):
 }
 
 async function resolveWorkspaceRoot(root: string, requested?: string): Promise<string> {
-  if (!requested || requested.trim().length === 0) return root;
+  if (!requested || requested.trim().length === 0) {
+    throw new Error("workspace_root is required. Pass the absolute root where artifacts are written (call get_root on the file/game server to find it).");
+  }
   const candidate = requested.trim();
   const abs = path.isAbsolute(candidate) ? candidate : path.resolve(root, candidate);
   const st = await fs.stat(abs).catch(() => null);
@@ -366,6 +368,8 @@ export async function workflowOpen(
   workspaceRoot?: string
 ): Promise<ToolResult> {
   try {
+    const resolvedWorkspaceRoot = await resolveWorkspaceRoot(root, workspaceRoot);
+
     // Read workflow file
     const absWf = await safeResolve(root, workflowPath);
     const st = await fs.stat(absWf);
@@ -390,7 +394,6 @@ export async function workflowOpen(
     const workflowId = path.basename(absWf, path.extname(absWf));
 
     const runId = randomUUID();
-    const resolvedWorkspaceRoot = await resolveWorkspaceRoot(root, workspaceRoot);
     const run: WorkflowRun = {
       run_id: runId,
       workflow_path: workflowPath,
@@ -737,7 +740,7 @@ export async function workflowStatus(root: string, runId: string, workflowRunDir
     const output = [
       `# Workflow Run Status`,
       `Workflow: ${run.workflow_path}`,
-      `Workspace root: ${run.workspace_root ?? root}`,
+      `Workspace root: ${run.workspace_root}`,
       ...(run.artifact_root ? [`Artifact root: ${run.artifact_root}`] : []),
       `Status: **${run.status}**`,
       `Current Step: ${run.current_step === 0 ? "completed" : run.current_step}`,

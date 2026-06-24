@@ -343,7 +343,9 @@ export const VALIDATOR_REGISTRY: Record<string, Record<number, StepValidator>> =
     1: validateBrief,
     3: validateBeats,
     4: validateRuntimeContract,
-    6: validatePlayMd,
+    // Step 5 scaffolds the game in-place; the PLAY.md refine step that follows is
+    // step 7, so the PLAY.md validator binds there (not step 6 = boot content).
+    7: validatePlayMd,
   },
 };
 

@@ -176,6 +176,39 @@ describe("verify_campaign harness", () => {
     expect(state.current_combos_available).toEqual([]);
   });
 
+  it("scaffolds into a folder holding design scratch but refuses an existing game", async () => {
+    // Design artifacts (brief.json, seeds/) already live in games/<slug>/.
+    await writeJson(`${campaign}/brief.json`, { tone: "grim", design_concept: "A letter, a liar, a tide." });
+    await writeJson(`${campaign}/seeds/clues/clue_1.json`, { id: "clue_1", title: "Forged seal" });
+
+    const first = await scaffoldCampaign(root, {
+      campaignPath: campaign,
+      title: "The Harbor Letter",
+      pitch: "A letter, a liar, a tide.",
+      authoringMode: "guided",
+      collections: { clues: { summary_fields: ["id", "title", "status"], min_count: 0 } },
+      state: { schema: "flex-v1" },
+      opening: "Rain beads the harbor glass.",
+    });
+    expect(first.ok).toBe(true);
+    // Scratch is preserved alongside the scaffolded game.
+    expect(await fs.readFile(path.join(root, campaign, "brief.json"), "utf8")).toContain("design_concept");
+    expect(await fs.readFile(path.join(root, campaign, "game.manifest.json"), "utf8")).toContain("manifest_version");
+
+    // Re-scaffolding the same folder now fails because a game already exists there.
+    const second = await scaffoldCampaign(root, {
+      campaignPath: campaign,
+      title: "The Harbor Letter",
+      pitch: "A letter, a liar, a tide.",
+      authoringMode: "guided",
+      collections: { clues: { summary_fields: ["id", "title", "status"], min_count: 0 } },
+      state: { schema: "flex-v1" },
+      opening: "Rain beads the harbor glass.",
+    });
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.error).toContain("game already exists");
+  });
+
   it("repairs accidental array collection indexes before free-form collection writes", async () => {
     await writeJson(`${campaign}/game.manifest.json`, manifest({
       runtime_collections: {

@@ -14,10 +14,10 @@ Multi-step structured workflow to create high-quality role playing games. Each s
 **Engine-first principle (critical):** Do not ask the model to plan the whole game up front. The engine owns long-horizon consistency, mode rules, and progression checks. The model handles short-horizon work: scene narration, 2-4 options, and one-turn consequences.
 
 **Path discipline (critical):**
-- The finished, playable game lives **directly** at `games/<game-slug>/` — one level, no `campaign-` prefix, no extra nesting. `scaffold` writes the manifest, PLAY.md, and runtime here.
-- Workflow scratch artifacts (brief, beats, north_star, seeds, opening) are **ephemeral**. Keep them in a separate `craft/<game-slug>/` working folder so they never ship inside the playable game. `scaffold` refuses a non-empty target, so scratch and the campaign must not share a folder.
-- Set `artifact_root = craft/<game-slug>/` for all scratch artifacts; set `campaign_path = games/<game-slug>/` for the final scaffold.
-- Do **not** write workflow artifacts directly to workspace root.
+- Everything for one game lives under `games/<game-slug>/` — one level, no `campaign-` prefix and no extra nesting, nothing under any other top-level folder. Set `artifact_root = games/<game-slug>/` and write the design scratch artifacts (`brief.json`, `north_star.json`, `beats.json`, `runtime_contract.json`) there.
+- `scaffold` runs **early** (Step 5), as soon as the runtime contract is locked, and creates the game in that **same** folder: `campaign_path = games/<game-slug>/`. The four scratch JSON files end up as siblings of the manifest — that is expected. `scaffold` only refuses a folder that already contains a game (`game.manifest.json`); the scratch JSON does not block it.
+- **scaffold owns these files — never hand-write them as scratch:** `game.manifest.json`, `PLAY.md`, `30-runtime/state.json`, `30-runtime/journal.jsonl`, and `20-story/opening-scene.md`. scaffold writes each one with a fail-if-exists guard, so a pre-existing copy makes scaffold error. After Step 5 these files exist — Steps 6–8 **edit them in place** (`replace_file`, `update_json`, or the collection tools); they never create them.
+- Do **not** write workflow artifacts to the workspace root or under any folder other than `games/<game-slug>/`.
 - If the file/game tools run on a different MCP server than this workflow, the step validators won't find your artifacts unless they share a root. Call `get_root` on the file/game server and pass that absolute path as `workspace_root` when you call `workflow_open`, so validators read artifacts where you actually wrote them.
 
 ## Step 1: Intake and Design Constraints
@@ -43,7 +43,7 @@ Ask the user for tone, setting, premise, content limits, length, game kind, and 
 
 3. Derive a stable game slug from the concept/setting (lowercase, kebab-case, e.g., `harbor-letter`).
 
-4. Set `artifact_root = craft/<game-slug>/` (scratch) and `campaign_path = games/<game-slug>/` (final playable game). Create `artifact_root` before writing any artifacts; leave `campaign_path` for `scaffold` in Step 8 — it must be empty when scaffold runs.
+4. Set `artifact_root = games/<game-slug>/` and create that folder before writing any artifacts. This same folder is `campaign_path` for `scaffold` in Step 5 — the game is assembled directly here, alongside the design artifacts.
 
 5. If their answers create a real design fork or contradiction, ask ONE clarifying follow-up. Otherwise, confirm the design and ask them to approve.
 
@@ -304,7 +304,7 @@ Define the game's state shape, runtime collections, relation types, win/lose/aba
 >   ❌ `"end_states": [ { "id": "ascension_win", "type": "win" }, ... ]`
 
 
-> **Director mapping (required):** the `objective` (primary_goal + gates) and `progress_rules` here map directly to the manifest `director` block: `objective.gates` → `director.objective.gates`, `progress_rules.max_consecutive_non_progress_turns` → `director.objective.progress_policy`, and win/lose → `director.objective.terminal`. Always carry these into the `director={…}` argument passed to `scaffold` in Step 8.
+> **Director mapping (required):** the `objective` (primary_goal + gates) and `progress_rules` here map directly to the manifest `director` block: `objective.gates` → `director.objective.gates`, `progress_rules.max_consecutive_non_progress_turns` → `director.objective.progress_policy`, and win/lose → `director.objective.terminal`. Always carry these into the `director={…}` argument passed to `scaffold` in Step 5.
 >
 > **Gate shape (verify rejects malformed gates):** each `director.objective.gates[]` entry is `{ "id": "...", "unlocked_by": [...], "requires": [...] }`.
 > - `unlocked_by` = one or more **progress-event vectors** the mechanics emit. Use the names from `progress_rules.required_event_types` (e.g. `"clue"`, `"gate_unlock"`, `"location_unlock"`). A gate with an **empty `unlocked_by` can never unlock** → `verify_campaign` error `unreachable_gate`.
@@ -312,7 +312,7 @@ Define the game's state shape, runtime collections, relation types, win/lose/aba
 > - ✅ `{ "id": "secure_proof", "unlocked_by": ["clue"], "requires": ["identify_abductors"] }`
 > - ❌ `{ "id": "secure_proof", "requires": ["power_level >= 3"] }` (no `unlocked_by`; `requires` holds a stat expression)
 
-**How to submit:** Save this JSON as `<artifact_root>/runtime_contract.json`. The collections, state_shape, and content_targets will be passed to `scaffold()` in Step 8.
+**How to submit:** Save this JSON as `<artifact_root>/runtime_contract.json`. The collections, state_shape, and content_targets will be passed to `scaffold()` in Step 5.
 
 ### Verify
 
@@ -327,163 +327,15 @@ Define the game's state shape, runtime collections, relation types, win/lose/aba
 - Timed/combo mechanics can be represented without free-form narration state
 - Progress rules prevent drift away from the primary goal
 
-## Step 5: Minimal Boot Content
+## Step 5: Assemble and Scaffold
 
-Generate only the minimum boot content needed for this authoring mode. The engine supplies all mechanic schemas at runtime, so do not pre-author a full world or hand-roll mechanic templates.
-
-**Instructions:**
-
-1. Read all prior artifacts from `<artifact_root>/` (brief.json, north_star.json, beats.json, runtime_contract.json).
-
-2. For your authoring_mode, decide what to author now:
-   - **fixed:** all core locations, core NPCs, required clues
-   - **guided:** 1-2 key NPCs, 2-3 key locations, 3-5 key clues
-   - **fixed-endpoint:** just the end condition state + 1 starting location
-   - **open-world:** starter locations + anchor NPCs, no fixed full plot
-   - **procedural-startpoint:** 1 opening scene NPC + 1 starting location
-   - **procedural:** only opening state and tone
-
-3. Do **not** hand-roll mechanic templates. The director engine already supplies the encounter, fail-timer, combo, dice, and social-gate schemas at runtime (`timer_combo`, `dice_check`, `social_gate`, `discovery`, `travel_hazard`). Author only the objective graph (Step 4) and the boot seed entities below.
-
-4. For each authored boot entity (NPC, location, clue, etc.), create a JSON file:
-   - NPCs: id, name, role, location, visible_mood, motive, summary
-   - Locations: id, name, visible_features, exits, summary
-   - Clues: id, title, status, points_to_suspect (if detective), summary
-   - (Use the appropriate collection names from runtime_contract.json)
-
-5. Create a `<artifact_root>/seeds/` folder and populate it:
-   - `<artifact_root>/seeds/npcs/npc_1.json`
-   - `<artifact_root>/seeds/locations/location_1.json`
-   - `<artifact_root>/seeds/clues/clue_1.json`
-   - (or whatever your collections are)
-
-6. Document which seeds link to which beats and objective gates. Example:
-
-```json
-{
-  "seeds_manifest": {
-    "npcs": [
-      { "id": "npc_1", "beat_introduced": "beat_1", "file": "<artifact_root>/seeds/npcs/npc_1.json" }
-    ],
-    "locations": [...],
-      "clues": [...],
-      "objective_links": [
-         { "entity": "clues/clue_1", "unlocks_gate": "identify abductors" }
-      ]
-  }
-}
-```
-
-**How to submit:** Create a `<artifact_root>/seeds/` folder with subfolders for each collection (e.g., `seeds/npcs/`, `seeds/locations/`, `seeds/clues/`). Save each seed entity as a JSON file. Then create `<artifact_root>/seeds_manifest.json` to document which seeds feed which beats.
-
-### Verify
-
-- Every seed is referenced by at least one beat or win/lose condition
-- Seeds are appropriate for the authoring mode (procedural has almost none; fixed has many)
-- Each seed has id, title, and summary (lean)
-- No seed contradicts the north_star or hidden_truth
-- Seeds fit the brief's tone and setting
-- No hand-rolled mechanic templates were created (the engine supplies them)
-- At least one authored or generated path can progress each objective gate
-
-## Step 6: Play Loop Writer
-
-The playing model runs the fixed director loop every turn, and `scaffold` writes PLAY.md automatically from the `director` block (Step 8). This step exists to confirm the prose sections; you normally do not hand-write the Loop.
-
-```step-meta
-{ "validator": "playmd" }
-```
+Now that the contract is locked, scaffold the game **before** writing any prose. `scaffold` creates the real game folder — manifest, the director `PLAY.md`, `state.json`, empty collection indexes, the saves folder, and a placeholder opening — directly in `games/<game-slug>/`. Every later step fills these files in place, so the prose never collides with scaffold's fail-if-exists writes (the bug where a hand-written `PLAY.md` made `scaffold` error).
 
 **Instructions:**
 
-1. Read `<artifact_root>/runtime_contract.json` to understand state, collections, and relations.
+1. You have these design artifacts ready: `brief.json`, `north_star.json`, `beats.json`, `runtime_contract.json`. The game is scaffolded into `campaign_path = games/<game-slug>/` — the same folder that holds them. Single level, no `campaign-` prefix.
 
-2. The director `PLAY.md` (auto-written by scaffold) has exactly these sections (the harness checks they exist):
-
-   - **## Premise** (spoiler-light setup)
-   - **## Game mechanics** (which director mechanics this game uses, per intent)
-   - **## Loop** (the fixed director loop — identical for every game)
-   - **## State Shape** (names of custom state fields)
-   - **## Tone** (voice, pacing, content limits)
-   - **## Setup** (spoiler-light premise + 2–4 in-world setup questions for a new run)
-
-3. The **## Loop** is fixed — do not adapt it per kind. The engine handles the differences through the `director` block:
-
-   ```
-   ## Loop
-
-   1. Send the player's action to game_director_next; it returns a request_id + json_schema.
-   2. Fill the schema exactly (generate options, or act inside an active encounter).
-   3. Send it to game_director_submit with the same request_id.
-   4. If accepted=false, fix the listed problems and resend the same request_id.
-   5. Narrate only the canonical_outcome.narration_brief, obeying its narration_rules.
-   6. game_commit with a short summary + a one-line journal entry.
-   ```
-
-4. If you must supply custom prose for the other sections, write them and pass the result via `play=`. Otherwise omit `play=` in Step 8 and let scaffold write the director PLAY.md.
-
-5. File (only if hand-writing): `<artifact_root>/PLAY.md` (no JSON; plain Markdown).
-
-**How to submit:** Save this Markdown as `<artifact_root>/PLAY.md`. You'll pass it to `scaffold()` in Step 8.
-
-### Verify
-
-- All 6 required sections (Premise, Game mechanics, Loop, State Shape, Tone, Setup) are present and non-empty
-- Premise is spoiler-light and in-world
-- Game mechanics section names the director mechanics this game maps per intent
-- Loop is the fixed director loop (next → fill schema → submit → narrate canonical_outcome → commit)
-- Loop uses the director tools (game_director_next, game_director_submit, game_commit)
-- State Shape names match runtime_contract.json
-- Tone aligns with brief.json tone
-- Setup questions are in-world (not meta) and 2–4 total
-
-## Step 7: Opening Scene Writer
-
-Write the opening prose text only (plain player-facing prose, no Markdown emphasis, no menus). Establish where the protagonist is, what is happening now, what immediate pressure or decision is present.
-
-**Instructions:**
-
-1. Read `<artifact_root>/brief.json` (tone, setting), `<artifact_root>/north_star.json` (player fantasy), and `<artifact_root>/beats.json` (first beat trigger).
-
-2. Write 150–250 words of opening prose:
-   - Establish the **place**: concrete sensory detail (sights, sounds, tension)
-   - Establish the **now**: what is actively happening? what decision is the player facing?
-   - Establish the **pressure**: why can't the player just wait around?
-   - Avoid: menu language, character sheet details, out-of-character framing
-
-3. Example opening (detective):
-   > The rain hasn't stopped in three days. The precinct smells like wet wool and old coffee. You're handed a folder—another body, this time in the warehouse district. No obvious motive. No witnesses. Captain Torres leans back in her chair. "Three cases open on your desk already, Detective. You've got 72 hours before the press crawls down my throat." The warehouse is cold when you arrive. The victim is face-down in a puddle, one arm splayed.
-
-4. File: `<artifact_root>/opening-scene.txt` (plain text, no formatting).
-
-**How to submit:** Save this text as `<artifact_root>/opening-scene.txt`. You'll pass it to `scaffold()` in Step 8.
-
-### Verify
-
-- Prose is concrete (nouns, verbs, sensory detail; no generic adjectives like "spooky" or "mysterious")
-- First-person present or immediate: "You are here, this is happening now"
-- Visible pressure or decision (why does the player act on turn 1?)
-- No menu language ("What do you do?" or "Choose one:")
-- 150–250 words
-- Tone matches brief.json
-- Aligns with first beat trigger
-
-## Step 8: Assembler
-
-Assemble all artifacts into the final campaign folder structure. Call scaffold() with the required `director` block to create the manifest, state, director PLAY.md, and collection indexes. Then copy minimal seeds.
-
-**Instructions:**
-
-1. You have these artifacts ready:
-   - brief.json
-   - north_star.json
-   - beats.json
-   - runtime_contract.json
-   - seeds/ folder (minimal boot entities)
-   - PLAY.md (only if you hand-wrote custom prose sections; otherwise scaffold writes it)
-   - opening-scene.txt
-
-2. The final game folder is `campaign_path = games/<game-slug>/` — directly under `games/`, single level, no `campaign-` prefix. It must be empty when scaffold runs (scratch lives in `craft/<game-slug>/`).
+2. Build the required `director` block from Steps 2 and 4: `intent_mechanics` (Step 2 mechanics → built-in plugins) plus `objective` (primary_goal + gates from Step 4). Map every intent to a built-in plugin: `timer_combo`, `dice_check`, `social_gate`, `discovery`, `travel_hazard`.
 
 3. Call `scaffold()` to create the skeleton:
 
@@ -497,45 +349,145 @@ Assemble all artifacts into the final campaign folder structure. Call scaffold()
      authoring_mode="guided",
      collections={...from runtime_contract.json...},
      state={...initial state from runtime_contract.json...},
-     director={...required: intent_mechanics + objective from Steps 2 and 4...},
+     director={ default_mechanic, intent_mechanics, option_count, selection, objective },
      mechanics={...machine-readable reminder mirroring director.intent_mechanics...},
-     opening="...opening-scene.txt content...",
      uses_dice=false
    )
    ```
 
-   > **Pass `concept` and `mechanics`** — without them `verify_campaign` emits `missing_concept` and `missing_mechanics` warnings on every game. `concept` = brief.json `design_concept`; `mechanics` = a small object mirroring `director.intent_mechanics` so `game_scene` can surface the rules without re-reading PLAY.md.
+   > **Omit `play=` and `opening=`.** scaffold writes the fixed director `PLAY.md` and a placeholder `20-story/opening-scene.md` for you — Steps 7 and 8 refine them in place. Passing `play=`/`opening=` now would bake in prose you have not written yet; hand-writing those files before scaffold is exactly what makes scaffold error.
+   >
+   > **Pass `concept` and `mechanics`** — without them `verify_campaign` emits `missing_concept` and `missing_mechanics` warnings on every game. `concept` = brief.json `design_concept`; `mechanics` mirrors `director.intent_mechanics` so `game_scene` can surface the rules without re-reading PLAY.md.
 
-   **Result:** Scaffold creates the game skeleton with `game.manifest.json`, the director `PLAY.md`, `30-runtime/state.json` (with objective progress fields), empty collection indexes, and the `40-saves/` folder.
-
-   > **Director engine (required):** always pass `director={ default_mechanic, intent_mechanics, option_count, selection, objective }` built from Steps 2 and 4. scaffold seeds `objective_progress`, `turns_since_progress`, and `encounter` into state and writes the director `PLAY.md` automatically — so omit the `play=` argument (Step 6) unless you hand-wrote custom prose sections.
-
-4. Populate minimal boot seed entities into their runtime collections using **game-specific tools**:
-   - `create_npc(campaign_path, npc={...})` — for NPC collection
-   - `create_location(campaign_path, location={...})` — for locations collection
-   - `write_collection_entry(campaign_path, collection="<name>", id="<id>", entry={...})` — for any other collection (clues, suspects, rooms, etc.)
-
-5. Create relations between entities:
-   - Link NPC to location: `write_relation(campaign_path, from="npcs/<npc_id>", type="located_at", to="locations/<location_id>")`
-   - Link clue to suspect: `write_relation(campaign_path, from="clues/<clue_id>", type="points_to", to="suspects/<suspect_id>")`
-
-6. Confirm the director block drives mechanics:
-   - The manifest `director` block maps each intent to a built-in plugin and declares the objective graph.
-   - The engine supplies all encounter/fail-timer/combo schemas at runtime — there are no mechanic templates to persist.
+   **Result:** scaffold creates `game.manifest.json` (with the `director` block), the director `PLAY.md`, `30-runtime/state.json` (seeded with `objective_progress`, `turns_since_progress`, `encounter`), `30-runtime/journal.jsonl`, an empty index for each declared collection, the placeholder `20-story/opening-scene.md`, and the empty `40-saves/` folder.
 
 ### Verify
 
-- Campaign folder exists and contains:
-  - game.manifest.json (with all declared collections and the required `director` block)
-  - PLAY.md (with all 6 sections, Loop = the fixed director loop)
-  - 30-runtime/state.json (with required keys: campaign_id, turn, schema, plus objective_progress, turns_since_progress, encounter)
-  - 30-runtime/<collection>/index.json for each declared collection
-  - 40-saves/ (empty folder)
-  - 20-story/opening-scene.md (if inline) or opening prose in boot.opening.inline
-- All seed entities are in their runtime collections with correct indexes
-- Relations are bidirectional where appropriate (e.g., NPC location + location NPCs)
-- The `director` block maps every intent to a built-in plugin and its objective graph matches runtime_contract.json
-- Campaign can run the director loop end to end without adding new schema fields
+- `games/<game-slug>/` now contains `game.manifest.json`, `PLAY.md`, `30-runtime/state.json`, `30-runtime/journal.jsonl`, an index for each declared collection, and `40-saves/`
+- scaffold returned `created: true` with no fail-if-exists error (if it errored, a prose file was written too early — remove the stray file and re-run)
+- The manifest `director` block maps every intent to a built-in plugin and its objective graph matches `runtime_contract.json`
+- `state.json` has the required keys (`campaign_id`, `turn`, `schema`) plus `objective_progress`, `turns_since_progress`, `encounter`
+- `play=` and `opening=` were omitted (scaffold wrote the director PLAY.md and the placeholder opening)
+- No hand-rolled mechanic templates were created — the engine supplies them at runtime
+
+## Step 6: Boot Content
+
+Populate the minimum boot entities for this authoring mode **directly into the scaffolded collections**. The engine supplies all mechanic schemas at runtime, so do not pre-author a full world or hand-roll mechanic templates, and do not write scratch seed JSON — write straight into the live game with the collection tools.
+
+```step-meta
+{ "reads": ["authoring_mode"] }
+```
+
+**Instructions:**
+
+1. Read the design artifacts (`brief.json`, `north_star.json`, `beats.json`, `runtime_contract.json`) for the entities each beat and objective gate needs.
+
+2. For your `authoring_mode`, decide how much to author now:
+   - **fixed:** all core locations, core NPCs, required clues
+   - **guided:** 1-2 key NPCs, 2-3 key locations, 3-5 key clues
+   - **fixed-endpoint:** just the end-condition entities + 1 starting location
+   - **open-world:** starter locations + anchor NPCs, no fixed full plot
+   - **procedural-startpoint:** 1 opening-scene NPC + 1 starting location
+   - **procedural:** none — leave collections empty for the playing model to grow
+
+3. Do **not** hand-roll mechanic templates. The director engine already supplies the encounter, fail-timer, combo, dice, and social-gate schemas at runtime (`timer_combo`, `dice_check`, `social_gate`, `discovery`, `travel_hazard`). Author only boot entities.
+
+4. Write each boot entity into its runtime collection with the game tools (never by editing `index.json`):
+   - `create_npc(campaign_path, npc={...})` — NPCs (id, name, role, location, visible_mood, motive, summary)
+   - `create_location(campaign_path, location={...})` — locations (id, name, visible_features, exits, summary)
+   - `write_collection_entry(campaign_path, collection="<name>", id="<id>", entry={...})` — any other collection (clues, suspects, rooms, etc.)
+
+5. Create relations between entities with `write_relation` (never ad-hoc lookup files):
+   - `write_relation(campaign_path, from="npcs/<npc_id>", type="located_at", to="locations/<location_id>")`
+   - `write_relation(campaign_path, from="clues/<clue_id>", type="points_to", to="suspects/<suspect_id>")`
+
+6. Confirm each boot entity ties to a beat or objective gate (e.g. a clue that unlocks the "identify abductors" gate).
+
+### Verify
+
+- Every boot entity is referenced by at least one beat or win/lose condition
+- Entity counts fit the authoring mode (procedural has almost none; fixed has many)
+- Each entity has id, title/name, and a lean summary
+- No entity contradicts the north_star or hidden_truth; all fit the brief's tone and setting
+- Entities are written into the live collections (their `index.json` lists them) — no scratch seed files
+- Relations are bidirectional where appropriate (NPC location + location NPCs)
+- At least one authored path can progress each objective gate
+
+## Step 7: Play Loop (Refine PLAY.md)
+
+`scaffold` already wrote a valid director `PLAY.md` in Step 5. This step refines its prose sections for *this* game — you **edit the file in place, never recreate it**. The `## Loop` stays the fixed director loop; only the game-specific sections change.
+
+```step-meta
+{ "validator": "playmd" }
+```
+
+**Instructions:**
+
+1. Read `games/<game-slug>/PLAY.md` (scaffold wrote it) and `runtime_contract.json` for state/collection names.
+
+2. The director `PLAY.md` has exactly these sections (the harness checks they exist and are non-empty):
+   - **## Premise** — spoiler-light setup
+   - **## Game mechanics** — which director mechanics this game uses, per intent
+   - **## Loop** — the fixed director loop (leave it exactly as scaffold wrote it)
+   - **## State Shape** — names of the custom `state.json` fields
+   - **## Tone** — voice, pacing, content limits
+   - **## Setup** — spoiler-light premise + 2–4 in-world setup questions for a new run
+
+3. Edit the file with `replace_file(path="games/<game-slug>/PLAY.md", content=...)`. Keep the `## Loop` text unchanged and fill `## Premise`, `## Game mechanics`, `## State Shape`, `## Tone`, and `## Setup` with this game's specifics. The fixed loop scaffold writes (do not change it):
+
+   ```
+   ## Loop
+
+   1. Send the player's action to game_director_next; it returns a request_id + json_schema.
+   2. Fill the schema exactly (generate options, or act inside an active encounter).
+   3. Send it to game_director_submit with the same request_id.
+   4. If accepted=false, fix the listed problems and resend the same request_id.
+   5. Narrate only the canonical_outcome.narration_brief, obeying its narration_rules.
+   6. game_commit with a short summary + a one-line journal entry.
+   ```
+
+4. If the scaffolded prose already fits the game, you may leave a section as-is — but every section must be non-empty and game-specific (not template filler).
+
+### Verify
+
+- All 6 sections (Premise, Game mechanics, Loop, State Shape, Tone, Setup) are present and non-empty
+- Premise is spoiler-light and in-world
+- Game mechanics names the director mechanics this game maps per intent
+- Loop is unchanged from scaffold's fixed director loop (next → fill schema → submit → narrate canonical_outcome → commit)
+- State Shape names match `runtime_contract.json`
+- Tone aligns with `brief.json` tone
+- Setup questions are in-world (not meta) and 2–4 total
+- PLAY.md was edited in place (not recreated)
+
+## Step 8: Opening Scene
+
+Replace the placeholder opening `scaffold` wrote with the final player-facing prose. Plain prose only — no Markdown emphasis, no menus. Establish where the protagonist is, what is happening now, and the immediate pressure or decision. **Overwrite the scaffolded file; do not create a new one.**
+
+**Instructions:**
+
+1. Read `brief.json` (tone, setting), `north_star.json` (player fantasy), and `beats.json` (first beat trigger).
+
+2. Write 150–250 words of opening prose:
+   - Establish the **place**: concrete sensory detail (sights, sounds, tension)
+   - Establish the **now**: what is actively happening? what decision is the player facing?
+   - Establish the **pressure**: why can't the player just wait around?
+   - Avoid: menu language, character sheet details, out-of-character framing
+
+3. Example opening (detective):
+   > The rain hasn't stopped in three days. The precinct smells like wet wool and old coffee. You're handed a folder—another body, this time in the warehouse district. No obvious motive. No witnesses. Captain Torres leans back in her chair. "Three cases open on your desk already, Detective. You've got 72 hours before the press crawls down my throat." The warehouse is cold when you arrive. The victim is face-down in a puddle, one arm splayed.
+
+4. Overwrite the scaffolded placeholder with `replace_file(path="games/<game-slug>/20-story/opening-scene.md", content=...)`. Step 5 already created this file — `add_file` would fail because it exists, so use `replace_file`.
+
+### Verify
+
+- Prose is concrete (nouns, verbs, sensory detail; no generic adjectives like "spooky" or "mysterious")
+- First-person present or immediate: "You are here, this is happening now"
+- Visible pressure or decision (why does the player act on turn 1?)
+- No menu language ("What do you do?" or "Choose one:")
+- 150–250 words
+- Tone matches `brief.json`
+- Aligns with the first beat trigger
+- The opening was written into `games/<game-slug>/20-story/opening-scene.md` (the scaffolded file, overwritten in place)
 
 ## Step 9: Verifier and Critic Pass
 
@@ -543,7 +495,7 @@ Run verify_campaign() to validate the contract and smoke test the play loop. Fix
 
 -**Instructions:**
 
-1. Call `verify_campaign(campaign_path="campaign-...")`. This runs:
+1. Call `verify_campaign(campaign_path="games/<game-slug>")`. This runs:
    - **Phase 1:** Contract checks (manifest keys, PLAY.md sections, state.json required keys, collection indexes)
    - **Phase 2:** Smoke test (boot a throwaway save slot, call game_scene, game_read, game_write, game_commit)
 
@@ -579,7 +531,7 @@ Compress verbosity, remove generic filler, sharpen nouns and verbs, and ensure e
 
 **Instructions:**
 
-1. Read PLAY.md, opening-scene.txt, and a sample seed entity (e.g., one NPC).
+1. Read PLAY.md, `20-story/opening-scene.md`, and a sample seed entity (e.g., one NPC).
 
 2. Look for and remove:
    - Generic adjectives ("mysterious," "dark," "strange") → replace with concrete sensory detail
@@ -590,8 +542,8 @@ Compress verbosity, remove generic filler, sharpen nouns and verbs, and ensure e
 3. Sharpen: Replace "an ancient artifact" with "a rust-stained medallion" or "a leather-bound journal from 1847".
 
 4. For each file:
-   - Edit PLAY.md: trim the Loop to exactly one concise paragraph per in-world step
-   - Edit opening-scene.txt: ensure every detail is specific (not generic)
+   - Edit PLAY.md: sharpen the game-specific sections (Premise, Game mechanics, State Shape, Tone, Setup). Leave the fixed `## Loop` exactly as scaffold wrote it.
+   - Edit `20-story/opening-scene.md`: ensure every detail is specific (not generic)
    - Edit seed entities (NPC summaries, location descriptions): replace "pretty" and "nice" with concrete detail
 
 5. Re-read the opening and first beat: do they pull the player forward? Is the voice consistent?
@@ -600,7 +552,7 @@ Compress verbosity, remove generic filler, sharpen nouns and verbs, and ensure e
 
 ### Verify
 
-- PLAY.md Loop is lean (one short paragraph per step, ~100 words total)
+- PLAY.md game-specific sections are lean and concrete; the fixed `## Loop` is untouched
 - Opening and seed prose have no generic adjectives
 - Voice is consistent across all prose (PLAY, opening, seeds)
 - Every NPC has a visible motive (not just "friendly")

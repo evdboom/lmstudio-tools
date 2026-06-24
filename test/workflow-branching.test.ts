@@ -117,7 +117,7 @@ describe("game-crafter machine validation + branching (end to end)", () => {
 
   async function start(): Promise<string> {
     await write(WF, workflowMd);
-    const opened = await workflowOpen(root, WF, RUN_DIR);
+    const opened = await workflowOpen(root, WF, RUN_DIR, root);
     if (!opened.ok) throw new Error(opened.error);
     return runIdFrom(opened.text);
   }
@@ -261,6 +261,13 @@ describe("game-crafter machine validation + branching (end to end)", () => {
     const s3 = await workflowSubmitStep(root, runId, RUN_DIR, "beats saved", false);
     if (s3.ok) expect(s3.text).toContain("validation FAILED");
     expect((await readRun(runId)).current_step).toBe(3);
+  });
+
+  it("requires workspace_root and errors without it", async () => {
+    await write(WF, workflowMd);
+    const opened = await workflowOpen(root, WF, RUN_DIR);
+    expect(opened.ok).toBe(false);
+    if (!opened.ok) expect(opened.error).toContain("workspace_root is required");
   });
 
   it("validates artifacts from workflow_open workspace_root", async () => {

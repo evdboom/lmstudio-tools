@@ -349,13 +349,16 @@ async function writeTextAt(root: string, fileRel: string, text: string, flag: "w
   await fs.writeFile(abs, text, { encoding: "utf8", flag });
 }
 
-async function ensureNewOrEmptyFolder(root: string, folderRel: string): Promise<void> {
+// The scaffold target may already hold the workflow's design scratch (brief.json,
+// beats.json, seeds/, etc.) because the game lives directly at games/<slug>/. Only
+// reject when it already contains a scaffolded game (game.manifest.json), so a real
+// campaign is never overwritten. Per-file "wx" writes guard the individual outputs.
+async function ensureScaffoldTarget(root: string, folderRel: string): Promise<void> {
   const st = await statAt(root, folderRel);
   if (st) {
     if (!st.isDirectory()) throw new Error(`Path exists and is not a folder: ${displayPath(folderRel)}`);
-    const entries = await fs.readdir(await safeResolve(root, folderRel));
-    if (entries.length > 0) {
-      throw new Error(`Campaign folder already exists and is not empty: ${displayPath(folderRel)}`);
+    if (await statAt(root, rel(folderRel, "game.manifest.json"))) {
+      throw new Error(`A game already exists at ${displayPath(folderRel)} (game.manifest.json present).`);
     }
     return;
   }
@@ -370,7 +373,7 @@ export async function scaffoldCampaign(root: string, options: ScaffoldOptions): 
   try {
     const campaignPath = options.campaignPath;
     if (!campaignPath || campaignPath.trim().length === 0) throw new Error("campaign_path is required.");
-    await ensureNewOrEmptyFolder(root, campaignPath);
+    await ensureScaffoldTarget(root, campaignPath);
 
     const campaignId = options.campaignId?.trim() || path.basename(path.normalize(campaignPath));
     const title = options.title?.trim() || titleFromCampaignPath(campaignPath);

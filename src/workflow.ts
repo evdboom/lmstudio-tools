@@ -33,7 +33,6 @@ import * as path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { safeResolve, SandboxError } from "./sandbox.js";
 import { readTextFile, ReadError } from "./io.js";
-import { getStepValidator, type ArtifactCheckContext } from "./workflow-validators.js";
 
 export type ToolResult = { ok: true; text: string } | { ok: false; error: string };
 
@@ -66,13 +65,6 @@ export interface WorkflowSpec {
   steps: WorkflowStep[];
 }
 
-export interface StepValidationRecord {
-  at: string;
-  pass: boolean;
-  errors: string[];
-  echo: Record<string, unknown>;
-}
-
 export interface WorkflowRun {
   run_id: string;
   workflow_path: string; // Relative to root
@@ -83,70 +75,12 @@ export interface WorkflowRun {
   last_updated: string;
   status: "active" | "blocked" | "completed";
   blocked_reason?: string;
-  /** Root used for artifact verification (defaults to workflow root if unset). */
+  /** Root used for workflow-related artifact paths (defaults to workflow root). */
   workspace_root?: string;
   /** Set in step 1 from the submitted artifact path (games/<slug>/). */
   artifact_root?: string;
-  /** Facts derived from validated artifacts; drives branching + later validators. */
+  /** Facts derived from submissions; drives step branching via skip_when and <<when>> blocks. */
   decisions?: Record<string, unknown>;
-  /** Per-step machine-validation results, for audit. */
-  step_validations?: Record<number, StepValidationRecord>;
-}
-
-const GAME_CRAFTER_ARTIFACT_NAME_RE =
-  /(brief\.json|north_star\.json|beats\.json|runtime_contract\.json|seeds_manifest\.json|PLAY\.md|opening-scene\.txt|plan\.json)$/i;
-
-const GAME_CRAFTER_PATHY_REF_RE =
-  /((?:\.{1,2}[\\/])?(?:[^\\/\s]+[\\/])+[^\s,;:)\]\}"'`]+)/g;
-
-const GAME_CRAFTER_CAMPAIGN_DIR_RE =
-  /(^|[^/\\\w-])(campaign-[a-z0-9-]+)(?=$|[^\w.-])/gim;
-
-function detectRootArtifactRefsForGameCrafter(output: string): string[] {
-  // Extract any declared artifact_root from the output.
-  // If one exists, artifact filenames mentioned after it are implicitly nested.
-  const rootMatch = output.match(/artifact\s+root:\s*([^\s,]+)/i);
-  const declaredRoot = rootMatch ? rootMatch[1] : null;
-  const declaredRootIndex = rootMatch ? rootMatch.index! : -1;
-
-  const refs = new Set<string>();
-
-  // Only treat path-like references as enforceable. Plain prose mentions like
-  // "beats.json created at games/x/beats.json" should not be rejected.
-  for (const m of output.matchAll(GAME_CRAFTER_PATHY_REF_RE)) {
-    const rawRef = m[1];
-    const matchIndex = m.index || 0;
-    if (!rawRef) continue;
-    // Strip Markdown/quote wrappers and a leading "./" the greedy regex may
-    // have captured (e.g. `games/x/brief.json` in a code span), so the
-    // games/ prefix check below sees the real path start.
-    const normalized = rawRef
-      .replace(/\\/g, "/")
-      .replace(/^[\s'"`([{<]+/, "")
-      .replace(/^\.\//, "");
-    const lower = normalized.toLowerCase();
-
-    const fileName = normalized.slice(normalized.lastIndexOf("/") + 1);
-    if (!GAME_CRAFTER_ARTIFACT_NAME_RE.test(fileName)) continue;
-
-    // If an artifact_root was declared before this match, references after it are implicitly nested.
-    if (declaredRoot && declaredRootIndex >= 0 && declaredRootIndex < matchIndex) continue;
-
-    if (!lower.startsWith("games/")) {
-      refs.add(fileName);
-    }
-  }
-
-  // Campaign directory references are still considered root-level unless nested under games/.
-  for (const m of output.matchAll(GAME_CRAFTER_CAMPAIGN_DIR_RE)) {
-    const ref = m[2];
-    const matchIndex = m.index || 0;
-    if (!ref) continue;
-    if (declaredRoot && declaredRootIndex >= 0 && declaredRootIndex < matchIndex) continue;
-    refs.add(ref);
-  }
-
-  return [...refs].sort((a, b) => a.localeCompare(b));
 }
 
 function workflowActivationGuidance(runId: string): string[] {
@@ -288,10 +222,37 @@ export function shouldSkip(meta: StepMeta | undefined, decisions: Record<string,
 
 const ARTIFACT_ROOT_RE = /games\/([a-z0-9][a-z0-9-]*)\b/i;
 
-/** Pull `games/<slug>` out of a step-1 submission so later validators can read artifacts. */
+/** Pull `games/<slug>` out of a submission so later steps can branch on artifact location. */
 export function extractArtifactRoot(output: string): string | undefined {
   const m = ARTIFACT_ROOT_RE.exec(output);
   return m ? `games/${m[1]}` : undefined;
+}
+
+function extractDecisionPatch(output: string): Record<string, unknown> | undefined {
+  const trimmed = output.trim();
+  if (!trimmed) return undefined;
+
+  const tryParseObject = (candidate: string): Record<string, unknown> | undefined => {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+      return undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const direct = tryParseObject(trimmed);
+  if (direct) return direct;
+
+  const fenced = /```json\s*([\s\S]*?)```/i.exec(output);
+  if (fenced?.[1]) {
+    return tryParseObject(fenced[1].trim());
+  }
+
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -337,9 +298,7 @@ async function collectWorkflowFiles(root: string, baseDir: string, relDir = ""):
 }
 
 async function resolveWorkspaceRoot(root: string, requested?: string): Promise<string> {
-  if (!requested || requested.trim().length === 0) {
-    throw new Error("workspace_root is required. Pass the absolute root where artifacts are written (call get_root on the file/game server to find it).");
-  }
+  if (!requested || requested.trim().length === 0) return root;
   const candidate = requested.trim();
   const abs = path.isAbsolute(candidate) ? candidate : path.resolve(root, candidate);
   const st = await fs.stat(abs).catch(() => null);
@@ -347,10 +306,6 @@ async function resolveWorkspaceRoot(root: string, requested?: string): Promise<s
     throw new Error(`workspace_root is not an existing directory: ${requested}`);
   }
   return await fs.realpath(abs);
-}
-
-async function runWorkspaceRoot(root: string, run: WorkflowRun): Promise<string> {
-  return await resolveWorkspaceRoot(root, run.workspace_root);
 }
 
 // ---------------------------------------------------------------------------
@@ -531,7 +486,6 @@ export async function workflowSubmitStep(
 ): Promise<ToolResult> {
   try {
     const run = await readRunState(root, workflowRunDir, runId);
-    const workspaceRoot = await runWorkspaceRoot(root, run);
     // Load workflow spec and run state
     const absWf = await safeResolve(root, run.workflow_path);
     const r = await readTextFile(absWf);
@@ -543,95 +497,15 @@ export async function workflowSubmitStep(
       return { ok: false, error: `Step ${run.current_step} not found` };
     }
 
-    // Hard guard for game-crafter: reject root-level artifact references.
-    // The workflow requires all artifacts under games/<game-slug>/...
-    if (run.workflow_id === "game-crafter-workflow") {
-      const badRefs = detectRootArtifactRefsForGameCrafter(output);
-      if (badRefs.length > 0) {
-        return {
-          ok: false,
-          error: [
-            "Submission rejected: root-level artifact path(s) detected.",
-            `Detected: ${badRefs.join(", ")}`,
-            "Use paths under games/<game-slug>/... for all artifacts and campaign folders.",
-            "Example: games/harbor-letter/brief.json",
-          ].join(" "),
-        };
-      }
-    }
-
-    // Capture the artifact root from the submission (so later validators can read files).
+    // Capture optional artifact root from submissions so later steps can branch on it.
     run.decisions ??= {};
     if (!run.artifact_root) {
       const ar = extractArtifactRoot(output);
       if (ar) run.artifact_root = ar;
     }
+    const decisionPatch = extractDecisionPatch(output);
+    if (decisionPatch) Object.assign(run.decisions, decisionPatch);
 
-    // Machine validation path: read the step's artifact, check it, echo back.
-    const validator = getStepValidator(run.workflow_id, step.number);
-    if (validator) {
-      const ctx: ArtifactCheckContext = {
-        root: workspaceRoot,
-        artifactRoot: run.artifact_root,
-        output,
-        decisions: run.decisions,
-      };
-      const result = await validator(ctx);
-      run.step_validations ??= {};
-      run.step_validations[step.number] = {
-        at: new Date().toISOString(),
-        pass: result.pass,
-        errors: result.errors,
-        echo: result.echo,
-      };
-
-      if (!result.pass) {
-        run.last_updated = new Date().toISOString();
-        await writeRunState(root, workflowRunDir, runId, run);
-        return {
-          ok: true,
-          text: [
-            `## Step ${step.number} validation FAILED`,
-            "The engine checked your artifact and found problems. Fix them and call workflow_submit_step again.",
-            "",
-            "Problems:",
-            ...result.errors.map((e) => `- ${e}`),
-            ...(result.warnings.length ? ["", "Warnings:", ...result.warnings.map((w) => `- ${w}`)] : []),
-            "",
-            "What the engine parsed (cross-check against your intent):",
-            "```json",
-            JSON.stringify(result.echo, null, 2),
-            "```",
-          ].join("\n"),
-        };
-      }
-
-      if (result.decisions) Object.assign(run.decisions, result.decisions);
-      run.completed_steps[run.current_step] = { submitted_at: new Date().toISOString(), output };
-      const advance = advanceWithSkips(run, spec);
-      run.last_updated = new Date().toISOString();
-      await writeRunState(root, workflowRunDir, runId, run);
-
-      const reflection = [
-        `## Step ${step.number} validated`,
-        "The engine validated your artifact. Cross-check this against your working context before continuing:",
-        "```json",
-        JSON.stringify(result.echo, null, 2),
-        "```",
-        ...(result.warnings.length ? ["", "Warnings:", ...result.warnings.map((w) => `- ${w}`)] : []),
-        ...(advance.skipped.length ? ["", `Skipped step(s) ${advance.skipped.join(", ")} (not applicable to authoring mode).`] : []),
-        "",
-        run.status === "completed"
-          ? "✓ Workflow completed — every step validated."
-          : `Moving to step ${run.current_step}: ${advance.nextStep?.title}.`,
-      ];
-      if (run.status !== "completed" && advance.nextStep) {
-        reflection.push("", "---", "", ...renderActiveStep(advance.nextStep, run.decisions, runId));
-      }
-      return { ok: true, text: reflection.join("\n") };
-    }
-
-    // No machine validator: fall back to the self-attested verify gate.
     if (step.verify && !verified) {
       return {
         ok: true,

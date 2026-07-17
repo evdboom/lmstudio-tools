@@ -1,13 +1,10 @@
 {
   "name": "lmstudio-tools",
   "version": "0.1.0",
-  "description": "Local MCP server exposing sandboxed filesystem tools for LM Studio.",
+  "description": "MCP servers for LM Studio: sandboxed file tools plus a skills/workflow framework.",
   "type": "module",
   "bin": {
     "lmstudio-tools": "dist/index.js",
-    "lmstudio-game": "dist/game-index.js",
-    "lmstudio-game-creator": "dist/game-creator-index.js",
-    "lmstudio-game-player": "dist/game-player-index.js",
     "lmstudio-skills": "dist/skills-index.js"
   },
   "main": "dist/index.js",
@@ -15,7 +12,8 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "api": "tsx src/web-api.ts --root .",
+    "start:skills": "node dist/skills-index.js",
+    "dev:skills": "tsx src/skills-index.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },

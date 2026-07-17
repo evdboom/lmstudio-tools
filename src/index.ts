@@ -442,10 +442,10 @@ export function registerWorkflowTools(
 
   server.tool(
     toolName("workflow_open"),
-    "Open a workflow by name and start or resume a run. Use a bare name (e.g., 'game-crafter-workflow') without folder or extension. You MUST pass workspace_root: the absolute filesystem root where artifacts are written (call get_root on the file/game server to get it) so the step validators read files where you actually wrote them.",
+    "Open a workflow by name and start a run. Use a bare name (for example, 'my-workflow') without folder or extension. workspace_root is optional and defaults to the workflow server root.",
     {
       workflow_path: z.string().min(1).describe("Workflow name only (same style as skills). Example: 'game-crafter-workflow' or '/game-crafter-workflow'."),
-      workspace_root: z.string().min(1).describe("Required. Absolute filesystem root the artifact validators read from — pass the file/game server's get_root value. Relative paths resolve from it."),
+      workspace_root: z.string().min(1).optional().describe("Optional absolute filesystem root for workflow-relative artifact paths. Relative paths resolve from this root when provided."),
     },
     wrap(
       "workflow_open",
@@ -470,7 +470,7 @@ export function registerWorkflowTools(
 
   server.tool(
     toolName("workflow_submit_step"),
-    "Submit output for the current step. Steps with a machine validator are checked by the engine: it reads the step's artifact, validates schema/cross-references, and either FAILS with a problem list (fix and resubmit — verified is ignored) or PASSES and echoes what it parsed for you to cross-check before advancing. Steps without a validator fall back to the Verify section: if verified=false, returns the verify prompt; call again with verified=true to proceed. Some steps auto-skip based on earlier decisions (e.g. authoring mode).",
+    "Submit output for the current step. If the step has a Verify section and verified=false, the tool returns the verify checklist; call again with verified=true to proceed. Steps can auto-skip when skip_when metadata matches prior decisions.",
     {
       run_id: z.string().min(1).describe("Workflow run id returned by workflow_open."),
       output: z.string().min(1).describe("Your submission output (artifacts, decisions, or results)."),

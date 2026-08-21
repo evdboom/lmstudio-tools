@@ -213,7 +213,7 @@ export function registerTools(
 
   server.tool(
     toolName("add_json"),
-    "Add a new property to a JSON file. Fails if the property already exists. Use for adding state flags, runtime fields, or array items without replacing the whole file.",
+    "Add a new property to a JSON file. Fails if the property or array index already exists. Use for adding state flags, runtime fields, or array items without replacing the whole file.",
     {
       path: z.string().min(1).describe("JSON file path relative to root."),
       property: z

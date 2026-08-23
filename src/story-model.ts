@@ -76,37 +76,17 @@ export const storyBlueprintSchema = z.object({
 
 export type StoryBlueprint = z.infer<typeof storyBlueprintSchema>;
 
-export const continuityUpdateSchema = z.object({
-  subject: storyId,
-  fact: nonEmpty,
-  kind: storyId,
-  importance: z.literal("consequential"),
-});
-
 export const storyRunSchema = z.object({
   schema: z.literal("story-run-v1"),
   run_id: z.string().uuid(),
   story_path: nonEmpty,
   label: z.string().optional(),
   next_beat: z.number().int().nonnegative(),
-  active_beat: z.object({
-    index: z.number().int().nonnegative(),
-    token: z.string().uuid(),
-  }).optional(),
-  completed_beats: z.array(z.object({
-    beat_index: z.number().int().nonnegative(),
-    token: z.string().uuid(),
-    narration: nonEmpty,
-    continuity_updates: z.array(continuityUpdateSchema),
-    completed_at: z.string().datetime(),
-  })),
-  continuity: z.array(continuityUpdateSchema),
   started_at: z.string().datetime(),
   updated_at: z.string().datetime(),
   status: z.enum(["active", "completed"]),
 });
 
-export type ContinuityUpdate = z.infer<typeof continuityUpdateSchema>;
 export type StoryRun = z.infer<typeof storyRunSchema>;
 
 export interface StoryValidationIssue {

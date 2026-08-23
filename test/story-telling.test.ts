@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { promises as fs } from "node:fs";
+import * as path from "node:path";
 import {
   addBeat,
   addCharacter,
@@ -7,7 +9,7 @@ import {
   createStory,
   finalizeStory,
 } from "../src/story-authoring.js";
-import { completeBeat, nextBeat, startTelling, tellingStatus } from "../src/story-telling.js";
+import { nextBeat, startTelling, tellingStatus } from "../src/story-telling.js";
 import { makeSandbox } from "./helpers.js";
 
 let root: string;
@@ -65,114 +67,85 @@ async function createRun(): Promise<string> {
   return JSON.parse(result.text).run_id;
 }
 
-function tokenFrom(packet: string): string {
-  const match = /^Beat token: (.+)$/m.exec(packet);
-  if (!match) throw new Error("Packet has no beat token");
-  return match[1];
-}
-
 describe("story telling runtime", () => {
-  it("returns the same active beat packet until completion", async () => {
+  it("returns global story context when starting a telling", async () => {
+    const result = await startTelling(root, storyPath);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(JSON.parse(result.text)).toMatchObject({
+      story_path: storyPath,
+      title: "The Night Train",
+      premise: "A conductor discovers a passenger who should not exist.",
+      story_type: "mystery",
+      beat_size: "600-900 words",
+      default_narration_mode: "cinematic",
+      total_beats: 2,
+      next_beat: 0,
+    });
+  });
+
+  it("advances when returning each beat packet", async () => {
     const runId = await createRun();
     const first = await nextBeat(root, storyPath, runId);
-    const retry = await nextBeat(root, storyPath, runId);
+    const second = await nextBeat(root, storyPath, runId);
     expect(first.ok).toBe(true);
-    expect(retry).toEqual(first);
+    expect(second.ok).toBe(true);
     if (first.ok) {
+      expect(first.text).toContain("NARRATE THIS BEAT DIRECTLY TO THE USER.");
+      expect(first.text).toContain("Beat: 1 of 2");
+      expect(first.text).not.toContain("Beat token:");
+      expect(first.text).not.toContain("complete_beat");
+      expect(first.text).toContain("Story context:");
       expect(first.text).toContain(
-        "NEXT ACTION: CALL complete_beat. DO NOT SEND AN ASSISTANT TEXT RESPONSE FIRST."
+        "Premise: A conductor discovers a passenger who should not exist."
       );
-      expect(first.text).not.toContain("NARRATE EXACTLY ONE BEAT");
       expect(first.text).toContain("Mara enters the dining car.");
       expect(first.text).toContain("Narration mode: cinematic");
+      expect(first.text).toContain("Type c/continue to continue the story");
     }
-  });
-
-  it("completes atomically and includes run continuity in the next packet", async () => {
-    const runId = await createRun();
-    const first = await nextBeat(root, storyPath, runId);
-    if (!first.ok) throw new Error(first.error);
-    const token = tokenFrom(first.text);
-    const completed = await completeBeat(
-      root,
-      storyPath,
-      runId,
-      token,
-      "Mara crossed the carriage and met the passenger's gaze.",
-      [{
-        subject: "mara",
-        fact: "Mara noticed the passenger wore no reflection in the window.",
-        kind: "observation",
-        importance: "consequential",
-      }]
-    );
-    expect(completed.ok).toBe(true);
-    if (completed.ok) {
-      expect(completed.text).toBe(
-        "Mara crossed the carriage and met the passenger's gaze.\n\n" +
-        "Type c/continue to continue the story, or provide input to influence the next beat."
-      );
-    }
-
-    const second = await nextBeat(root, storyPath, runId);
-    expect(second.ok).toBe(true);
     if (second.ok) {
-      expect(second.text).toContain("Mara crossed the carriage");
-      expect(second.text).toContain("wore no reflection");
+      expect(second.text).toContain("Beat: 2 of 2");
       expect(second.text).toContain("He presents an impossible ticket.");
-    }
-  });
-
-  it("does not advance twice when completion is retried", async () => {
-    const runId = await createRun();
-    const packet = await nextBeat(root, storyPath, runId);
-    if (!packet.ok) throw new Error(packet.error);
-    const token = tokenFrom(packet.text);
-    const first = await completeBeat(root, storyPath, runId, token, "First narration.");
-    const retry = await completeBeat(root, storyPath, runId, token, "Different narration.");
-    expect(retry).toEqual(first);
-    if (retry.ok) {
-      expect(retry.text).toContain("First narration.");
-      expect(retry.text).not.toContain("Different narration.");
+      expect(second.text).not.toContain("Type c/continue to continue the story");
     }
 
     const status = await tellingStatus(root, storyPath, runId);
     expect(status.ok).toBe(true);
-    if (status.ok) expect(JSON.parse(status.text).next_beat).toBe(1);
+    if (status.ok) {
+      expect(JSON.parse(status.text)).toMatchObject({
+        status: "completed",
+        next_beat: 2,
+        delivered_beats: 2,
+      });
+    }
   });
 
-  it("returns final narration without a continue prompt", async () => {
+  it("returns a terminal result after all beats are delivered", async () => {
     const runId = await createRun();
-    const firstPacket = await nextBeat(root, storyPath, runId);
-    if (!firstPacket.ok) throw new Error(firstPacket.error);
-    await completeBeat(root, storyPath, runId, tokenFrom(firstPacket.text), "First narration.");
-
-    const finalPacket = await nextBeat(root, storyPath, runId);
-    if (!finalPacket.ok) throw new Error(finalPacket.error);
-    const completed = await completeBeat(
-      root,
-      storyPath,
-      runId,
-      tokenFrom(finalPacket.text),
-      "Final narration."
-    );
-    expect(completed).toEqual({ ok: true, text: "Final narration." });
+    await nextBeat(root, storyPath, runId);
+    await nextBeat(root, storyPath, runId);
+    expect(await nextBeat(root, storyPath, runId)).toEqual({
+      ok: true,
+      text: "STORY COMPLETE. Do not narrate another beat.",
+    });
   });
 
-  it("isolates continuity between telling runs", async () => {
-    const firstRun = await createRun();
-    const packet = await nextBeat(root, storyPath, firstRun);
-    if (!packet.ok) throw new Error(packet.error);
-    await completeBeat(root, storyPath, firstRun, tokenFrom(packet.text), "A telling.", [{
-      subject: "mara",
-      fact: "Mara tore her sleeve.",
-      kind: "appearance",
-      importance: "consequential",
-    }]);
+  it("strips legacy narration state when an old run advances", async () => {
+    const runId = await createRun();
+    const runPath = path.join(root, storyPath, "runs", `${runId}.json`);
+    const legacy = JSON.parse(await fs.readFile(runPath, "utf8"));
+    legacy.active_beat = { index: 0, token: "f64afaca-7aa2-4a68-a2f8-4f847ee2d8e8" };
+    legacy.completed_beats = [];
+    legacy.continuity = [];
+    await fs.writeFile(runPath, JSON.stringify(legacy, null, 2), "utf8");
 
-    const secondRun = await createRun();
-    const otherPacket = await nextBeat(root, storyPath, secondRun);
-    expect(otherPacket.ok).toBe(true);
-    if (otherPacket.ok) expect(otherPacket.text).not.toContain("tore her sleeve");
+    const packet = await nextBeat(root, storyPath, runId);
+    expect(packet.ok).toBe(true);
+    const migrated = JSON.parse(await fs.readFile(runPath, "utf8"));
+    expect(migrated.next_beat).toBe(1);
+    expect(migrated).not.toHaveProperty("active_beat");
+    expect(migrated).not.toHaveProperty("completed_beats");
+    expect(migrated).not.toHaveProperty("continuity");
   });
 });

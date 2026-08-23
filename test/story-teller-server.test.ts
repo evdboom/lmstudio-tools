@@ -34,10 +34,10 @@ describe("story teller server integration", () => {
 
   it("prefixes every story tool consistently", () => {
     const names = Object.values(storyToolNames("story"));
-    expect(names).toHaveLength(12);
+    expect(names).toHaveLength(11);
     expect(names.every((name) => name.startsWith("story_"))).toBe(true);
     expect(names).toContain("story_next_beat");
-    expect(names).toContain("story_complete_beat");
+    expect(names).not.toContain("story_complete_beat");
   });
 
   it("rejects invalid prefixes", () => {

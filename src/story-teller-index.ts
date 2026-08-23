@@ -14,7 +14,7 @@ import {
   finalizeStory,
   validateStory,
 } from "./story-authoring.js";
-import { completeBeat, nextBeat, startTelling, tellingStatus } from "./story-telling.js";
+import { nextBeat, startTelling, tellingStatus } from "./story-telling.js";
 import type { ToolResult } from "./tools.js";
 import { makeLogger, type Logger } from "./log.js";
 import { prefixedToolName, type ToolPrefixOptions } from "./tool-prefix.js";
@@ -37,7 +37,6 @@ export function storyToolNames(prefix?: string) {
     finalize: name("story_finalize"),
     start: name("telling_start"),
     nextBeat: name("next_beat"),
-    completeBeat: name("complete_beat"),
     status: name("telling_status"),
   };
 }
@@ -174,36 +173,10 @@ export function registerStoryTools(
     label: z.string().trim().max(200).optional(),
   }, wrap(names.start, ({ story_path, label }) => startTelling(root, story_path, label), log));
 
-  server.tool(names.nextBeat, "Return the next narration packet without advancing the run. Retrying returns the same active beat.", {
+  server.tool(names.nextBeat, "Advance the run by one beat and return instructions for narrating that beat directly to the user.", {
     story_path: storyPath,
     run_id: z.string().uuid(),
   }, wrap(names.nextBeat, ({ story_path, run_id }) => nextBeat(root, story_path, run_id), log));
-
-  server.tool(names.completeBeat, "Persist one narration and consequential continuity facts, then advance exactly once. On success, the entire tool result is the canonical user-facing narration. Output it verbatim and add nothing.", {
-    story_path: storyPath,
-    run_id: z.string().uuid(),
-    beat_token: z.string().uuid(),
-    narration: z.string().trim().min(1).max(100_000),
-    continuity_updates: z.array(z.object({
-      subject: id,
-      fact: text,
-      kind: id,
-      importance: z.literal("consequential"),
-    })).max(32).default([]),
-  }, wrap(names.completeBeat, ({
-    story_path,
-    run_id,
-    beat_token,
-    narration,
-    continuity_updates,
-  }) => completeBeat(
-    root,
-    story_path,
-    run_id,
-    beat_token,
-    narration,
-    continuity_updates
-  ), log));
 
   server.tool(names.status, "Return compact progress for a telling run without returning its prose.", {
     story_path: storyPath,

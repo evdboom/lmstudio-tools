@@ -218,31 +218,19 @@ Telling tools:
 
 - `telling_start`
 - `next_beat`
-- `complete_beat`
 - `telling_status`
 
-Story blueprints are stored as `<story>/story.json`. Each telling has isolated progress, narration, and consequential continuity under `<story>/runs/`. Calling `next_beat` repeatedly returns the same active beat; only `complete_beat` advances progress. A successful `complete_beat` result is the complete canonical user response: output it verbatim rather than displaying the draft narration created before the tool call.
+Story blueprints are stored as `<story>/story.json`. Each telling stores only its next beat index and status under `<story>/runs/`. `next_beat` atomically advances progress and returns instructions for one beat. Narrated prose and emergent details remain in the model's chat context and are not persisted by the MCP.
 
 ### Story Workflow
 
 1. `story_create` creates a draft blueprint beneath the story server root.
 2. Add narration modes, characters, locations, hard-canon facts, and ordered beats.
 3. Run `story_validate`, repair errors, then run `story_finalize`.
-4. `telling_start` creates an isolated telling run.
-5. `next_beat` returns one narration packet without advancing progress.
-6. The model drafts prose privately and submits it through `complete_beat`.
-7. The model outputs the successful `complete_beat` result verbatim. That canonical result includes the continue prompt when more beats remain.
-
-Continuity updates are optional. When present, each update has this shape:
-
-```json
-{
-	"subject": "character-or-location-id",
-	"fact": "A consequential fact established by this telling.",
-	"kind": "observation",
-	"importance": "consequential"
-}
-```
+4. `telling_start` creates an isolated telling run and returns its ID plus the story title, premise, type, default narration mode, beat-size guidance, and beat count.
+5. `next_beat` advances the run by one and returns one narration packet. Every packet repeats the title, premise, and story type so global canon does not depend on conversation memory.
+6. The model narrates that beat directly to the user, using the current chat as memory for prior prose.
+7. The model waits for the user to continue before calling `next_beat` again.
 
 ## Troubleshooting
 
@@ -250,9 +238,8 @@ Continuity updates are optional. When present, each update has this shape:
 - **Tools are missing after a change:** rebuild the project and restart the MCP integration in LM Studio.
 - **Skills are not listed:** confirm the exact layout is `<root>/Skills/<skill-name>/SKILL.md`, then restart `lmstudio-skills`.
 - **A story cannot be edited:** finalized blueprints are immutable. Create a new draft story folder.
-- **A beat appears stuck:** retry `next_beat` for the same run. It returns the same active token until `complete_beat` succeeds.
-- **Completion fails:** retry `complete_beat` with the same token after fixing its arguments. Do not call `next_beat` or display the private draft first.
-- **Different tellings share plot but not details:** this is expected. Hard canon belongs to `story.json`; emergent continuity belongs to one run under `runs/`.
+- **A beat was fetched but not narrated:** progress has already advanced. Use the packet still present in the chat; do not call `next_beat` again for that beat.
+- **Different tellings vary in details:** this is expected. Hard canon belongs to `story.json`; emergent details live only in each chat context.
 
 ## Build and Test
 

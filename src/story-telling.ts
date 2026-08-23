@@ -51,7 +51,8 @@ function renderBeatPacket(story: StoryBlueprint, run: StoryRun, token: string): 
   const previous = recentContext(run);
 
   return [
-    "NARRATE EXACTLY ONE BEAT.",
+    "NEXT ACTION: CALL complete_beat. DO NOT SEND AN ASSISTANT TEXT RESPONSE FIRST.",
+    "Compose exactly one beat inside the complete_beat narration argument.",
     "Do not repeat completed events or continue beyond the stated ending.",
     `Beat token: ${token}`,
     `Target length: ${story.beat_size}`,
@@ -95,7 +96,8 @@ function renderBeatPacket(story: StoryBlueprint, run: StoryRun, token: string): 
       ? ["", "Keywords:", ...beat.keywords.map((item) => `- ${item.type}: ${item.word}`)]
       : []),
     "",
-    "Draft the narration as the narration argument to complete_beat. Do not show the draft to the user first.",
+    "Call complete_beat now with this beat token, the composed prose in narration, and any consequential continuity updates.",
+    "Do not output the composed prose before that tool call.",
     "After complete_beat succeeds, output its entire result to the user verbatim. Add, remove, and rewrite nothing.",
   ].join("\n");
 }

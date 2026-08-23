@@ -79,6 +79,10 @@ describe("story telling runtime", () => {
     expect(first.ok).toBe(true);
     expect(retry).toEqual(first);
     if (first.ok) {
+      expect(first.text).toContain(
+        "NEXT ACTION: CALL complete_beat. DO NOT SEND AN ASSISTANT TEXT RESPONSE FIRST."
+      );
+      expect(first.text).not.toContain("NARRATE EXACTLY ONE BEAT");
       expect(first.text).toContain("Mara enters the dining car.");
       expect(first.text).toContain("Narration mode: cinematic");
     }

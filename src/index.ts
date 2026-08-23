@@ -2,8 +2,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { promises as fs } from "node:fs";
-import * as path from "node:path";
 import * as process from "node:process";
 import { pathToFileURL } from "node:url";
 import {
@@ -36,48 +34,8 @@ import {
 } from "./tools.js";
 import { DEFAULT_MAX_BYTES } from "./io.js";
 import { makeLogger, type Logger } from "./log.js";
-import { prefixedToolName, validateToolPrefix, type ToolPrefixOptions } from "./tool-prefix.js";
-
-interface CliArgs {
-  root?: string;
-  quiet: boolean;
-  prefix?: string;
-}
-
-function parseArgs(argv: string[]): CliArgs {
-  const out: CliArgs = { quiet: false };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--root") {
-      out.root = argv[++i];
-    } else if (a.startsWith("--root=")) {
-      out.root = a.slice("--root=".length);
-    } else if (a === "--prefix") {
-      out.prefix = argv[++i];
-    } else if (a.startsWith("--prefix=")) {
-      out.prefix = a.slice("--prefix=".length);
-    } else if (a === "--quiet" || a === "-q") {
-      out.quiet = true;
-    }
-  }
-  out.prefix = validateToolPrefix(out.prefix);
-  return out;
-}
-
-async function resolveRoot(cli: CliArgs): Promise<string> {
-  const raw = cli.root ?? process.env.MCP_ROOT;
-  if (!raw) {
-    throw new Error(
-      "Sandbox root not set. Pass --root <path> or set MCP_ROOT env."
-    );
-  }
-  const abs = path.resolve(raw);
-  const stat = await fs.stat(abs).catch(() => null);
-  if (!stat || !stat.isDirectory()) {
-    throw new Error(`Root is not an existing directory: ${abs}`);
-  }
-  return await fs.realpath(abs);
-}
+import { prefixedToolName, type ToolPrefixOptions } from "./tool-prefix.js";
+import { parseSingleRootArgs, resolveSingleRoot } from "./server-cli.js";
 
 function toMcp(result: ToolResult) {
   if (result.ok) {
@@ -539,8 +497,8 @@ export async function createServer(
 }
 
 async function main() {
-  const cli = parseArgs(process.argv.slice(2));
-  const root = await resolveRoot(cli);
+  const cli = parseSingleRootArgs(process.argv.slice(2));
+  const root = await resolveSingleRoot(cli);
   const log = makeLogger("lmstudio-tools", cli.quiet);
   const server = await createServer(root, log, { prefix: cli.prefix });
   const transport = new StdioServerTransport();

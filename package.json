@@ -1,11 +1,12 @@
 {
   "name": "lmstudio-tools",
   "version": "0.1.0",
-  "description": "MCP servers for LM Studio: sandboxed file tools plus a skills/workflow framework.",
+  "description": "MCP servers for LM Studio: sandboxed file tools, skills/workflows, and beat-based story telling.",
   "type": "module",
   "bin": {
     "lmstudio-tools": "dist/index.js",
-    "lmstudio-skills": "dist/skills-index.js"
+    "lmstudio-skills": "dist/skills-index.js",
+    "story-teller-mcp": "dist/story-teller-index.js"
   },
   "main": "dist/index.js",
   "scripts": {
@@ -14,6 +15,8 @@
     "dev": "tsx src/index.ts",
     "start:skills": "node dist/skills-index.js",
     "dev:skills": "tsx src/skills-index.ts",
+    "start:story": "node dist/story-teller-index.js",
+    "dev:story": "tsx src/story-teller-index.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },

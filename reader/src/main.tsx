@@ -59,6 +59,7 @@ function App() {
     () => localStorage.getItem("story-reader-auto-continue") === "true"
   );
   const autoContinueRef = useRef(autoContinue);
+  const generationAbort = useRef<AbortController>();
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -97,6 +98,8 @@ function App() {
     action: "next" | "regenerate" | "regenerate_previous",
     direction = ""
   ) {
+    const abort = new AbortController();
+    generationAbort.current = abort;
     setBusy(true);
     setGenerationAction(action);
     setGenerationStatus("Connecting to LM Studio...");
@@ -114,6 +117,7 @@ function App() {
           action,
           instruction: direction || undefined,
         }),
+        signal: abort.signal,
       });
       if (!response.ok || !response.body) {
         const body = await response.json();
@@ -155,12 +159,21 @@ function App() {
         await generate(completedState, "next");
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      if (!abort.signal.aborted) {
+        setError(reason instanceof Error ? reason.message : String(reason));
+      }
     } finally {
+      if (generationAbort.current === abort) generationAbort.current = undefined;
       setBusy(false);
       setGenerationAction(undefined);
       setGenerationStatus("");
     }
+  }
+
+  function cancelGeneration() {
+    autoContinueRef.current = false;
+    setAutoContinue(false);
+    generationAbort.current?.abort();
   }
 
   async function begin() {
@@ -339,12 +352,13 @@ function App() {
                 Auto continue
               </label>
               <button
-                className="primary"
-                disabled={busy}
-                onClick={() => act(state.current_draft ? "next" : "regenerate")}
+                className={busy ? "danger" : "primary"}
+                onClick={() => busy
+                  ? cancelGeneration()
+                  : act(state.current_draft ? "next" : "regenerate")}
               >
                 {busy
-                  ? "Writing"
+                  ? "Stop"
                   : !state.current_draft
                     ? `Generate beat ${currentBeatIndex + 1}`
                     : state.beat_index + 1 === state.total_beats ? "Finish" : "Next"}

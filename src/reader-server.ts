@@ -104,6 +104,9 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
     });
     const abort = new AbortController();
     request.raw.on("aborted", () => abort.abort());
+    reply.raw.on("close", () => {
+      if (!reply.raw.writableEnded) abort.abort();
+    });
     try {
       const result = await streamLmStudioAuthoring({
         baseUrl: options.lmStudioUrl,
@@ -214,6 +217,9 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         },
         onReasoningDelta: (delta) => {
           reply.raw.write(`event: reasoning\ndata: ${JSON.stringify(delta)}\n\n`);
+        },
+        onRecovery: () => {
+          reply.raw.write(`event: status\ndata: ${JSON.stringify("Reasoning finished without narration. Asking the model to output the beat...")}\n\n`);
         },
       });
       const state = await saveReaderDraft(

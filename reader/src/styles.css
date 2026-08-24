@@ -297,6 +297,8 @@ summary span { color: var(--muted); font-size: 12px; font-weight: 400; }
 .collaborator-reasoning pre { max-height: 240px; margin: 10px 0 0; padding: 10px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface); color: var(--muted); font: 11px/1.5 Consolas, "Courier New", monospace; }
 .chat-input { padding: 12px; display: grid; grid-template-columns: 1fr auto; gap: 8px; border-top: 1px solid var(--line); }
 .chat-input textarea { min-height: 70px; }
+.stop-button { align-self: stretch; min-width: 64px; }
+.output-draft { margin-top: 10px; }
 
 @media (max-width: 700px) {
   .topbar { align-items: flex-start; }

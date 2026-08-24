@@ -37,81 +37,109 @@ export async function streamLmStudioNarration(options: {
   onDelta: (delta: string) => void;
   onReasoning?: () => void;
   onReasoningDelta?: (delta: string) => void;
+  onRecovery?: () => void;
 }): Promise<{ narration: string; responseId: string }> {
-  const response = await fetch(endpoint(options.baseUrl, "/chat"), {
-    method: "POST",
-    headers: headers(options.apiToken),
-    body: JSON.stringify({
-      model: options.model,
-      input: options.input,
-      system_prompt: options.systemPrompt,
-      previous_response_id: options.previousResponseId,
-      stream: true,
-      store: true,
-      temperature: 0.8,
-    }),
-    signal: options.signal,
-  });
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(`LM Studio returned ${response.status}: ${detail.slice(0, 500)}`);
-  }
-  if (!response.body) throw new Error("LM Studio returned no response stream.");
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let narration = "";
   let reasoningReported = false;
-  let responseId: string | undefined;
 
-  function processEvent(raw: string): void {
-    const data = raw.split(/\r?\n/)
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice(5).trim())
-      .join("\n");
-    if (!data) return;
-    const event = JSON.parse(data) as {
-      type?: unknown;
-      content?: unknown;
-      error?: { message?: unknown };
-      result?: { response_id?: unknown };
-    };
-    if (event.type === "error") {
-      throw new Error(String(event.error?.message ?? "LM Studio generation failed."));
+  async function attempt(input: string, previousResponseId?: string, systemPrompt?: string) {
+    const response = await fetch(endpoint(options.baseUrl, "/chat"), {
+      method: "POST",
+      headers: headers(options.apiToken),
+      body: JSON.stringify({
+        model: options.model,
+        input,
+        system_prompt: systemPrompt,
+        previous_response_id: previousResponseId,
+        stream: true,
+        store: true,
+        temperature: 0.8,
+      }),
+      signal: options.signal,
+    });
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`LM Studio returned ${response.status}: ${detail.slice(0, 500)}`);
     }
-    if ((event.type === "reasoning.start" || event.type === "reasoning.delta") &&
-        !reasoningReported) {
-      reasoningReported = true;
-      options.onReasoning?.();
+    if (!response.body) throw new Error("LM Studio returned no response stream.");
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let narration = "";
+    let responseId: string | undefined;
+
+    function processEvent(raw: string): void {
+      const data = raw.split(/\r?\n/)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trim())
+        .join("\n");
+      if (!data) return;
+      const event = JSON.parse(data) as {
+        type?: unknown;
+        content?: unknown;
+        error?: { message?: unknown };
+        result?: {
+          response_id?: unknown;
+          output?: Array<{ type?: unknown; content?: unknown }>;
+        };
+      };
+      if (event.type === "error") {
+        throw new Error(String(event.error?.message ?? "LM Studio generation failed."));
+      }
+      if ((event.type === "reasoning.start" || event.type === "reasoning.delta") &&
+          !reasoningReported) {
+        reasoningReported = true;
+        options.onReasoning?.();
+      }
+      if (event.type === "reasoning.delta" && typeof event.content === "string") {
+        options.onReasoningDelta?.(event.content);
+      }
+      if (event.type === "message.delta" && typeof event.content === "string") {
+        narration += event.content;
+        options.onDelta(event.content);
+      }
+      if (event.type === "chat.end") {
+        if (typeof event.result?.response_id === "string") responseId = event.result.response_id;
+        if (!narration.trim()) {
+          const finalMessage = event.result?.output
+            ?.filter((item) => item.type === "message" && typeof item.content === "string")
+            .map((item) => item.content as string)
+            .join("\n\n");
+          if (finalMessage?.trim()) {
+            narration = finalMessage;
+            options.onDelta(finalMessage);
+          }
+        }
+      }
     }
-    if (event.type === "reasoning.delta" && typeof event.content === "string") {
-      options.onReasoningDelta?.(event.content);
+
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const events = buffer.split(/\r?\n\r?\n/);
+      buffer = events.pop() ?? "";
+      for (const event of events) processEvent(event);
+      if (done) break;
     }
-    if (event.type === "message.delta" && typeof event.content === "string") {
-      narration += event.content;
-      options.onDelta(event.content);
-    }
-    if (event.type === "chat.end" && typeof event.result?.response_id === "string") {
-      responseId = event.result.response_id;
-    }
+    if (buffer.trim()) processEvent(buffer);
+    return { narration: narration.trim(), responseId };
   }
 
-  while (true) {
-    const { done, value } = await reader.read();
-    buffer += decoder.decode(value, { stream: !done });
-    const events = buffer.split(/\r?\n\r?\n/);
-    buffer = events.pop() ?? "";
-    for (const event of events) {
-      processEvent(event);
-    }
-    if (done) break;
+  const first = await attempt(options.input, options.previousResponseId, options.systemPrompt);
+  if (first.narration) {
+    if (!first.responseId) throw new Error("LM Studio did not return a stateful response_id.");
+    return { narration: first.narration, responseId: first.responseId };
   }
-  if (buffer.trim()) processEvent(buffer);
+  if (!first.responseId) throw new Error("LM Studio returned an empty narration without a response_id.");
 
-  if (!narration.trim()) throw new Error("LM Studio returned an empty narration.");
-  if (!responseId) throw new Error("LM Studio did not return a stateful response_id.");
-  return { narration: narration.trim(), responseId };
+  options.onRecovery?.();
+  const recovered = await attempt(
+    "You completed the reasoning but did not provide the narrated scene as your final answer. Output the complete story narration now. Do not explain, plan, summarize, or mention this correction; return only the prose for the requested beat.",
+    first.responseId
+  );
+  if (!recovered.narration) throw new Error("LM Studio returned an empty narration after one recovery attempt.");
+  if (!recovered.responseId) throw new Error("LM Studio did not return a stateful response_id.");
+  return { narration: recovered.narration, responseId: recovered.responseId };
 }
 
 export async function streamLmStudioAuthoring(options: {
@@ -134,7 +162,7 @@ export async function streamLmStudioAuthoring(options: {
       previous_response_id: options.previousResponseId,
       system_prompt: options.previousResponseId
         ? undefined
-        : "You are Folio's story editor. Read the blueprint before changing it. Use story_save only when the user asks to apply a change. Preserve stable IDs and unrelated details. Put every event for each beat in its description. Briefly summarize applied changes.",
+        : "You are Folio's story editor. Read the blueprint before changing it. Use story_save only when the user asks to apply a change. Preserve stable IDs and unrelated details. Put every event for each beat in its description. Briefly summarize applied changes. Every turn must end with a final answer; never leave the requested result only in reasoning. When asked to output an existing draft or answer, reproduce it immediately without analyzing, revising, or calling tools.",
       integrations: [{
         type: "plugin",
         id: "mcp/story-teller",
@@ -163,7 +191,10 @@ export async function streamLmStudioAuthoring(options: {
       content?: string;
       tool?: string;
       error?: { message?: string };
-      result?: { response_id?: string };
+      result?: {
+        response_id?: string;
+        output?: Array<{ type?: string; content?: string }>;
+      };
     };
     if (event.type === "error") throw new Error(event.error?.message ?? "LM Studio authoring failed.");
     if (event.type === "message.delta" && event.content) {
@@ -174,7 +205,19 @@ export async function streamLmStudioAuthoring(options: {
       options.onReasoningDelta?.(event.content);
     }
     if (event.type === "tool_call.start" && event.tool) options.onTool?.(event.tool);
-    if (event.type === "chat.end") responseId = event.result?.response_id;
+    if (event.type === "chat.end") {
+      responseId = event.result?.response_id;
+      if (!message.trim()) {
+        const finalMessage = event.result?.output
+          ?.filter((item) => item.type === "message" && item.content)
+          .map((item) => item.content)
+          .join("\n\n");
+        if (finalMessage?.trim()) {
+          message = finalMessage;
+          options.onDelta(finalMessage);
+        }
+      }
+    }
   };
   while (true) {
     const { done, value } = await reader.read();

@@ -45,6 +45,66 @@ describe("LM Studio streaming client", () => {
     );
   });
 
+  it("uses narration found only in the terminal chat result", async () => {
+    const stream = [
+      'event: reasoning.delta\ndata: {"type":"reasoning.delta","content":"Drafting."}\n\n',
+      'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_terminal","output":[{"type":"reasoning","content":"Drafting."},{"type":"message","content":"The terminal-only scene."}]}}\n\n',
+    ].join("");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    })));
+    const onDelta = vi.fn();
+
+    const result = await streamLmStudioNarration({
+      baseUrl: "http://127.0.0.1:1234/api/v1",
+      model: "test-model",
+      input: "Narrate.",
+      signal: new AbortController().signal,
+      onDelta,
+    });
+
+    expect(onDelta).toHaveBeenCalledWith("The terminal-only scene.");
+    expect(result).toEqual({ narration: "The terminal-only scene.", responseId: "resp_terminal" });
+  });
+
+  it("continues once when reasoning ends without narration", async () => {
+    const responses = [
+      [
+        'event: reasoning.delta\ndata: {"type":"reasoning.delta","content":"A complete draft."}\n\n',
+        'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_empty","output":[{"type":"reasoning","content":"A complete draft."}]}}\n\n',
+      ].join(""),
+      [
+        'event: message.delta\ndata: {"type":"message.delta","content":"The recovered scene."}\n\n',
+        'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_recovered"}}\n\n',
+      ].join(""),
+    ];
+    const fetchMock = vi.fn(async () => new Response(responses.shift(), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onRecovery = vi.fn();
+
+    const result = await streamLmStudioNarration({
+      baseUrl: "http://127.0.0.1:1234/api/v1",
+      model: "test-model",
+      input: "Narrate.",
+      systemPrompt: "Narrator rules.",
+      signal: new AbortController().signal,
+      onDelta: vi.fn(),
+      onRecovery,
+    });
+
+    expect(onRecovery).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const recoveryRequest = JSON.parse((fetchMock.mock.calls[1]?.[1] as RequestInit).body as string);
+    expect(recoveryRequest.previous_response_id).toBe("resp_empty");
+    expect(recoveryRequest.input).toContain("Output the complete story narration now");
+    expect(recoveryRequest).not.toHaveProperty("system_prompt");
+    expect(result).toEqual({ narration: "The recovered scene.", responseId: "resp_recovered" });
+  });
+
   it("streams authoring chat with restricted configured MCP tools", async () => {
     const stream = [
       'event: reasoning.delta\ndata: {"type":"reasoning.delta","content":"Need to inspect the beats."}\n\n',
@@ -108,5 +168,46 @@ describe("LM Studio streaming client", () => {
     const request = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string);
     expect(request.previous_response_id).toBe("resp_parent");
     expect(request).not.toHaveProperty("system_prompt");
+  });
+
+  it("preserves authoring lineage when reasoning ends without a final answer", async () => {
+    const stream = [
+      'event: reasoning.delta\ndata: {"type":"reasoning.delta","content":"Completed draft in reasoning."}\n\n',
+      'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_draft","output":[{"type":"reasoning","content":"Completed draft in reasoning."}]}}\n\n',
+    ].join("");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    })));
+
+    const result = await streamLmStudioAuthoring({
+      baseUrl: "http://127.0.0.1:1234/api/v1",
+      model: "test-model",
+      input: "Draft it.",
+      signal: new AbortController().signal,
+      onDelta: vi.fn(),
+    });
+
+    expect(result).toEqual({ message: "", responseId: "resp_draft" });
+  });
+
+  it("uses an authoring message found only in the terminal chat result", async () => {
+    const stream = 'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_terminal_author","output":[{"type":"message","content":"Terminal authoring result."}]}}\n\n';
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    })));
+    const onDelta = vi.fn();
+
+    const result = await streamLmStudioAuthoring({
+      baseUrl: "http://127.0.0.1:1234/api/v1",
+      model: "test-model",
+      input: "Draft it.",
+      signal: new AbortController().signal,
+      onDelta,
+    });
+
+    expect(onDelta).toHaveBeenCalledWith("Terminal authoring result.");
+    expect(result).toEqual({ message: "Terminal authoring result.", responseId: "resp_terminal_author" });
   });
 });

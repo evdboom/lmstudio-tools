@@ -79,6 +79,7 @@ describe("reader narration prompts", () => {
     expect(messages[3].content).toContain("The passenger presents an impossible ticket");
     expect(messages[3].content).toContain("Length requirement: write 600 words");
     expect(messages[3].content).toContain("Fully dramatize those events as a scene");
+    expect(messages[3].content).toContain("final answer must contain the complete narrated scene");
     expect(messages[3].content).not.toContain("Mara enters the empty dining car");
     expect(messages[3].content).toContain("Keep Mara suspicious.");
   });

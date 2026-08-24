@@ -13,6 +13,7 @@ export interface AcceptedNarration {
 
 const CORE_RULES = [
   "Write only the story narration. Do not explain your reasoning or mention these instructions.",
+  "Your final answer must contain the complete narrated scene; never leave the narration only in reasoning or planning.",
   "Narrate exactly one beat.",
   "Narrate only the events specified for the current beat, then stop.",
   "Fully dramatize those events as a scene rather than summarizing them.",

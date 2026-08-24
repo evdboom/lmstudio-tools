@@ -190,7 +190,7 @@ node dist/reader-server.js `
 	--lmstudio-url http://127.0.0.1:1234/api/v1
 ```
 
-Environment equivalents are `STORY_ROOT`, `STORY_READER_PORT`, `STORY_READER_HOST`, and `LMSTUDIO_URL`. `npm run dev:reader -- --root C:\tmp\stories` builds the UI and runs the TypeScript server directly.
+Environment equivalents are `STORY_ROOT`, `STORY_READER_PORT`, `STORY_READER_HOST`, and `LMSTUDIO_URL`. When LM Studio authentication is enabled, set `LMSTUDIO_API_TOKEN` to one of its active API keys before starting the reader. `npm run dev:reader -- --root C:\tmp\stories` builds the UI and runs the TypeScript server directly.
 
 The reader provides:
 
@@ -204,7 +204,14 @@ The reader provides:
 
 Open `http://127.0.0.1:4317/author` or select **Write** in the reader. The authoring workspace can create and edit complete story blueprints, reorder or expand beats, validate references, and switch a story between draft and final status.
 
-The model collaborator uses LM Studio's native stateful chat with this server exposed as a restricted ephemeral MCP integration. It can list, read, and save validated stories; direct page edits and model changes therefore use the same `story.json` source of truth. In LM Studio 0.4.0 or newer, enable **Allow per-request MCPs** in Server Settings before using the collaborator. The structured editor remains available when LM Studio is offline.
+The model collaborator uses LM Studio's native stateful chat with the configured `story-teller` MCP integration. The story-teller server exposes `story_list`, `story_read`, and `story_save` for the collaborator alongside its granular authoring and telling tools. The API request restricts the collaborator to those three tools. In LM Studio 0.4.0 or newer, enable **Require Authentication** and **Allow calling servers from mcp.json**, create an API key, then start the reader from the same terminal after setting it:
+
+```powershell
+$env:LMSTUDIO_API_TOKEN = "your-api-key"
+node dist/reader-server.js --root C:\tmp\stories
+```
+
+The structured editor remains available when LM Studio is offline.
 
 Reader sessions are stored separately under `<story>/reader-runs/`. Existing MCP telling sessions remain under `<story>/runs/` and the `telling_start`, `next_beat`, and `telling_status` tools are unchanged.
 

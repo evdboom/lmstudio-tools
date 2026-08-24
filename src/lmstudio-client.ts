@@ -2,8 +2,15 @@ function endpoint(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/$/, "")}${path}`;
 }
 
-export async function listLmStudioModels(baseUrl: string): Promise<string[]> {
-  const response = await fetch(endpoint(baseUrl, "/models"));
+function headers(apiToken?: string): Record<string, string> {
+  return {
+    "content-type": "application/json",
+    ...(apiToken ? { authorization: `Bearer ${apiToken}` } : {}),
+  };
+}
+
+export async function listLmStudioModels(baseUrl: string, apiToken?: string): Promise<string[]> {
+  const response = await fetch(endpoint(baseUrl, "/models"), { headers: headers(apiToken) });
   if (!response.ok) throw new Error(`LM Studio returned ${response.status}.`);
   const body = await response.json() as {
     models?: Array<{ type?: unknown; key?: unknown }>;
@@ -23,6 +30,7 @@ export async function streamLmStudioNarration(options: {
   baseUrl: string;
   model: string;
   input: string;
+  apiToken?: string;
   systemPrompt?: string;
   previousResponseId?: string;
   signal: AbortSignal;
@@ -31,7 +39,7 @@ export async function streamLmStudioNarration(options: {
 }): Promise<{ narration: string; responseId: string }> {
   const response = await fetch(endpoint(options.baseUrl, "/chat"), {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: headers(options.apiToken),
     body: JSON.stringify({
       model: options.model,
       input: options.input,
@@ -106,7 +114,7 @@ export async function streamLmStudioAuthoring(options: {
   baseUrl: string;
   model: string;
   input: string;
-  mcpUrl: string;
+  apiToken?: string;
   previousResponseId?: string;
   signal: AbortSignal;
   onDelta: (delta: string) => void;
@@ -114,16 +122,15 @@ export async function streamLmStudioAuthoring(options: {
 }): Promise<{ message: string; responseId: string }> {
   const response = await fetch(endpoint(options.baseUrl, "/chat"), {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: headers(options.apiToken),
     body: JSON.stringify({
       model: options.model,
       input: options.input,
       previous_response_id: options.previousResponseId,
       system_prompt: "You are Folio's story editor. Read the blueprint before changing it. Use story_save only when the user asks to apply a change. Preserve stable IDs and unrelated details. Beats need a description; start and end are legacy and should be omitted. Briefly summarize applied changes.",
       integrations: [{
-        type: "ephemeral_mcp",
-        server_label: "folio",
-        server_url: options.mcpUrl,
+        type: "plugin",
+        id: "mcp/story-teller",
         allowed_tools: ["story_list", "story_read", "story_save"],
       }],
       stream: true,

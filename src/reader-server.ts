@@ -23,12 +23,12 @@ import {
   readEditableStory,
   saveEditableStory,
 } from "./story-editor.js";
-import { handleStoryEditorMcp } from "./story-editor-mcp.js";
 import { parseSingleRootArgs, resolveSingleRoot } from "./server-cli.js";
 
 interface ReaderServerOptions {
   root: string;
   lmStudioUrl: string;
+  lmStudioApiToken?: string;
   webRoot?: string;
 }
 
@@ -72,11 +72,6 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       return reply.code(400).send({ error: message(error) });
     }
   });
-  app.post("/mcp", async (request, reply) => {
-    reply.hijack();
-    await handleStoryEditorMcp(options.root, request.raw, reply.raw, request.body);
-  });
-  app.get("/mcp", async (_request, reply) => reply.code(405).send({ error: "Method not allowed." }));
   app.get("/api/runs", async (request, reply) => {
     const query = z.object({ story_path: storyPathSchema }).safeParse(request.query);
     if (!query.success) return reply.code(400).send({ error: "A valid story_path is required." });
@@ -88,7 +83,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
   });
   app.get("/api/models", async (_request, reply) => {
     try {
-      return { models: await listLmStudioModels(options.lmStudioUrl) };
+      return { models: await listLmStudioModels(options.lmStudioUrl, options.lmStudioApiToken) };
     } catch (error) {
       return reply.code(502).send({ error: message(error) });
     }
@@ -101,8 +96,6 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       previous_response_id: z.string().startsWith("resp_").optional(),
     }).safeParse(request.body);
     if (!body.success) return reply.code(400).send({ error: "Invalid authoring chat request." });
-    const host = request.headers.host ?? "127.0.0.1:4317";
-    const mcpUrl = `http://${host}/mcp`;
     reply.hijack();
     reply.raw.writeHead(200, {
       "content-type": "text/event-stream; charset=utf-8",
@@ -116,8 +109,8 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         baseUrl: options.lmStudioUrl,
         model: body.data.model,
         input: body.data.input,
+        apiToken: options.lmStudioApiToken,
         previousResponseId: body.data.previous_response_id,
-        mcpUrl,
         signal: abort.signal,
         onDelta: (delta) => reply.raw.write(`event: delta\ndata: ${JSON.stringify(delta)}\n\n`),
         onTool: (tool) => reply.raw.write(`event: tool\ndata: ${JSON.stringify(tool)}\n\n`),
@@ -208,6 +201,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         baseUrl: options.lmStudioUrl,
         model: body.data.model,
         input: prepared.input!,
+        apiToken: options.lmStudioApiToken,
         systemPrompt: prepared.systemPrompt,
         previousResponseId: prepared.previousResponseId,
         signal: abort.signal,
@@ -261,8 +255,10 @@ async function main(): Promise<void> {
   const lmStudioUrl = option(argv, "--lmstudio-url")
     ?? process.env.LMSTUDIO_URL
     ?? "http://127.0.0.1:1234/api/v1";
+  const lmStudioApiToken = option(argv, "--lmstudio-api-token")
+    ?? process.env.LMSTUDIO_API_TOKEN;
   const webRoot = fileURLToPath(new URL("../reader-dist", import.meta.url));
-  const app = await createReaderServer({ root, lmStudioUrl, webRoot });
+  const app = await createReaderServer({ root, lmStudioUrl, lmStudioApiToken, webRoot });
   await app.listen({ host, port });
   console.log(`Story reader ready at http://${host}:${port}`);
 }

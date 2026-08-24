@@ -14,6 +14,12 @@ import {
   finalizeStory,
   validateStory,
 } from "./story-authoring.js";
+import {
+  listEditableStories,
+  readEditableStory,
+  saveEditableStory,
+} from "./story-editor.js";
+import { storyBlueprintSchema } from "./story-model.js";
 import { nextBeat, startTelling, tellingStatus } from "./story-telling.js";
 import type { ToolResult } from "./tools.js";
 import { makeLogger, type Logger } from "./log.js";
@@ -35,6 +41,9 @@ export function storyToolNames(prefix?: string) {
     addBeat: name("story_add_beat"),
     validate: name("story_validate"),
     finalize: name("story_finalize"),
+    list: name("story_list"),
+    read: name("story_read"),
+    save: name("story_save"),
     start: name("telling_start"),
     nextBeat: name("next_beat"),
     status: name("telling_status"),
@@ -167,6 +176,36 @@ export function registerStoryTools(
   server.tool(names.finalize, "Validate and freeze a story blueprint for telling.", {
     story_path: storyPath,
   }, wrap(names.finalize, ({ story_path }) => finalizeStory(root, story_path), log));
+
+  server.registerTool(names.list, {
+    description: "List story blueprints available for editing.",
+    annotations: { readOnlyHint: true },
+  }, async () => ({
+    content: [{ type: "text", text: JSON.stringify(await listEditableStories(root), null, 2) }],
+  }));
+
+  server.registerTool(names.read, {
+    description: "Read a complete story blueprint before proposing or applying changes.",
+    inputSchema: { story_path: storyPath },
+    annotations: { readOnlyHint: true },
+  }, async ({ story_path }) => ({
+    content: [{ type: "text", text: JSON.stringify(await readEditableStory(root, story_path), null, 2) }],
+  }));
+
+  server.registerTool(names.save, {
+    description: "Create or replace a complete validated story blueprint. Preserve unrelated content and stable IDs. Use description-only beats; start/end are optional legacy fields.",
+    inputSchema: {
+      story_path: storyPath,
+      blueprint: storyBlueprintSchema,
+      create: z.boolean().default(false),
+    },
+    annotations: { destructiveHint: true },
+  }, async ({ story_path, blueprint, create }) => ({
+    content: [{
+      type: "text",
+      text: JSON.stringify(await saveEditableStory(root, story_path, blueprint, create), null, 2),
+    }],
+  }));
 
   server.tool(names.start, "Start an independent telling run from a finalized story.", {
     story_path: storyPath,

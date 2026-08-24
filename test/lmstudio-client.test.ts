@@ -42,7 +42,7 @@ describe("LM Studio streaming client", () => {
     );
   });
 
-  it("streams authoring chat with restricted ephemeral MCP tools", async () => {
+  it("streams authoring chat with restricted configured MCP tools", async () => {
     const stream = [
       'event: tool_call.start\ndata: {"type":"tool_call.start","tool":"story_read"}\n\n',
       'event: message.delta\ndata: {"type":"message.delta","content":"I expanded the midpoint."}\n\n',
@@ -59,17 +59,19 @@ describe("LM Studio streaming client", () => {
       baseUrl: "http://127.0.0.1:1234/api/v1",
       model: "test-model",
       input: "Expand the midpoint.",
-      mcpUrl: "http://127.0.0.1:4317/mcp",
+      apiToken: "local-token",
       signal: new AbortController().signal,
       onDelta: vi.fn(),
       onTool,
     });
 
     const request = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string);
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit).headers).toMatchObject({
+      authorization: "Bearer local-token",
+    });
     expect(request.integrations).toEqual([{
-      type: "ephemeral_mcp",
-      server_label: "folio",
-      server_url: "http://127.0.0.1:4317/mcp",
+      type: "plugin",
+      id: "mcp/story-teller",
       allowed_tools: ["story_list", "story_read", "story_save"],
     }]);
     expect(onTool).toHaveBeenCalledWith("story_read");

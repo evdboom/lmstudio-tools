@@ -145,9 +145,7 @@ export function registerStoryTools(
     story_path: storyPath,
     location_id: id,
     character_ids: z.array(id).max(64),
-    start: text.optional(),
     description: text,
-    end: text.optional(),
     narration_mode: id.optional(),
     fact_ids: z.array(id).max(64).default([]),
     keywords: z.array(z.object({ type: text, word: text })).max(32).default([]),
@@ -193,7 +191,7 @@ export function registerStoryTools(
   }));
 
   server.registerTool(names.save, {
-    description: "Create or replace a complete validated story blueprint. Preserve unrelated content and stable IDs. Use description-only beats; start/end are optional legacy fields.",
+    description: "Create or replace a complete validated story blueprint. Preserve unrelated content and stable IDs. Put every event for each beat in its description.",
     inputSchema: {
       story_path: storyPath,
       blueprint: storyBlueprintSchema,

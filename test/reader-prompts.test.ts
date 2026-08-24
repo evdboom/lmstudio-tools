@@ -42,9 +42,7 @@ const story: StoryBlueprint = {
       index: 0,
       location: { index: 0, id: "car" },
       characters: [{ index: 0, id: "mara" }],
-      start: "Mara enters the empty dining car.",
-      description: "She discovers a passenger.",
-      end: "The passenger looks up.",
+      description: "Mara enters the empty dining car and discovers a passenger, who looks up.",
       facts: [],
       keywords: [],
       narration_rules: [],
@@ -53,9 +51,7 @@ const story: StoryBlueprint = {
       index: 1,
       location: { index: 0, id: "car" },
       characters: [{ index: 0, id: "mara" }],
-      start: "The passenger looks up while Mara remains by the door.",
-      description: "He presents an impossible ticket.",
-      end: "Mara takes the ticket.",
+      description: "The passenger presents an impossible ticket, which Mara takes.",
       facts: [],
       keywords: [],
       narration_rules: [],
@@ -80,11 +76,10 @@ describe("reader narration prompts", () => {
     expect(messages[1].content).toContain("Make the lamps flicker.");
     expect(messages[2].content).toBe("Accepted first narration.");
     expect(messages[3].content).toContain("### Events to narrate");
-    expect(messages[3].content).toContain("He presents an impossible ticket.");
+    expect(messages[3].content).toContain("The passenger presents an impossible ticket");
     expect(messages[3].content).toContain("Length requirement: write 600 words");
     expect(messages[3].content).toContain("Fully dramatize those events as a scene");
-    expect(messages[3].content).not.toContain("The passenger looks up while Mara remains");
-    expect(messages[3].content).not.toContain("Mara takes the ticket.");
+    expect(messages[3].content).not.toContain("Mara enters the empty dining car");
     expect(messages[3].content).toContain("Keep Mara suspicious.");
   });
 
@@ -92,9 +87,8 @@ describe("reader narration prompts", () => {
     const messages = buildNarrationMessages(story, 0, [], "Use more dialogue.");
 
     expect(messages).toHaveLength(2);
-    expect(messages[1].content).toContain("She discovers a passenger.");
-    expect(messages[1].content).not.toContain("Mara enters the empty dining car.");
-    expect(messages[1].content).not.toContain("The passenger looks up.");
+    expect(messages[1].content).toContain("Mara enters the empty dining car");
+    expect(messages[1].content).not.toContain("impossible ticket");
     expect(messages[1].content).toContain("Use more dialogue.");
   });
 

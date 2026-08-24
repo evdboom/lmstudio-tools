@@ -42,16 +42,14 @@ beforeEach(async () => {
     name: "Dining Car",
     description: "An empty carriage lit by brass lamps.",
   });
-  for (const [start, description, end] of [
-    ["Mara enters the dining car.", "She sees an unknown passenger.", "The passenger looks up."],
-    ["The passenger looks up.", "He presents an impossible ticket.", "Mara takes the ticket."],
+  for (const description of [
+    "Mara enters the dining car, sees an unknown passenger, and watches him look up.",
+    "The passenger presents an impossible ticket, which Mara takes.",
   ]) {
     await addBeat(root, storyPath, {
       locationId: "dining-car",
       characterIds: ["mara"],
-      start,
       description,
-      end,
     });
   }
   await finalizeStory(root, storyPath);
@@ -100,13 +98,13 @@ describe("story telling runtime", () => {
       expect(first.text).toContain(
         "**Premise:** A conductor discovers a passenger who should not exist."
       );
-      expect(first.text).toContain("Mara enters the dining car.");
+      expect(first.text).toContain("Mara enters the dining car");
       expect(first.text).toContain("Narration mode: cinematic");
       expect(first.text).toContain("Type c/continue to continue the story");
     }
     if (second.ok) {
       expect(second.text).toContain("Beat: 2 of 2");
-      expect(second.text).toContain("He presents an impossible ticket.");
+      expect(second.text).toContain("The passenger presents an impossible ticket");
       expect(second.text).not.toContain("Type c/continue to continue the story");
     }
 

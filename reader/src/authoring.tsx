@@ -36,12 +36,14 @@ function starter(title = "Untitled story"): Story {
 
 function normalize(story: Story): Story {
   const copy = structuredClone(story);
-  copy.characters.forEach((item, index) => { item.index = index; });
-  copy.locations.forEach((item, index) => { item.index = index; });
-  copy.narration_modes.forEach((item, index) => { item.index = index; });
+  const cleanLines = (lines: string[]) => lines.map((line) => line.trim()).filter(Boolean);
+  copy.characters.forEach((item, index) => { item.index = index; item.attributes = cleanLines(item.attributes); });
+  copy.locations.forEach((item, index) => { item.index = index; item.details = cleanLines(item.details); });
+  copy.narration_modes.forEach((item, index) => { item.index = index; item.rules = cleanLines(item.rules); });
   copy.facts.forEach((item, index) => { item.index = index; });
   copy.beats.forEach((beat, index) => {
     beat.index = index;
+    beat.narration_rules = cleanLines(beat.narration_rules);
     const locationIndex = copy.locations.findIndex((item) => item.id === beat.location.id);
     beat.location.index = locationIndex;
     beat.characters = beat.characters.map(({ id }) => ({ id, index: copy.characters.findIndex((item) => item.id === id) }));
@@ -59,7 +61,6 @@ export function AuthoringApp() {
   const [models, setModels] = useState<string[]>([]);
   const [storyPath, setStoryPath] = useState("");
   const [story, setStory] = useState<Story>();
-  const [worldText, setWorldText] = useState("");
   const [isNew, setIsNew] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState("");
@@ -83,7 +84,7 @@ export function AuthoringApp() {
 
   async function load(path: string, preserveChat = false) {
     const result = await json<{ story: Story }>(`/api/editor/story?story_path=${encodeURIComponent(path)}`);
-    setStoryPath(path); setStory(result.story); setWorldText(JSON.stringify({ characters: result.story.characters, locations: result.story.locations, narration_modes: result.story.narration_modes, facts: result.story.facts }, null, 2));
+    setStoryPath(path); setStory(result.story);
     setIsNew(false); setDirty(false); setNotice(""); setError("");
     if (!preserveChat) { setMessages([]); setResponseId(undefined); }
   }
@@ -99,19 +100,75 @@ export function AuthoringApp() {
   }, []);
 
   function update(patch: Partial<Story>) { setStory((current) => current ? { ...current, ...patch } : current); setDirty(true); }
-  function beginNew() { const next = starter(); setStory(next); setStoryPath(""); setWorldText(JSON.stringify({ characters: [], locations: [], narration_modes: next.narration_modes, facts: [] }, null, 2)); setIsNew(true); setDirty(true); setMessages([]); setResponseId(undefined); }
+  function beginNew() { setStory(starter()); setStoryPath(""); setIsNew(true); setDirty(true); setMessages([]); setResponseId(undefined); }
 
   async function save() {
     if (!story) return;
     setError(""); setNotice("");
     try {
-      const world = JSON.parse(worldText) as Pick<Story, "characters" | "locations" | "narration_modes" | "facts">;
       const path = storyPath.trim();
       if (!path) throw new Error("Choose a folder path before saving.");
-      const complete = normalize({ ...story, ...world });
+      const complete = normalize(story);
       const result = await json<{ story: Story }>("/api/editor/story", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ story_path: path, story: complete, create: isNew }) });
       setStory(result.story); setIsNew(false); setDirty(false); setNotice("Saved and validated."); await refreshList();
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+  }
+
+  function changeCharacter(index: number, patch: Partial<Story["characters"][number]>) {
+    if (!story) return;
+    const oldId = story.characters[index].id; const nextId = patch.id ?? oldId;
+    update({
+      characters: story.characters.map((item, itemIndex) => ({
+        ...(itemIndex === index ? { ...item, ...patch } : item),
+        relations: item.relations.map((relation) => relation.to === oldId ? { ...relation, to: nextId } : relation),
+      })),
+      facts: story.facts.map((fact) => ({ ...fact, subjects: fact.subjects.map((id) => id === oldId ? nextId : id) })),
+      beats: story.beats.map((beat) => ({ ...beat, characters: beat.characters.map((reference) => reference.id === oldId ? { ...reference, id: nextId } : reference) })),
+    });
+  }
+  function removeCharacter(index: number) {
+    if (!story) return; const id = story.characters[index].id;
+    update({
+      characters: story.characters.filter((_, itemIndex) => itemIndex !== index).map((item) => ({ ...item, relations: item.relations.filter((relation) => relation.to !== id) })),
+      facts: story.facts.map((fact) => ({ ...fact, subjects: fact.subjects.filter((subject) => subject !== id) })),
+      beats: story.beats.map((beat) => ({ ...beat, characters: beat.characters.filter((reference) => reference.id !== id) })),
+    });
+  }
+  function changeLocation(index: number, patch: Partial<Story["locations"][number]>) {
+    if (!story) return; const oldId = story.locations[index].id; const nextId = patch.id ?? oldId;
+    update({
+      locations: story.locations.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item),
+      facts: story.facts.map((fact) => ({ ...fact, subjects: fact.subjects.map((id) => id === oldId ? nextId : id) })),
+      beats: story.beats.map((beat) => beat.location.id === oldId ? { ...beat, location: { ...beat.location, id: nextId } } : beat),
+    });
+  }
+  function removeLocation(index: number) {
+    if (!story) return; const id = story.locations[index].id; const locations = story.locations.filter((_, itemIndex) => itemIndex !== index); const fallback = locations[0];
+    update({
+      locations,
+      facts: story.facts.map((fact) => ({ ...fact, subjects: fact.subjects.filter((subject) => subject !== id) })),
+      beats: story.beats.map((beat) => beat.location.id === id && fallback ? { ...beat, location: { id: fallback.id, index: 0 } } : beat),
+    });
+  }
+  function changeMode(index: number, patch: Partial<Story["narration_modes"][number]>) {
+    if (!story) return; const oldId = story.narration_modes[index].id; const nextId = patch.id ?? oldId;
+    update({
+      narration_modes: story.narration_modes.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item),
+      default_narration_mode: story.default_narration_mode === oldId ? nextId : story.default_narration_mode,
+      beats: story.beats.map((beat) => beat.narration_mode === oldId ? { ...beat, narration_mode: nextId } : beat),
+    });
+  }
+  function removeMode(index: number) {
+    if (!story || story.narration_modes.length === 1) return; const id = story.narration_modes[index].id; const modes = story.narration_modes.filter((_, itemIndex) => itemIndex !== index); const fallback = modes[0].id;
+    update({ narration_modes: modes, default_narration_mode: story.default_narration_mode === id ? fallback : story.default_narration_mode, beats: story.beats.map((beat) => beat.narration_mode === id ? { ...beat, narration_mode: undefined } : beat) });
+  }
+  function changeFact(index: number, patch: Partial<Story["facts"][number]>) {
+    if (!story) return; const oldId = story.facts[index].id; const nextId = patch.id ?? oldId;
+    update({ facts: story.facts.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item), beats: story.beats.map((beat) => ({ ...beat, facts: beat.facts.map((id) => id === oldId ? nextId : id) })) });
+  }
+  function removeFact(index: number) {
+    if (!story) return; const id = story.facts[index].id;
+    update({ facts: story.facts.filter((_, itemIndex) => itemIndex !== index), beats: story.beats.map((beat) => ({ ...beat, facts: beat.facts.filter((factId) => factId !== id) })) });
   }
 
   function addBeat() {
@@ -120,6 +177,17 @@ export function AuthoringApp() {
   }
 
   function changeBeat(index: number, patch: Partial<Story["beats"][number]>) { if (!story) return; const beats = [...story.beats]; beats[index] = { ...beats[index], ...patch }; update({ beats }); }
+  function toggleBeatReference(index: number, field: "characters" | "facts", id: string, checked: boolean) {
+    if (!story) return;
+    const beat = story.beats[index];
+    if (field === "characters") {
+      const ids = beat.characters.map((reference) => reference.id);
+      const next = checked ? [...ids, id] : ids.filter((item) => item !== id);
+      changeBeat(index, { characters: next.map((item) => ({ id: item, index: 0 })) });
+      return;
+    }
+    changeBeat(index, { facts: checked ? [...beat.facts, id] : beat.facts.filter((item) => item !== id) });
+  }
   function moveBeat(index: number, offset: number) { if (!story) return; const beats = [...story.beats]; const target = index + offset; if (target < 0 || target >= beats.length) return; [beats[index], beats[target]] = [beats[target], beats[index]]; update({ beats }); }
 
   async function chat() {
@@ -154,9 +222,30 @@ export function AuthoringApp() {
         {!story ? <p>Select or create a story.</p> : <>
           <div className="editor-title"><div><p className="eyebrow">Blueprint editor</p><h1>{story.title}</h1></div><div className="editor-actions"><select value={story.status} onChange={(event) => update({ status: event.target.value as Story["status"] })}><option value="draft">Draft</option><option value="final">Final</option></select><button className="primary" disabled={!dirty} onClick={() => void save()}>Save</button></div></div>
           {isNew && <label>Folder path<input value={storyPath} placeholder="stories/my-story" onChange={(event) => setStoryPath(event.target.value)} /></label>}
-          <div className="metadata-grid"><label>Title<input value={story.title} onChange={(event) => update({ title: event.target.value })} /></label><label>Type<input value={story.story_type} onChange={(event) => update({ story_type: event.target.value })} /></label><label>Beat size<input value={story.beat_size} onChange={(event) => update({ beat_size: event.target.value })} /></label><label>Default mode<input value={story.default_narration_mode} onChange={(event) => update({ default_narration_mode: event.target.value })} /></label><label className="wide">Premise<textarea value={story.premise} onChange={(event) => update({ premise: event.target.value })} /></label></div>
-          <details><summary>World data <span>characters, locations, modes, facts</span></summary><textarea className="json-editor" spellCheck={false} value={worldText} onChange={(event) => { setWorldText(event.target.value); setDirty(true); }} /></details>
-          <section className="beats-editor"><div className="panel-heading"><h2>Beats</h2><button className="secondary" onClick={addBeat}>Add beat</button></div>{story.beats.map((beat, index) => <article className="beat-editor" key={index}><div className="beat-toolbar"><strong>{String(index + 1).padStart(2, "0")}</strong><select value={beat.location.id} onChange={(event) => changeBeat(index, { location: { id: event.target.value, index: 0 } })}>{story.locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}</select><button className="icon-button" title="Move up" onClick={() => moveBeat(index, -1)}>↑</button><button className="icon-button" title="Move down" onClick={() => moveBeat(index, 1)}>↓</button><button className="icon-button danger" title="Delete beat" onClick={() => update({ beats: story.beats.filter((_, beatIndex) => beatIndex !== index) })}>×</button></div><textarea placeholder="Events to narrate" value={beat.description} onChange={(event) => changeBeat(index, { description: event.target.value })} /></article>)}</section>
+          <div className="metadata-grid"><label>Title<input value={story.title} onChange={(event) => update({ title: event.target.value })} /></label><label>Type<input value={story.story_type} onChange={(event) => update({ story_type: event.target.value })} /></label><label>Beat size<input value={story.beat_size} onChange={(event) => update({ beat_size: event.target.value })} /></label><label>Default mode<select value={story.default_narration_mode} onChange={(event) => update({ default_narration_mode: event.target.value })}>{story.narration_modes.map((mode) => <option key={mode.id} value={mode.id}>{mode.id}: {mode.perspective}, {mode.tense}</option>)}</select></label><label className="wide">Premise<textarea value={story.premise} onChange={(event) => update({ premise: event.target.value })} /></label></div>
+          <section className="world-editor"><div className="panel-heading"><h2>World</h2><span>Characters, locations, narration, and canon</span></div>
+            <details open><summary>Characters <span>{story.characters.length}</span></summary><div className="world-list">{story.characters.map((character, index) => <article className="world-item" key={index}>
+              <div className="world-item-heading"><strong>{character.name || character.id || `Character ${index + 1}`}</strong><button className="icon-button danger" title="Delete character" onClick={() => removeCharacter(index)}>×</button></div>
+              <div className="world-fields"><label>ID<input value={character.id} onChange={(event) => changeCharacter(index, { id: event.target.value })} /></label><label>Name<input value={character.name} onChange={(event) => changeCharacter(index, { name: event.target.value })} /></label><label className="wide">Description<textarea value={character.description} onChange={(event) => changeCharacter(index, { description: event.target.value })} /></label><label className="wide">Appearance<textarea value={character.appearance} onChange={(event) => changeCharacter(index, { appearance: event.target.value })} /></label><label className="wide">Attributes<textarea value={character.attributes.join("\n")} placeholder="One attribute per line" onChange={(event) => changeCharacter(index, { attributes: event.target.value.split("\n") })} /></label>
+                <fieldset className="wide"><legend>Relations</legend>{character.relations.map((relation, relationIndex) => <div className="relation-row" key={relationIndex}><select aria-label="Related character" value={relation.to} onChange={(event) => changeCharacter(index, { relations: character.relations.map((item, itemIndex) => itemIndex === relationIndex ? { ...item, to: event.target.value } : item) })}>{story.characters.filter((_, itemIndex) => itemIndex !== index).map((item) => <option key={item.id} value={item.id}>{item.name || item.id}</option>)}</select><input aria-label="Relation kind" value={relation.kind} placeholder="Relation" onChange={(event) => changeCharacter(index, { relations: character.relations.map((item, itemIndex) => itemIndex === relationIndex ? { ...item, kind: event.target.value } : item) })} /><button className="icon-button danger" title="Delete relation" onClick={() => changeCharacter(index, { relations: character.relations.filter((_, itemIndex) => itemIndex !== relationIndex) })}>×</button></div>)}<button className="compact-button" disabled={story.characters.length < 2} onClick={() => changeCharacter(index, { relations: [...character.relations, { to: story.characters.find((_, itemIndex) => itemIndex !== index)!.id, kind: "" }] })}>Add relation</button></fieldset>
+              </div></article>)}<button className="secondary add-world-item" onClick={() => update({ characters: [...story.characters, { index: story.characters.length, id: `character-${story.characters.length + 1}`, name: "", description: "", appearance: "", relations: [], attributes: [] }] })}>Add character</button></div></details>
+            <details open><summary>Locations <span>{story.locations.length}</span></summary><div className="world-list">{story.locations.map((location, index) => <article className="world-item" key={index}><div className="world-item-heading"><strong>{location.name || location.id || `Location ${index + 1}`}</strong><button className="icon-button danger" title="Delete location" onClick={() => removeLocation(index)}>×</button></div><div className="world-fields"><label>ID<input value={location.id} onChange={(event) => changeLocation(index, { id: event.target.value })} /></label><label>Name<input value={location.name} onChange={(event) => changeLocation(index, { name: event.target.value })} /></label><label className="wide">Description<textarea value={location.description} onChange={(event) => changeLocation(index, { description: event.target.value })} /></label><label className="wide">Details<textarea value={location.details.join("\n")} placeholder="One detail per line" onChange={(event) => changeLocation(index, { details: event.target.value.split("\n") })} /></label></div></article>)}<button className="secondary add-world-item" onClick={() => update({ locations: [...story.locations, { index: story.locations.length, id: `location-${story.locations.length + 1}`, name: "", description: "", details: [] }] })}>Add location</button></div></details>
+            <details><summary>Narration modes <span>{story.narration_modes.length}</span></summary><div className="world-list">{story.narration_modes.map((mode, index) => <article className="world-item" key={index}><div className="world-item-heading"><strong>{mode.id || `Mode ${index + 1}`}</strong><button className="icon-button danger" disabled={story.narration_modes.length === 1} title="Delete narration mode" onClick={() => removeMode(index)}>×</button></div><div className="world-fields"><label>ID<input value={mode.id} onChange={(event) => changeMode(index, { id: event.target.value })} /></label><label>Perspective<input value={mode.perspective} onChange={(event) => changeMode(index, { perspective: event.target.value })} /></label><label>Tense<input value={mode.tense} onChange={(event) => changeMode(index, { tense: event.target.value })} /></label><label className="wide">Rules<textarea value={mode.rules.join("\n")} placeholder="One rule per line" onChange={(event) => changeMode(index, { rules: event.target.value.split("\n") })} /></label></div></article>)}<button className="secondary add-world-item" onClick={() => update({ narration_modes: [...story.narration_modes, { index: story.narration_modes.length, id: `mode-${story.narration_modes.length + 1}`, perspective: "third-person limited", tense: "past", rules: ["Keep the viewpoint consistent."] }] })}>Add mode</button></div></details>
+            <details><summary>Hard canon facts <span>{story.facts.length}</span></summary><div className="world-list">{story.facts.map((fact, index) => <article className="world-item" key={index}><div className="world-item-heading"><strong>{fact.id || `Fact ${index + 1}`}</strong><button className="icon-button danger" title="Delete fact" onClick={() => removeFact(index)}>×</button></div><div className="world-fields"><label>ID<input value={fact.id} onChange={(event) => changeFact(index, { id: event.target.value })} /></label><label className="wide">Fact<textarea value={fact.fact} onChange={(event) => changeFact(index, { fact: event.target.value })} /></label><fieldset className="wide"><legend>Subjects</legend><div className="reference-options">{[...story.characters, ...story.locations].map((subject) => <label key={subject.id}><input type="checkbox" checked={fact.subjects.includes(subject.id)} onChange={(event) => changeFact(index, { subjects: event.target.checked ? [...fact.subjects, subject.id] : fact.subjects.filter((id) => id !== subject.id) })} />{"name" in subject ? subject.name || subject.id : subject.id}</label>)}</div></fieldset></div></article>)}<button className="secondary add-world-item" onClick={() => update({ facts: [...story.facts, { index: story.facts.length, id: `fact-${story.facts.length + 1}`, fact: "", subjects: [] }] })}>Add fact</button></div></details>
+          </section>
+          <section className="beats-editor"><div className="panel-heading"><h2>Beats</h2><button className="secondary" onClick={addBeat}>Add beat</button></div>{story.beats.map((beat, index) => <article className="beat-editor" key={index}>
+            <div className="beat-toolbar"><strong>{String(index + 1).padStart(2, "0")}</strong><select aria-label="Location" value={beat.location.id} onChange={(event) => changeBeat(index, { location: { id: event.target.value, index: 0 } })}>{story.locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}</select><button className="icon-button" title="Move up" onClick={() => moveBeat(index, -1)}>↑</button><button className="icon-button" title="Move down" onClick={() => moveBeat(index, 1)}>↓</button><button className="icon-button danger" title="Delete beat" onClick={() => update({ beats: story.beats.filter((_, beatIndex) => beatIndex !== index) })}>×</button></div>
+            <div className="beat-fields">
+              <label className="wide">Events to narrate<textarea value={beat.description} onChange={(event) => changeBeat(index, { description: event.target.value })} /></label>
+              <label>Narration mode<select value={beat.narration_mode ?? ""} onChange={(event) => changeBeat(index, { narration_mode: event.target.value || undefined })}><option value="">Story default</option>{story.narration_modes.map((mode) => <option key={mode.id} value={mode.id}>{mode.id}: {mode.perspective}, {mode.tense}</option>)}</select></label>
+              <fieldset><legend>Characters</legend><div className="reference-options">{story.characters.length === 0 ? <span>None defined</span> : story.characters.map((character) => <label key={character.id}><input type="checkbox" checked={beat.characters.some((reference) => reference.id === character.id)} onChange={(event) => toggleBeatReference(index, "characters", character.id, event.target.checked)} />{character.name}</label>)}</div></fieldset>
+              <fieldset className="wide"><legend>Required facts</legend><div className="reference-options">{story.facts.length === 0 ? <span>None defined</span> : story.facts.map((fact) => <label key={fact.id}><input type="checkbox" checked={beat.facts.includes(fact.id)} onChange={(event) => toggleBeatReference(index, "facts", fact.id, event.target.checked)} />{fact.id}: {fact.fact}</label>)}</div></fieldset>
+              <details className="beat-advanced"><summary>Advanced guidance <span>keywords and narration rules</span></summary>
+                <label>Keywords<textarea value={beat.keywords.map((keyword) => `${keyword.type}: ${keyword.word}`).join("\n")} placeholder={"motif: broken mirror\ntone: uneasy"} onChange={(event) => changeBeat(index, { keywords: event.target.value.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => { const separator = line.indexOf(":"); return separator < 0 ? { type: "keyword", word: line } : { type: line.slice(0, separator).trim(), word: line.slice(separator + 1).trim() }; }).filter((keyword) => keyword.type && keyword.word) })} /></label>
+                <label>Narration rules<textarea value={beat.narration_rules.join("\n")} placeholder="One rule per line" onChange={(event) => changeBeat(index, { narration_rules: event.target.value.split("\n") })} /></label>
+              </details>
+            </div>
+          </article>)}</section>
           {notice && <div className="notice">{notice}</div>}{error && <div className="error">{error}</div>}
         </>}
       </section>

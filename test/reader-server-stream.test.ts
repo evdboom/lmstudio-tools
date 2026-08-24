@@ -1,5 +1,3 @@
-import { promises as fs } from "node:fs";
-import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   addBeat,
@@ -61,16 +59,12 @@ beforeEach(async () => {
   await addBeat(root, storyPath, {
     locationId: "car",
     characterIds: ["mara"],
-    start: "Mara enters.",
-    description: "She finds a passenger.",
-    end: "The passenger looks up.",
+    description: "Mara enters and finds a passenger, who looks up.",
   });
   await addBeat(root, storyPath, {
     locationId: "car",
     characterIds: ["mara"],
-    start: "The passenger looks up.",
-    description: "He offers an impossible ticket.",
-    end: "Mara takes the ticket.",
+    description: "The passenger offers an impossible ticket, which Mara takes.",
   });
   await finalizeStory(root, storyPath);
 });
@@ -78,15 +72,7 @@ beforeEach(async () => {
 afterEach(async () => cleanup());
 
 describe("reader generation stream", () => {
-  it("discovers finalized stories without legacy beat boundaries", async () => {
-    const storyFile = path.join(root, storyPath, "story.json");
-    const story = JSON.parse(await fs.readFile(storyFile, "utf8"));
-    for (const beat of story.beats) {
-      delete beat.start;
-      delete beat.end;
-    }
-    await fs.writeFile(storyFile, JSON.stringify(story, null, 2));
-
+  it("discovers finalized stories", async () => {
     const app = await createReaderServer({ root, lmStudioUrl: "http://lmstudio.test/api/v1" });
     const response = await app.inject({ method: "GET", url: "/api/stories" });
     await app.close();

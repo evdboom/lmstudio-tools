@@ -49,16 +49,12 @@ beforeEach(async () => {
   await addBeat(root, storyPath, {
     locationId: "car",
     characterIds: ["mara"],
-    start: "Mara enters.",
-    description: "She finds a passenger.",
-    end: "The passenger looks up.",
+    description: "Mara enters and finds a passenger, who looks up.",
   });
   await addBeat(root, storyPath, {
     locationId: "car",
     characterIds: ["mara"],
-    start: "The passenger looks up.",
-    description: "He offers a strange ticket.",
-    end: "Mara accepts it.",
+    description: "The passenger offers a strange ticket, which Mara accepts.",
   });
   await finalizeStory(root, storyPath);
 });

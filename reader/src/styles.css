@@ -246,13 +246,41 @@ textarea { border: 1px solid var(--line-strong); border-radius: 4px; background:
 details { margin-top: 28px; border-block: 1px solid var(--line); padding: 15px 0; }
 summary { cursor: pointer; font-weight: 700; }
 summary span { color: var(--muted); font-size: 12px; font-weight: 400; }
-.json-editor { width: 100%; min-height: 320px; margin-top: 14px; font: 12px/1.5 Consolas, monospace; }
+.world-editor { margin-top: 34px; }
+.world-editor > .panel-heading > span { color: var(--muted); font-size: 12px; }
+.world-editor > details { margin-top: 12px; padding: 12px 0; }
+.world-list { display: grid; gap: 10px; margin-top: 12px; }
+.world-item { border: 1px solid var(--line); background: var(--surface); }
+.world-item-heading { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 8px 4px 14px; border-bottom: 1px solid var(--line); }
+.world-item-heading strong { min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
+.world-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 14px; }
+.world-fields > label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 700; }
+.world-fields .wide { grid-column: 1 / -1; }
+.world-fields textarea { width: 100%; min-height: 76px; }
+.world-fields fieldset { min-width: 0; margin: 0; padding: 10px 12px; border: 1px solid var(--line); }
+.world-fields legend { padding: 0 5px; color: var(--muted); font-size: 12px; font-weight: 700; }
+.relation-row { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) auto; gap: 8px; margin-bottom: 8px; }
+.relation-row select { max-width: none; }
+.compact-button { min-height: 34px; padding: 0 12px; border-color: var(--line); background: var(--paper); color: var(--ink); font-size: 12px; }
+.add-world-item { justify-self: start; }
 .beats-editor { margin-top: 34px; }
 .beat-editor { margin-top: 12px; border: 1px solid var(--line); background: var(--surface); }
 .beat-toolbar { display: grid; grid-template-columns: 34px 1fr auto auto auto; gap: 6px; align-items: center; padding: 8px; border-bottom: 1px solid var(--line); }
 .beat-toolbar strong { color: var(--red); font-size: 12px; text-align: center; }
 .beat-toolbar select { min-height: 34px; max-width: none; }
-.beat-editor > textarea { width: 100%; min-height: 120px; border: 0; }
+.beat-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; padding: 14px; }
+.beat-fields > label, .beat-advanced label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 700; }
+.beat-fields .wide, .beat-advanced { grid-column: 1 / -1; }
+.beat-fields textarea { width: 100%; min-height: 96px; }
+.beat-fields select { max-width: none; }
+.beat-fields fieldset { min-width: 0; margin: 0; padding: 10px 12px; border: 1px solid var(--line); }
+.beat-fields legend { padding: 0 5px; color: var(--muted); font-size: 12px; font-weight: 700; }
+.reference-options { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.reference-options > label { display: flex; align-items: center; gap: 6px; color: var(--ink); font-size: 12px; }
+.reference-options input { width: 16px; min-height: 16px; padding: 0; accent-color: var(--green); }
+.reference-options > span { color: var(--muted); font-size: 12px; }
+.beat-advanced { margin: 0; padding: 12px 0 0; border-bottom: 0; }
+.beat-advanced > label { margin-top: 12px; }
 .notice { margin-top: 20px; padding: 12px; border-left: 3px solid var(--green); background: var(--surface); color: var(--green); }
 .author-chat .panel-heading { padding: 16px; border-bottom: 1px solid var(--line); }
 .author-chat .panel-heading select { max-width: 170px; min-height: 34px; }
@@ -303,7 +331,13 @@ summary span { color: var(--muted); font-size: 12px; font-weight: 400; }
   .editor-title h1 { font-size: 34px; }
   .metadata-grid { grid-template-columns: 1fr; }
   .metadata-grid .wide { grid-column: auto; }
+  .world-fields { grid-template-columns: 1fr; }
+  .world-fields .wide { grid-column: auto; }
+  .relation-row { grid-template-columns: 1fr auto; }
+  .relation-row select { grid-column: 1 / -1; }
   .beat-toolbar { grid-template-columns: 30px minmax(0, 1fr) auto auto auto; }
+  .beat-fields { grid-template-columns: 1fr; }
+  .beat-fields .wide, .beat-advanced { grid-column: auto; }
   .author-chat { border-left: 0; border-top: 1px solid var(--line); box-shadow: none; display: grid; min-height: 520px; }
 }
 .reasoning-trace { margin: 0 0 40px; padding: 12px 0; border-block: 1px solid var(--line); color: var(--muted); }

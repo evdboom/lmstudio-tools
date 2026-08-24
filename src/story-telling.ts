@@ -31,7 +31,7 @@ function renderBeatPacket(story: StoryBlueprint, beatIndex: number): string {
 
   return [
     "# Narrate the following beat",
-    "**Do not repeat completed events or continue beyond the stated ending.**",
+    "**Narrate only the described events without adding events from later beats.**",
     `- Beat: ${beatIndex + 1} of ${story.beats.length}`,
     `- Target length: ${story.beat_size}`,
     "",
@@ -41,14 +41,8 @@ function renderBeatPacket(story: StoryBlueprint, beatIndex: number): string {
     `**Story type:** ${story.story_type}`,
     "*Treat this context as canon while realizing the current beat.*",
     "",
-    "## Start situation",
-    beat.start,
-    "",
     "## What happens",
     beat.description,
-    "",
-    "## Ending situation",
-    beat.end,
     "",
     "## Location",
     `${location.name}: ${location.description}`,
@@ -66,8 +60,7 @@ function renderBeatPacket(story: StoryBlueprint, beatIndex: number): string {
     `**Perspective:** ${mode.perspective}`,
     `**Tense:** ${mode.tense}`,
     "### Narration rules:",
-    "- Start from the stated situation and close exactly at the stated ending.",
-    "- Treat start and end as situational cues, not prose to copy.",
+    "- Fully dramatize the events in the beat description.",
     ...mode.rules.map((rule) => `- ${rule}`),
     ...beat.narration_rules.map((rule) => `- ${rule}`),
     ...(beat.keywords.length > 0

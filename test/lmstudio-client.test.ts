@@ -77,4 +77,29 @@ describe("LM Studio streaming client", () => {
     expect(onTool).toHaveBeenCalledWith("story_read");
     expect(result).toEqual({ message: "I expanded the midpoint.", responseId: "resp_author" });
   });
+
+  it("does not repeat the system prompt in an authoring continuation", async () => {
+    const stream = [
+      'event: message.delta\ndata: {"type":"message.delta","content":"Continuing."}\n\n',
+      'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_next"}}\n\n',
+    ].join("");
+    const fetchMock = vi.fn(async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await streamLmStudioAuthoring({
+      baseUrl: "http://127.0.0.1:1234/api/v1",
+      model: "test-model",
+      input: "Continue.",
+      previousResponseId: "resp_parent",
+      signal: new AbortController().signal,
+      onDelta: vi.fn(),
+    });
+
+    const request = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string);
+    expect(request.previous_response_id).toBe("resp_parent");
+    expect(request).not.toHaveProperty("system_prompt");
+  });
 });

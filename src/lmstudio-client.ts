@@ -127,7 +127,9 @@ export async function streamLmStudioAuthoring(options: {
       model: options.model,
       input: options.input,
       previous_response_id: options.previousResponseId,
-      system_prompt: "You are Folio's story editor. Read the blueprint before changing it. Use story_save only when the user asks to apply a change. Preserve stable IDs and unrelated details. Beats need a description; start and end are legacy and should be omitted. Briefly summarize applied changes.",
+      system_prompt: options.previousResponseId
+        ? undefined
+        : "You are Folio's story editor. Read the blueprint before changing it. Use story_save only when the user asks to apply a change. Preserve stable IDs and unrelated details. Beats need a description; start and end are legacy and should be omitted. Briefly summarize applied changes.",
       integrations: [{
         type: "plugin",
         id: "mcp/story-teller",

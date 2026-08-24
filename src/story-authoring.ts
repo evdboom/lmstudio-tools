@@ -52,9 +52,9 @@ export interface AddFactInput {
 export interface AddBeatInput {
   locationId: string;
   characterIds: string[];
-  start: string;
+  start?: string;
   description: string;
-  end: string;
+  end?: string;
   narrationMode?: string;
   factIds?: string[];
   keywords?: Array<{ type: string; word: string }>;
@@ -227,9 +227,9 @@ export async function addBeat(
       index,
       location: { id: input.locationId, index: locationIndex },
       characters,
-      start: input.start.trim(),
+      start: input.start?.trim(),
       description: input.description.trim(),
-      end: input.end.trim(),
+      end: input.end?.trim(),
       narration_mode: input.narrationMode,
       facts: input.factIds ?? [],
       keywords: input.keywords ?? [],

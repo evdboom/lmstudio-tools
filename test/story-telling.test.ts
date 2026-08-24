@@ -92,13 +92,13 @@ describe("story telling runtime", () => {
     expect(first.ok).toBe(true);
     expect(second.ok).toBe(true);
     if (first.ok) {
-      expect(first.text).toContain("NARRATE THIS BEAT DIRECTLY TO THE USER.");
+      expect(first.text).toContain("# Narrate the following beat");
       expect(first.text).toContain("Beat: 1 of 2");
       expect(first.text).not.toContain("Beat token:");
       expect(first.text).not.toContain("complete_beat");
       expect(first.text).toContain("Story context:");
       expect(first.text).toContain(
-        "Premise: A conductor discovers a passenger who should not exist."
+        "**Premise:** A conductor discovers a passenger who should not exist."
       );
       expect(first.text).toContain("Mara enters the dining car.");
       expect(first.text).toContain("Narration mode: cinematic");

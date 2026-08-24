@@ -6,7 +6,8 @@
   "bin": {
     "lmstudio-tools": "dist/index.js",
     "lmstudio-skills": "dist/skills-index.js",
-    "story-teller-mcp": "dist/story-teller-index.js"
+    "story-teller-mcp": "dist/story-teller-index.js",
+    "story-reader": "dist/reader-server.js"
   },
   "main": "dist/index.js",
   "scripts": {
@@ -17,18 +18,30 @@
     "dev:skills": "tsx src/skills-index.ts",
     "start:story": "node dist/story-teller-index.js",
     "dev:story": "tsx src/story-teller-index.ts",
+    "build:reader": "vite build --config reader/vite.config.ts",
+    "build:all": "npm run build && npm run build:reader",
+    "start:reader": "node dist/reader-server.js",
+    "dev:reader": "npm run build:reader && tsx src/reader-server.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@fastify/static": "^7.0.4",
     "@modelcontextprotocol/sdk": "^1.0.4",
+    "fastify": "^4.29.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "yaml": "^2.6.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^4.7.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
+    "vite": "^6.4.3",
     "vitest": "^4.1.8"
   },
   "engines": {

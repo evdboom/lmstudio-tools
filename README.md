@@ -6,6 +6,8 @@ MCP servers for LM Studio with three focused surfaces:
 - `lmstudio-skills`: skills loading plus markdown workflow execution
 - `story-teller-mcp`: strict story authoring and beat-by-beat telling runtime
 
+The repository also includes `story-reader`, a local scrolling reader that calls LM Studio's HTTP API directly. It is independent of the MCP telling tools.
+
 ## Scope
 
 This repository now focuses on:
@@ -13,8 +15,9 @@ This repository now focuses on:
 - file tools (`src/index.ts`)
 - skills and workflow framework (`src/skills-index.ts`, `src/workflow.ts`)
 - story authoring and telling (`src/story-teller-index.ts`, `src/story-telling.ts`)
+- direct-API story reading (`src/reader-server.ts`, `reader/`)
 
-Game runtime, web UI, and game-specific workflow content were removed.
+Game runtime and game-specific workflow content were removed.
 
 ## Prerequisites
 
@@ -33,6 +36,12 @@ npm run build
 ```
 
 Run `npm run build` again after pulling source changes. LM Studio executes files from `dist/`, not directly from `src/`.
+
+Build both the servers and story reader UI with:
+
+```powershell
+npm run build:all
+```
 
 Create the writable roots before connecting the servers:
 
@@ -156,6 +165,48 @@ npm run dev
 npm run dev:skills
 npm run dev:story
 ```
+
+## Story Reader App
+
+The reader uses the same finalized `story.json` blueprints, but it does not ask the model to call MCP tools. The app owns beat progression and uses LM Studio's native stateful chat API, sending only the current beat request after the first response.
+
+1. Start LM Studio's local server and load a model. The default API URL is `http://127.0.0.1:1234/api/v1`.
+2. Build and start the reader:
+
+```powershell
+npm run build:all
+node dist/reader-server.js --root C:\tmp\stories
+```
+
+3. Open `http://127.0.0.1:4317`.
+
+Optional settings:
+
+```powershell
+node dist/reader-server.js `
+	--root C:\tmp\stories `
+	--port 4317 `
+	--host 127.0.0.1 `
+	--lmstudio-url http://127.0.0.1:1234/api/v1
+```
+
+Environment equivalents are `STORY_ROOT`, `STORY_READER_PORT`, `STORY_READER_HOST`, and `LMSTUDIO_URL`. `npm run dev:reader -- --root C:\tmp\stories` builds the UI and runs the TypeScript server directly.
+
+The reader provides:
+
+- **Next:** accepts the current narration, advances exactly one beat, and treats entered text as an ongoing direction.
+- **Regenerate:** discards the current draft and generates the same beat again; entered text applies to that revision.
+- **Auto continue:** after a draft finishes, accepts it and generates the next beat until the final beat is reached. The preference is stored in the browser.
+- Streaming narration with LM Studio response IDs retained for continuation and regeneration branches.
+- Narration prompts contain only the current beat's `description` events, plus story context and reader instructions.
+
+### Story Authoring
+
+Open `http://127.0.0.1:4317/author` or select **Write** in the reader. The authoring workspace can create and edit complete story blueprints, reorder or expand beats, validate references, and switch a story between draft and final status.
+
+The model collaborator uses LM Studio's native stateful chat with this server exposed as a restricted ephemeral MCP integration. It can list, read, and save validated stories; direct page edits and model changes therefore use the same `story.json` source of truth. In LM Studio 0.4.0 or newer, enable **Allow per-request MCPs** in Server Settings before using the collaborator. The structured editor remains available when LM Studio is offline.
+
+Reader sessions are stored separately under `<story>/reader-runs/`. Existing MCP telling sessions remain under `<story>/runs/` and the `telling_start`, `next_beat`, and `telling_status` tools are unchanged.
 
 ## File Tools
 

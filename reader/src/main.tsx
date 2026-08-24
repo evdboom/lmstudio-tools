@@ -323,7 +323,6 @@ function App() {
                 <input
                   type="checkbox"
                   checked={autoContinue}
-                  disabled={busy}
                   onChange={(event) => setAutoContinue(event.target.checked)}
                 />
                 Auto continue

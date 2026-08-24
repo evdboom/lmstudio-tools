@@ -258,9 +258,15 @@ summary span { color: var(--muted); font-size: 12px; font-weight: 400; }
 .author-chat .panel-heading select { max-width: 170px; min-height: 34px; }
 .chat-log { overflow: auto; padding: 18px; }
 .chat-log > p { color: var(--muted); font: 15px/1.5 "Palatino Linotype", serif; }
-.chat-message { margin-bottom: 14px; padding: 10px 12px; white-space: pre-wrap; font-size: 13px; line-height: 1.45; }
+.chat-message { margin-bottom: 14px; padding: 10px 12px; font-size: 13px; line-height: 1.45; }
 .chat-message.user { margin-left: 24px; background: var(--green); color: var(--paper); }
 .chat-message.assistant { margin-right: 24px; border-left: 2px solid var(--red); background: var(--paper); }
+.chat-output { white-space: pre-wrap; font: 14px/1.55 "Palatino Linotype", "Book Antiqua", Georgia, serif; }
+.chat-message.user .chat-output { font-family: "Aptos", "Segoe UI", sans-serif; }
+.collaborator-reasoning { margin: 0 0 12px; padding: 0 0 10px; border-top: 0; border-bottom: 1px solid var(--line); }
+.collaborator-reasoning summary { color: var(--muted); font: 700 11px/1.4 "Aptos", "Segoe UI", sans-serif; text-transform: uppercase; }
+.collaborator-reasoning summary span { color: var(--red); font-size: 9px; }
+.collaborator-reasoning pre { max-height: 240px; margin: 10px 0 0; padding: 10px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface); color: var(--muted); font: 11px/1.5 Consolas, "Courier New", monospace; }
 .chat-input { padding: 12px; display: grid; grid-template-columns: 1fr auto; gap: 8px; border-top: 1px solid var(--line); }
 .chat-input textarea { min-height: 70px; }
 
@@ -300,3 +306,7 @@ summary span { color: var(--muted); font-size: 12px; font-weight: 400; }
   .beat-toolbar { grid-template-columns: 30px minmax(0, 1fr) auto auto auto; }
   .author-chat { border-left: 0; border-top: 1px solid var(--line); box-shadow: none; display: grid; min-height: 520px; }
 }
+.reasoning-trace { margin: 0 0 40px; padding: 12px 0; border-block: 1px solid var(--line); color: var(--muted); }
+.reasoning-trace summary { display: flex; align-items: center; gap: 8px; color: var(--ink); font-size: 13px; }
+.reasoning-trace summary span { color: var(--red); font-size: 10px; text-transform: uppercase; }
+.reasoning-trace pre { max-height: 320px; margin: 12px 0 0; padding: 14px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface); color: var(--muted); font: 12px/1.55 Consolas, monospace; }

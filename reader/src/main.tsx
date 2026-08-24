@@ -53,6 +53,7 @@ function App() {
     "next" | "regenerate" | "regenerate_previous"
   >();
   const [generationStatus, setGenerationStatus] = useState("");
+  const [reasoning, setReasoning] = useState("");
   const [error, setError] = useState("");
   const [autoContinue, setAutoContinue] = useState(
     () => localStorage.getItem("story-reader-auto-continue") === "true"
@@ -101,6 +102,7 @@ function App() {
     setGenerationStatus("Connecting to LM Studio...");
     setError("");
     setStreamed("");
+    setReasoning("");
     let completedState: ReaderState | undefined;
     try {
       const response = await fetch(`/api/runs/${run.run_id}/generate`, {
@@ -132,6 +134,9 @@ function App() {
           if (!data) continue;
           if (type === "state") setState(JSON.parse(data));
           if (type === "status") setGenerationStatus(JSON.parse(data));
+          if (type === "reasoning") {
+            setReasoning((current) => current + JSON.parse(data));
+          }
           if (type === "delta") {
             setGenerationStatus("Writing the beat...");
             setStreamed((current) => current + JSON.parse(data));
@@ -290,6 +295,12 @@ function App() {
                 <i />
                 <span>{generationStatus}</span>
               </div>
+            )}
+            {busy && reasoning && (
+              <details className="reasoning-trace">
+                <summary>Reasoning <span>live</span></summary>
+                <pre>{reasoning}</pre>
+              </details>
             )}
             {state.status === "completed" && <div className="fin">End</div>}
             {error && <div className="error" role="alert">{error}</div>}

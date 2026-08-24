@@ -16,9 +16,11 @@ vi.mock("../src/lmstudio-client.js", () => ({
   listLmStudioModels: vi.fn(async () => ["test-model"]),
   streamLmStudioNarration: vi.fn(async (options: {
     onReasoning?: () => void;
+    onReasoningDelta?: (delta: string) => void;
     onDelta: (delta: string) => void;
   }) => {
     options.onReasoning?.();
+    options.onReasoningDelta?.("Checking continuity.");
     options.onDelta("The carriage stirred.");
     return { narration: "The carriage stirred.", responseId: "resp_test" };
   }),
@@ -129,10 +131,12 @@ describe("reader generation stream", () => {
     const payload = generated.payload;
     const preparing = payload.indexOf("Preparing beat 1");
     const reasoning = payload.indexOf("reasoning about beat 1");
+    const reasoningTrace = payload.indexOf("Checking continuity.");
     const narration = payload.indexOf("The carriage stirred");
     const done = payload.indexOf("event: done");
     expect(preparing).toBeGreaterThanOrEqual(0);
     expect(reasoning).toBeGreaterThan(preparing);
+    expect(reasoningTrace).toBeGreaterThan(reasoning);
     expect(narration).toBeGreaterThan(reasoning);
     expect(done).toBeGreaterThan(narration);
 

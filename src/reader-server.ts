@@ -113,6 +113,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         previousResponseId: body.data.previous_response_id,
         signal: abort.signal,
         onDelta: (delta) => reply.raw.write(`event: delta\ndata: ${JSON.stringify(delta)}\n\n`),
+        onReasoningDelta: (delta) => reply.raw.write(`event: reasoning\ndata: ${JSON.stringify(delta)}\n\n`),
         onTool: (tool) => reply.raw.write(`event: tool\ndata: ${JSON.stringify(tool)}\n\n`),
       });
       reply.raw.write(`event: done\ndata: ${JSON.stringify(result)}\n\n`);
@@ -210,6 +211,9 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         },
         onReasoning: () => {
           reply.raw.write(`event: status\ndata: ${JSON.stringify(`The model is reasoning about beat ${beatNumber}...`)}\n\n`);
+        },
+        onReasoningDelta: (delta) => {
+          reply.raw.write(`event: reasoning\ndata: ${JSON.stringify(delta)}\n\n`);
         },
       });
       const state = await saveReaderDraft(

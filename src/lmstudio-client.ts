@@ -36,6 +36,7 @@ export async function streamLmStudioNarration(options: {
   signal: AbortSignal;
   onDelta: (delta: string) => void;
   onReasoning?: () => void;
+  onReasoningDelta?: (delta: string) => void;
 }): Promise<{ narration: string; responseId: string }> {
   const response = await fetch(endpoint(options.baseUrl, "/chat"), {
     method: "POST",
@@ -84,6 +85,9 @@ export async function streamLmStudioNarration(options: {
       reasoningReported = true;
       options.onReasoning?.();
     }
+    if (event.type === "reasoning.delta" && typeof event.content === "string") {
+      options.onReasoningDelta?.(event.content);
+    }
     if (event.type === "message.delta" && typeof event.content === "string") {
       narration += event.content;
       options.onDelta(event.content);
@@ -118,6 +122,7 @@ export async function streamLmStudioAuthoring(options: {
   previousResponseId?: string;
   signal: AbortSignal;
   onDelta: (delta: string) => void;
+  onReasoningDelta?: (delta: string) => void;
   onTool?: (tool: string) => void;
 }): Promise<{ message: string; responseId: string }> {
   const response = await fetch(endpoint(options.baseUrl, "/chat"), {
@@ -164,6 +169,9 @@ export async function streamLmStudioAuthoring(options: {
     if (event.type === "message.delta" && event.content) {
       message += event.content;
       options.onDelta(event.content);
+    }
+    if (event.type === "reasoning.delta" && event.content) {
+      options.onReasoningDelta?.(event.content);
     }
     if (event.type === "tool_call.start" && event.tool) options.onTool?.(event.tool);
     if (event.type === "chat.end") responseId = event.result?.response_id;

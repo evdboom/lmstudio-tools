@@ -19,6 +19,7 @@ describe("LM Studio streaming client", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
     const onReasoning = vi.fn();
+    const onReasoningDelta = vi.fn();
     const onDelta = vi.fn();
 
     const result = await streamLmStudioNarration({
@@ -28,10 +29,12 @@ describe("LM Studio streaming client", () => {
       previousResponseId: "resp_parent",
       signal: new AbortController().signal,
       onReasoning,
+      onReasoningDelta,
       onDelta,
     });
 
     expect(onReasoning).toHaveBeenCalledOnce();
+    expect(onReasoningDelta).toHaveBeenCalledWith("Planning");
     expect(onDelta).toHaveBeenCalledWith("The carriage stirred.");
     expect(result).toEqual({ narration: "The carriage stirred.", responseId: "resp_next" });
     expect(fetchMock).toHaveBeenCalledWith(
@@ -44,6 +47,7 @@ describe("LM Studio streaming client", () => {
 
   it("streams authoring chat with restricted configured MCP tools", async () => {
     const stream = [
+      'event: reasoning.delta\ndata: {"type":"reasoning.delta","content":"Need to inspect the beats."}\n\n',
       'event: tool_call.start\ndata: {"type":"tool_call.start","tool":"story_read"}\n\n',
       'event: message.delta\ndata: {"type":"message.delta","content":"I expanded the midpoint."}\n\n',
       'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_author"}}\n\n',
@@ -54,6 +58,7 @@ describe("LM Studio streaming client", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
     const onTool = vi.fn();
+    const onReasoningDelta = vi.fn();
 
     const result = await streamLmStudioAuthoring({
       baseUrl: "http://127.0.0.1:1234/api/v1",
@@ -62,6 +67,7 @@ describe("LM Studio streaming client", () => {
       apiToken: "local-token",
       signal: new AbortController().signal,
       onDelta: vi.fn(),
+      onReasoningDelta,
       onTool,
     });
 
@@ -75,6 +81,7 @@ describe("LM Studio streaming client", () => {
       allowed_tools: ["story_list", "story_read", "story_save"],
     }]);
     expect(onTool).toHaveBeenCalledWith("story_read");
+    expect(onReasoningDelta).toHaveBeenCalledWith("Need to inspect the beats.");
     expect(result).toEqual({ message: "I expanded the midpoint.", responseId: "resp_author" });
   });
 

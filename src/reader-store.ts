@@ -22,6 +22,7 @@ export const readerRunSchema = z.object({
   schema: z.literal("story-reader-run-v1"),
   run_id: z.string().uuid(),
   story_path: z.string().min(1),
+  model: z.string().trim().min(1).max(500).optional(),
   beat_index: z.number().int().nonnegative(),
   accepted: z.array(acceptedNarrationSchema),
   ongoing_instructions: z.array(z.string().min(1)),
@@ -70,7 +71,11 @@ async function writeRun(file: string, run: ReaderRun): Promise<void> {
   }
 }
 
-export async function createReaderRun(root: string, storyPath: string): Promise<ReaderRun> {
+export async function createReaderRun(
+  root: string,
+  storyPath: string,
+  model?: string
+): Promise<ReaderRun> {
   const story = await readStoryFile(root, storyPath);
   if (story.status !== "final") throw new Error("Story must be finalized before reading.");
   if (story.beats.length === 0) throw new Error("Story has no beats.");
@@ -79,6 +84,7 @@ export async function createReaderRun(root: string, storyPath: string): Promise<
     schema: "story-reader-run-v1",
     run_id: randomUUID(),
     story_path: storyPath,
+    model,
     beat_index: 0,
     accepted: [],
     ongoing_instructions: [],
@@ -134,6 +140,7 @@ export interface StoryListItem {
 export interface ReaderRunListItem {
   run_id: string;
   story_path: string;
+  model?: string;
   beat_index: number;
   accepted_beats: number;
   has_current_draft: boolean;
@@ -162,6 +169,7 @@ export async function listReaderRuns(
       runs.push({
         run_id: run.run_id,
         story_path: run.story_path,
+        model: run.model,
         beat_index: run.beat_index,
         accepted_beats: run.accepted.length,
         has_current_draft: Boolean(run.current_draft),

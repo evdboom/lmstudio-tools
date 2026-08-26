@@ -131,9 +131,10 @@ button:disabled { cursor: default; opacity: 0.45; }
 .saved-run { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 12px 0; border-bottom: 1px solid var(--line); }
 .saved-run div { display: grid; gap: 5px; }
 .saved-run strong { font-size: 14px; }
-.saved-run span { color: var(--muted); font-size: 12px; }
+.saved-run span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 
-.progress { width: min(220px, 40vw); color: var(--muted); font-size: 12px; text-align: right; }
+.progress { width: min(360px, 48vw); color: var(--muted); font-size: 12px; text-align: right; }
+.progress span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .progress i { display: block; height: 2px; margin-top: 7px; background: var(--red); transition: width 300ms ease; }
 
 .manuscript {

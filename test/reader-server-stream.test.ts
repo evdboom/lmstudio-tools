@@ -88,7 +88,7 @@ describe("reader generation stream", () => {
     const started = await app.inject({
       method: "POST",
       url: "/api/runs",
-      payload: { story_path: storyPath },
+      payload: { story_path: storyPath, model: "test-model" },
     });
     const run = started.json<{ run_id: string }>();
 
@@ -135,5 +135,6 @@ describe("reader generation stream", () => {
     expect(beatTwoNarration).toBeGreaterThan(beatTwo);
     expect(savedRun.accepted[0]?.response_id).toBe("resp_test");
     expect(savedRun.current_draft?.response_id).toBe("resp_test");
+    expect(savedRun.model).toBe("test-model");
   });
 });

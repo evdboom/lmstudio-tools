@@ -128,10 +128,13 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
   });
 
   app.post("/api/runs", async (request, reply) => {
-    const parsed = z.object({ story_path: storyPathSchema }).safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: "A valid story_path is required." });
+    const parsed = z.object({
+      story_path: storyPathSchema,
+      model: z.string().trim().min(1).max(500),
+    }).safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "A valid story_path and model are required." });
     try {
-      return await startReaderRun(options.root, parsed.data.story_path);
+      return await startReaderRun(options.root, parsed.data.story_path, parsed.data.model);
     } catch (error) {
       return reply.code(400).send({ error: message(error) });
     }
@@ -172,7 +175,8 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         body.data.story_path,
         params.data.runId,
         body.data.action,
-        body.data.instruction
+        body.data.instruction,
+        body.data.model
       );
     } catch (error) {
       return reply.code(400).send({ error: message(error) });

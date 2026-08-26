@@ -10,6 +10,7 @@ import { readStoryFile } from "./story-store.js";
 export interface ReaderState {
   run_id: string;
   story_path: string;
+  model?: string;
   title: string;
   premise: string;
   beat_index: number;
@@ -25,6 +26,7 @@ async function toState(root: string, run: ReaderRun): Promise<ReaderState> {
   return {
     run_id: run.run_id,
     story_path: run.story_path,
+    model: run.model,
     title: story.title,
     premise: story.premise,
     beat_index: run.beat_index,
@@ -36,8 +38,12 @@ async function toState(root: string, run: ReaderRun): Promise<ReaderState> {
   };
 }
 
-export async function startReaderRun(root: string, storyPath: string): Promise<ReaderState> {
-  return toState(root, await createReaderRun(root, storyPath));
+export async function startReaderRun(
+  root: string,
+  storyPath: string,
+  model?: string
+): Promise<ReaderState> {
+  return toState(root, await createReaderRun(root, storyPath, model));
 }
 
 export async function getReaderState(
@@ -63,7 +69,8 @@ export async function prepareReaderGeneration(
   storyPath: string,
   runId: string,
   action: "next" | "regenerate" | "regenerate_previous",
-  instruction?: string
+  instruction?: string,
+  model?: string
 ): Promise<{
   input?: string;
   systemPrompt?: string;
@@ -75,6 +82,12 @@ export async function prepareReaderGeneration(
   const story = await readStoryFile(root, storyPath);
   const prepared = await mutateReaderRun(root, storyPath, runId, (run) => {
     if (run.story_path !== storyPath) throw new Error("Reader run does not belong to this story.");
+    if (model) {
+      if (run.model && run.model !== model) {
+        throw new Error(`Reader run uses model '${run.model}', not '${model}'.`);
+      }
+      run.model ??= model;
+    }
     if (run.status === "completed") return { complete: true as const, run };
 
     if (action === "regenerate_previous") {

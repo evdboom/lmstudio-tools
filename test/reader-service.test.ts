@@ -63,10 +63,12 @@ afterEach(async () => cleanup());
 
 describe("reader run service", () => {
   it("keeps regeneration temporary and next-button directions ongoing", async () => {
-    const started = await startReaderRun(root, storyPath);
+    const started = await startReaderRun(root, storyPath, "test-model");
+    expect(started.model).toBe("test-model");
     expect(await listReaderRuns(root, storyPath)).toEqual([
       expect.objectContaining({
         run_id: started.run_id,
+        model: "test-model",
         beat_index: 0,
         accepted_beats: 0,
         has_current_draft: false,
@@ -127,7 +129,7 @@ describe("reader run service", () => {
   });
 
   it("rolls back the last accepted beat before regenerating it", async () => {
-    const started = await startReaderRun(root, storyPath);
+    const started = await startReaderRun(root, storyPath, "test-model");
     await saveReaderDraft(root, storyPath, started.run_id, "Original beat one.");
     await prepareReaderGeneration(root, storyPath, started.run_id, "next");
 
@@ -149,5 +151,30 @@ describe("reader run service", () => {
     });
     expect(replacement.input).toContain("Use a quieter opening.");
     expect(replacement.systemPrompt).toContain("You are the narrator");
+  });
+
+  it("adopts a model for a legacy run and prevents later model switching", async () => {
+    const started = await startReaderRun(root, storyPath);
+    expect(started.model).toBeUndefined();
+
+    const prepared = await prepareReaderGeneration(
+      root,
+      storyPath,
+      started.run_id,
+      "regenerate",
+      undefined,
+      "model-a"
+    );
+    expect(prepared.generationState?.model).toBe("model-a");
+    expect((await listReaderRuns(root, storyPath))[0]?.model).toBe("model-a");
+
+    await expect(prepareReaderGeneration(
+      root,
+      storyPath,
+      started.run_id,
+      "regenerate",
+      undefined,
+      "model-b"
+    )).rejects.toThrow("Reader run uses model 'model-a', not 'model-b'.");
   });
 });

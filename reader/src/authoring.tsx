@@ -17,6 +17,21 @@ interface Story {
   beats: Array<{ index: number; location: Reference; characters: Reference[]; description: string; narration_mode?: string; facts: string[]; keywords: Array<{ type: string; word: string }>; narration_rules: string[] }>;
 }
 interface ChatMessage { role: "user" | "assistant"; text: string; reasoning?: string; stopped?: boolean; failed?: boolean; noFinal?: boolean }
+interface StoredChat { messages: ChatMessage[]; responseId?: string }
+
+const AUTHOR_CHAT_KEY = "folio-author-chat";
+
+function storedChat(): StoredChat {
+  try {
+    const saved = JSON.parse(localStorage.getItem(AUTHOR_CHAT_KEY) ?? "null") as Partial<StoredChat> | null;
+    return {
+      messages: Array.isArray(saved?.messages) ? saved.messages : [],
+      responseId: typeof saved?.responseId === "string" ? saved.responseId : undefined,
+    };
+  } catch {
+    return { messages: [] };
+  }
+}
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -67,8 +82,9 @@ export function AuthoringApp() {
   const [notice, setNotice] = useState("");
   const [model, setModel] = useState("");
   const [chatInput, setChatInput] = useState("");
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [responseId, setResponseId] = useState<string>();
+  const [initialChat] = useState(storedChat);
+  const [messages, setMessages] = useState<ChatMessage[]>(initialChat.messages);
+  const [responseId, setResponseId] = useState<string | undefined>(initialChat.responseId);
   const [chatBusy, setChatBusy] = useState(false);
   const chatAbort = useRef<AbortController>();
 
@@ -77,17 +93,20 @@ export function AuthoringApp() {
     localStorage.setItem("story-reader-theme", theme);
   }, [theme]);
 
+  useEffect(() => {
+    localStorage.setItem(AUTHOR_CHAT_KEY, JSON.stringify({ messages, responseId }));
+  }, [messages, responseId]);
+
   async function refreshList() {
     const result = await json<{ stories: StoryItem[] }>("/api/editor/stories");
     setStories(result.stories);
     return result.stories;
   }
 
-  async function load(path: string, preserveChat = false) {
+  async function load(path: string) {
     const result = await json<{ story: Story }>(`/api/editor/story?story_path=${encodeURIComponent(path)}`);
     setStoryPath(path); setStory(result.story);
     setIsNew(false); setDirty(false); setNotice(""); setError("");
-    if (!preserveChat) { setMessages([]); setResponseId(undefined); }
   }
 
   useEffect(() => {
@@ -101,7 +120,15 @@ export function AuthoringApp() {
   }, []);
 
   function update(patch: Partial<Story>) { setStory((current) => current ? { ...current, ...patch } : current); setDirty(true); }
-  function beginNew() { setStory(starter()); setStoryPath(""); setIsNew(true); setDirty(true); setMessages([]); setResponseId(undefined); }
+  function beginNew() { setStory(starter()); setStoryPath(""); setIsNew(true); setDirty(true); }
+
+  function beginNewChat() {
+    if (chatBusy) return;
+    setMessages([]);
+    setResponseId(undefined);
+    setNotice("");
+    setError("");
+  }
 
   async function save() {
     if (!story) return;
@@ -220,7 +247,7 @@ export function AuthoringApp() {
         }
         if (done) break;
       }
-      if (storyPath) await load(storyPath, true);
+      if (storyPath) await load(storyPath);
     } catch (reason) {
       if (abort.signal.aborted) {
         setMessages((current) => { const next = [...current]; const last = next[next.length - 1]; next[next.length - 1] = { ...last, stopped: true }; return next; });
@@ -270,7 +297,7 @@ export function AuthoringApp() {
           {notice && <div className="notice">{notice}</div>}{error && <div className="error">{error}</div>}
         </>}
       </section>
-      <aside className="author-chat"><div className="panel-heading"><h2>Model collaborator</h2><select value={model} onChange={(event) => setModel(event.target.value)}>{models.map((item) => <option key={item}>{item}</option>)}</select></div><div className="chat-log">{messages.length === 0 && <p>Ask the model to create, inspect, or expand a story. Changes are applied through validated MCP tools.</p>}{messages.map((message, index) => <div key={index} className={`chat-message ${message.role}`}>{message.role === "assistant" && message.reasoning && <details className="collaborator-reasoning"><summary>Reasoning <span>{chatBusy && index === messages.length - 1 ? "live" : "trace"}</span></summary><pre>{message.reasoning}</pre></details>}<div className="chat-output">{message.text || (message.stopped ? "Stopped." : message.failed ? "Request failed." : message.noFinal ? "Reasoning finished without a final answer." : "Working...")}</div>{message.noFinal && index === messages.length - 1 && !chatBusy && <button className="secondary output-draft" onClick={() => void chat("Output the complete draft answer.")}>Output draft</button>}</div>)}</div><div className="chat-input"><textarea value={chatInput} disabled={chatBusy} placeholder="Expand the midpoint with two escalating beats..." onChange={(event) => setChatInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void chat(); } }} />{chatBusy ? <button className="danger stop-button" onClick={cancelChat}>Stop</button> : <button className="primary" disabled={!chatInput.trim()} onClick={() => void chat()}>Send</button>}</div></aside>
+      <aside className="author-chat"><div className="panel-heading"><h2>Model collaborator</h2><div className="chat-heading-actions"><select value={model} onChange={(event) => setModel(event.target.value)}>{models.map((item) => <option key={item}>{item}</option>)}</select><button className="icon-button" disabled={chatBusy || messages.length === 0} title="New chat" aria-label="New chat" onClick={beginNewChat}>+</button></div></div><div className="chat-log">{messages.length === 0 && <p>Ask the model to create, inspect, or expand a story. Changes are applied through validated MCP tools.</p>}{messages.map((message, index) => <div key={index} className={`chat-message ${message.role}`}>{message.role === "assistant" && message.reasoning && <details className="collaborator-reasoning"><summary>Reasoning <span>{chatBusy && index === messages.length - 1 ? "live" : "trace"}</span></summary><pre>{message.reasoning}</pre></details>}<div className="chat-output">{message.text || (message.stopped ? "Stopped." : message.failed ? "Request failed." : message.noFinal ? "Reasoning finished without a final answer." : "Working...")}</div>{message.noFinal && index === messages.length - 1 && !chatBusy && <button className="secondary output-draft" onClick={() => void chat("Output the complete draft answer.")}>Output draft</button>}</div>)}</div><div className="chat-input"><textarea value={chatInput} disabled={chatBusy} placeholder="Expand the midpoint with two escalating beats..." onChange={(event) => setChatInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void chat(); } }} />{chatBusy ? <button className="danger stop-button" onClick={cancelChat}>Stop</button> : <button className="primary" disabled={!chatInput.trim()} onClick={() => void chat()}>Send</button>}</div></aside>
     </div>
   </main>;
 }

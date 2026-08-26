@@ -285,6 +285,7 @@ summary span { color: var(--muted); font-size: 12px; font-weight: 400; }
 .notice { margin-top: 20px; padding: 12px; border-left: 3px solid var(--green); background: var(--surface); color: var(--green); }
 .author-chat .panel-heading { padding: 16px; border-bottom: 1px solid var(--line); }
 .author-chat .panel-heading select { max-width: 170px; min-height: 34px; }
+.chat-heading-actions { display: flex; align-items: center; gap: 8px; }
 .chat-log { overflow: auto; padding: 18px; }
 .chat-log > p { color: var(--muted); font: 15px/1.5 "Palatino Linotype", serif; }
 .chat-message { margin-bottom: 14px; padding: 10px 12px; font-size: 13px; line-height: 1.45; }

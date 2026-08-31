@@ -130,6 +130,8 @@ export function registerStoryTools(
     perspective: text,
     tense: text,
     rules: z.array(text).min(1).max(32),
+    kind: z.enum(["replace", "supplemental"]).default("replace")
+      .describe("'replace' uses only these rules; 'supplemental' layers them onto the default mode's rules."),
   }, wrap(names.addNarrationMode, ({ story_path, ...mode }) =>
     addNarrationMode(root, story_path, mode), log));
 

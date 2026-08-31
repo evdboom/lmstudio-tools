@@ -1,11 +1,38 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { streamLmStudioAuthoring, streamLmStudioNarration } from "../src/lmstudio-client.js";
+import {
+  generateLmStudioText,
+  streamLmStudioAuthoring,
+  streamLmStudioNarration,
+} from "../src/lmstudio-client.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe("LM Studio streaming client", () => {
+  it("generates one-shot text without storing narration state", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      output: [
+        { type: "reasoning", content: "Selecting resources." },
+        { type: "message", content: "{\"checkpoint_id\":\"wai17\"}" },
+      ],
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await generateLmStudioText({
+      baseUrl: "http://127.0.0.1:1234/api/v1",
+      model: "test-model",
+      input: "Plan images.",
+      systemPrompt: "Return JSON.",
+      signal: new AbortController().signal,
+    });
+
+    const request = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string);
+    expect(request).toMatchObject({ stream: false, store: false, temperature: 0.3 });
+    expect(request).not.toHaveProperty("previous_response_id");
+    expect(result).toBe('{"checkpoint_id":"wai17"}');
+  });
+
   it("reports reasoning before forwarding narration content", async () => {
     const stream = [
       'event: reasoning.start\ndata: {"type":"reasoning.start"}\n\n',

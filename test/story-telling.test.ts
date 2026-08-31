@@ -146,4 +146,53 @@ describe("story telling runtime", () => {
     expect(migrated).not.toHaveProperty("completed_beats");
     expect(migrated).not.toHaveProperty("continuity");
   });
+
+  it("layers a supplemental narration mode's rules onto the default mode", async () => {
+    const supplementalPath = "stories/supplemental-test";
+    await createStory(root, {
+      storyPath: supplementalPath,
+      title: "Echoes",
+      premise: "A quiet town hides a secret choir.",
+      storyType: "drama",
+      beatSize: "400-600 words",
+      defaultNarrationMode: "default",
+    });
+    await addNarrationMode(root, supplementalPath, {
+      id: "default",
+      perspective: "third-person limited",
+      tense: "past",
+      rules: ["Keep the viewpoint consistent."],
+    });
+    await addNarrationMode(root, supplementalPath, {
+      id: "choir-scene",
+      perspective: "third-person limited",
+      tense: "past",
+      rules: ["Describe the choir's harmonies in vivid sensory detail."],
+      kind: "supplemental",
+    });
+    await addLocation(root, supplementalPath, {
+      id: "chapel",
+      name: "Chapel",
+      description: "A candlelit stone chapel.",
+    });
+    await addBeat(root, supplementalPath, {
+      locationId: "chapel",
+      characterIds: [],
+      description: "The choir begins to sing.",
+      narrationMode: "choir-scene",
+    });
+    await finalizeStory(root, supplementalPath);
+
+    const startResult = await startTelling(root, supplementalPath);
+    expect(startResult.ok).toBe(true);
+    if (!startResult.ok) return;
+    const runId = JSON.parse(startResult.text).run_id;
+
+    const packet = await nextBeat(root, supplementalPath, runId);
+    expect(packet.ok).toBe(true);
+    if (packet.ok) {
+      expect(packet.text).toContain("Keep the viewpoint consistent.");
+      expect(packet.text).toContain("Describe the choir's harmonies in vivid sensory detail.");
+    }
+  });
 });

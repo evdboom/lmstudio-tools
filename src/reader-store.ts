@@ -18,6 +18,31 @@ const draftNarrationSchema = z.object({
   response_id: z.string().startsWith("resp_").optional(),
 });
 
+export const readerImagePlanSchema = z.object({
+  schema: z.literal("story-image-plan-v1"),
+  generated_at: z.string().datetime(),
+  planner_model: z.string().trim().min(1),
+  checkpoint_id: z.string().trim().min(1),
+  width: z.number().int().positive().multipleOf(8),
+  height: z.number().int().positive().multipleOf(8),
+  beats: z.array(z.object({
+    beat_index: z.number().int().nonnegative(),
+    prompt: z.string().trim().min(1),
+    negative_prompt: z.string(),
+    framing: z.string().trim().min(1),
+    loras: z.array(z.object({
+      id: z.string().trim().min(1),
+      strength: z.number().min(0).max(2),
+    })),
+    pose: z.object({
+      source_id: z.string().trim().min(1).optional(),
+      prompt: z.string().trim().min(1),
+    }),
+  })),
+});
+
+export type ReaderImagePlan = z.infer<typeof readerImagePlanSchema>;
+
 export const readerRunSchema = z.object({
   schema: z.literal("story-reader-run-v1"),
   run_id: z.string().uuid(),
@@ -27,6 +52,7 @@ export const readerRunSchema = z.object({
   accepted: z.array(acceptedNarrationSchema),
   ongoing_instructions: z.array(z.string().min(1)),
   current_draft: draftNarrationSchema.optional(),
+  image_plan: readerImagePlanSchema.optional(),
   started_at: z.string().datetime(),
   updated_at: z.string().datetime(),
   status: z.enum(["active", "completed"]),

@@ -7,11 +7,25 @@ import {
   createStory,
   finalizeStory,
 } from "../src/story-authoring.js";
-import { readReaderRun } from "../src/reader-store.js";
+import { mutateReaderRun, readReaderRun } from "../src/reader-store.js";
+import { readEditableStory, saveEditableStory } from "../src/story-editor.js";
 import { makeSandbox } from "./helpers.js";
 
 vi.mock("../src/lmstudio-client.js", () => ({
   listLmStudioModels: vi.fn(async () => ["test-model"]),
+  generateLmStudioText: vi.fn(async () => JSON.stringify({
+    checkpoint_id: "wai17",
+    width: 832,
+    height: 1216,
+    beats: [0, 1].map((beat_index) => ({
+      beat_index,
+      prompt: `safe, monochrome, manga panel, beat ${beat_index + 1}`,
+      negative_prompt: "text, watermark",
+      framing: "medium-wide shot, eye level",
+      loras: [{ id: "mara-character", strength: 0.7 }],
+      pose: { prompt: "standing pose, eye-level camera" },
+    })),
+  })),
   streamLmStudioNarration: vi.fn(async (options: {
     onReasoning?: () => void;
     onReasoningDelta?: (delta: string) => void;
@@ -24,7 +38,7 @@ vi.mock("../src/lmstudio-client.js", () => ({
   }),
 }));
 
-import { createReaderServer } from "../src/reader-server.js";
+import { createReaderServer, readerUrls } from "../src/reader-server.js";
 
 let root: string;
 let cleanup: () => Promise<void>;
@@ -72,6 +86,17 @@ beforeEach(async () => {
 afterEach(async () => cleanup());
 
 describe("reader generation stream", () => {
+  it("reports usable LAN URLs when bound to all IPv4 interfaces", () => {
+    const urls = readerUrls("0.0.0.0", 4317, {
+      Ethernet: [{ address: "192.168.1.42", family: "IPv4", internal: false, mac: "", netmask: "", cidr: null }],
+      "vEthernet (WSL)": [{ address: "172.23.0.1", family: "IPv4", internal: false, mac: "", netmask: "", cidr: null }],
+      Loopback: [{ address: "127.0.0.1", family: "IPv4", internal: true, mac: "", netmask: "", cidr: null }],
+    }, new Set(["Ethernet"]));
+
+    expect(urls).toEqual(["http://192.168.1.42:4317"]);
+    expect(readerUrls("127.0.0.1", 4317)).toEqual(["http://127.0.0.1:4317"]);
+  });
+
   it("discovers finalized stories", async () => {
     const app = await createReaderServer({ root, lmStudioUrl: "http://lmstudio.test/api/v1" });
     const response = await app.inject({ method: "GET", url: "/api/stories" });
@@ -81,6 +106,37 @@ describe("reader generation stream", () => {
     expect(response.json()).toMatchObject({
       stories: [{ path: storyPath, title: "The Night Train", beats: 2 }],
     });
+  });
+
+  it("requires a password before exposing reader routes", async () => {
+    const app = await createReaderServer({
+      root,
+      lmStudioUrl: "http://lmstudio.test/api/v1",
+      folioPassword: "bedtime-reading",
+    });
+    const denied = await app.inject({ method: "GET", url: "/api/stories" });
+    const incorrect = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { password: "incorrect" },
+    });
+    const login = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { password: "bedtime-reading" },
+    });
+    const authenticated = await app.inject({
+      method: "GET",
+      url: "/api/stories",
+      headers: { cookie: login.headers["set-cookie"]! },
+    });
+    await app.close();
+
+    expect(denied.statusCode).toBe(401);
+    expect(incorrect.statusCode).toBe(401);
+    expect(login.statusCode).toBe(200);
+    expect(login.headers["set-cookie"]).toContain("HttpOnly");
+    expect(authenticated.statusCode).toBe(200);
   });
 
   it("emits busy and reasoning statuses before narration", async () => {
@@ -136,5 +192,65 @@ describe("reader generation stream", () => {
     expect(savedRun.accepted[0]?.response_id).toBe("resp_test");
     expect(savedRun.current_draft?.response_id).toBe("resp_test");
     expect(savedRun.model).toBe("test-model");
+  });
+
+  it("plans images separately after a completed narration run", async () => {
+    const story = await readEditableStory(root, storyPath);
+    story.image_generation = {
+      checkpoints: [{
+        id: "wai17",
+        name: "WAI Illustrious v17",
+        file: "waiIllustriousSDXL_v170.safetensors",
+        description: "General manga checkpoint.",
+        tags: ["manga"],
+      }],
+      loras: [{
+        id: "mara-character",
+        name: "Mara character",
+        description: "Preserves Mara's identity.",
+        tags: ["character"],
+        trigger_words: ["folio_mara"],
+        default_strength: 0.7,
+      }],
+      poses: [],
+      defaults: {
+        checkpoint_id: "wai17",
+        width: 832,
+        height: 1216,
+        positive_prefix: "safe, monochrome, manga panel",
+        negative_prompt: "text, watermark",
+      },
+    };
+    await saveEditableStory(root, storyPath, story);
+    const app = await createReaderServer({ root, lmStudioUrl: "http://lmstudio.test/api/v1" });
+    const started = await app.inject({
+      method: "POST",
+      url: "/api/runs",
+      payload: { story_path: storyPath, model: "test-model" },
+    });
+    const run = started.json<{ run_id: string }>();
+    await mutateReaderRun(root, storyPath, run.run_id, (current) => {
+      current.accepted = [
+        { beat_index: 0, narration: "Mara entered the dining car." },
+        { beat_index: 1, narration: "She accepted the impossible ticket." },
+      ];
+      current.beat_index = 2;
+      current.status = "completed";
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/runs/${run.run_id}/plan-images`,
+      payload: { story_path: storyPath, model: "test-model" },
+    });
+    const saved = await readReaderRun(root, storyPath, run.run_id);
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      image_plan: { checkpoint_id: "wai17", beats: [{ beat_index: 0 }, { beat_index: 1 }] },
+    });
+    expect(saved.image_plan?.planner_model).toBe("test-model");
+    expect(saved.image_plan?.beats).toHaveLength(2);
   });
 });

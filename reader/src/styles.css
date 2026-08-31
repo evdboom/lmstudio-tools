@@ -182,6 +182,18 @@ button:disabled { cursor: default; opacity: 0.45; }
 }
 @keyframes blink { 50% { opacity: 0; } }
 .fin { margin-top: 60px; text-align: center; color: var(--green); font: italic 24px "Palatino Linotype", serif; }
+.image-planning { margin-top: 72px; padding-top: 30px; border-top: 1px solid var(--line); }
+.image-planning-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.image-planning-heading h2 { margin: 3px 0 0; font-size: 24px; }
+.image-planning-status, .image-plan-meta { color: var(--muted); font-size: 13px; }
+.image-beat { padding: 26px 0; border-top: 1px solid var(--line); }
+.image-beat header { display: flex; justify-content: space-between; gap: 20px; margin-bottom: 16px; }
+.image-beat header span { color: var(--muted); font-size: 13px; text-align: right; }
+.image-beat label { display: grid; gap: 6px; margin-top: 12px; color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
+.image-beat textarea { min-height: 92px; resize: vertical; color: var(--prose); font: 13px/1.5 Consolas, "Courier New", monospace; text-transform: none; }
+.image-beat dl { display: grid; grid-template-columns: 70px 1fr; gap: 8px 14px; margin: 16px 0 0; font-size: 13px; }
+.image-beat dt { color: var(--muted); font-weight: 700; }
+.image-beat dd { margin: 0; overflow-wrap: anywhere; }
 
 .generation-status {
   min-height: 140px;

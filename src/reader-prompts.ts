@@ -1,4 +1,4 @@
-import type { StoryBlueprint } from "./story-model.js";
+import { resolveNarrationRules, type StoryBlueprint } from "./story-model.js";
 
 export interface ReaderChatMessage {
   role: "system" | "user" | "assistant";
@@ -57,7 +57,7 @@ function renderBeatPrompt(
     "## Mandatory narration rules",
     `- Length requirement: write ${story.beat_size}. Do not stop substantially early after merely summarizing the listed events.`,
     ...CORE_RULES.map((rule) => `- ${rule}`),
-    ...mode.rules.map((rule) => `- ${rule}`),
+    ...resolveNarrationRules(story, mode).map((rule) => `- ${rule}`),
     ...beat.narration_rules.map((rule) => `- ${rule}`),
     "",
     "## Story",

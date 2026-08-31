@@ -1,4 +1,5 @@
 import { buildStatefulNarrationInput } from "./reader-prompts.js";
+import { buildImagePlanPrompt, parseImagePlan } from "./reader-image-prompts.js";
 import {
   createReaderRun,
   mutateReaderRun,
@@ -19,6 +20,7 @@ export interface ReaderState {
   current_draft?: ReaderRun["current_draft"];
   ongoing_instructions: string[];
   status: ReaderRun["status"];
+  image_plan: ReaderRun["image_plan"];
 }
 
 async function toState(root: string, run: ReaderRun): Promise<ReaderState> {
@@ -35,6 +37,7 @@ async function toState(root: string, run: ReaderRun): Promise<ReaderState> {
     current_draft: run.current_draft,
     ongoing_instructions: run.ongoing_instructions,
     status: run.status,
+    image_plan: run.image_plan,
   };
 }
 
@@ -167,6 +170,38 @@ export async function saveReaderDraft(
       prompt_instruction: instruction,
       response_id: responseId,
     };
+    return current;
+  });
+  return toState(root, run);
+}
+
+export async function prepareReaderImagePlan(
+  root: string,
+  storyPath: string,
+  runId: string
+): Promise<{ systemPrompt: string; input: string }> {
+  const [story, run] = await Promise.all([
+    readStoryFile(root, storyPath),
+    readReaderRun(root, storyPath, runId),
+  ]);
+  if (run.story_path !== storyPath) throw new Error("Reader run does not belong to this story.");
+  return buildImagePlanPrompt(story, run);
+}
+
+export async function saveReaderImagePlan(
+  root: string,
+  storyPath: string,
+  runId: string,
+  plannerModel: string,
+  output: string
+): Promise<ReaderState> {
+  const story = await readStoryFile(root, storyPath);
+  const imagePlan = parseImagePlan(output, story, plannerModel);
+  const run = await mutateReaderRun(root, storyPath, runId, (current) => {
+    if (current.status !== "completed") {
+      throw new Error("Finish and accept every narrated beat before saving an image plan.");
+    }
+    current.image_plan = imagePlan;
     return current;
   });
   return toState(root, run);

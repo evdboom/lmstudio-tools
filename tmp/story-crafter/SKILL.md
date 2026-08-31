@@ -24,7 +24,7 @@ The user may answer `up to you` for any item. Choose coherent defaults and state
 Choose a short lowercase story folder path and stable lowercase IDs. Then call the tools in this order:
 
 1. Call `story_create` with the story metadata, beat-size guidance, and the ID of the default narration mode.
-2. Call `story_add_narration_mode` for the default mode and any modes needed by particular beats. A mode defines perspective, tense, and reusable narration rules.
+2. Call `story_add_narration_mode` for the default mode and any modes needed by particular beats. A mode defines perspective, tense, and reusable narration rules. Set `kind` to `supplemental` for a mode that should add scene-specific rules on top of the default mode's rules instead of replacing them; leave it as `replace` (the default) for a mode that stands entirely on its own.
 3. Call `story_add_character` once per character.
 4. Call `story_add_location` once per location.
 5. Call `story_add_fact` only for hard-canon facts that later beats depend on.

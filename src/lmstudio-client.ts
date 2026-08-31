@@ -1,3 +1,13 @@
+import { Agent } from "undici";
+
+// Local generations can sit silent for long stretches during "thinking" phases.
+// undici's default 300s idle header/body timeout would otherwise abort a healthy
+// long-running request. Node's global fetch is undici under the hood and accepts
+// this non-standard `dispatcher` option (not in the DOM RequestInit type), so it
+// still goes through vi.stubGlobal("fetch", ...) mocks in tests unaffected.
+const lmStudioAgent = new Agent({ headersTimeout: 0, bodyTimeout: 0 });
+type LmStudioRequestInit = RequestInit & { dispatcher?: Agent };
+
 function endpoint(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/$/, "")}${path}`;
 }
@@ -10,7 +20,10 @@ function headers(apiToken?: string): Record<string, string> {
 }
 
 export async function listLmStudioModels(baseUrl: string, apiToken?: string): Promise<string[]> {
-  const response = await fetch(endpoint(baseUrl, "/models"), { headers: headers(apiToken) });
+  const response = await fetch(endpoint(baseUrl, "/models"), {
+    headers: headers(apiToken),
+    dispatcher: lmStudioAgent,
+  } as LmStudioRequestInit);
   if (!response.ok) throw new Error(`LM Studio returned ${response.status}.`);
   const body = await response.json() as {
     models?: Array<{ type?: unknown; key?: unknown }>;
@@ -24,6 +37,44 @@ export async function listLmStudioModels(baseUrl: string, apiToken?: string): Pr
   }
   return (body.data ?? []).map((model) => model.id)
     .filter((id): id is string => typeof id === "string" && id.length > 0);
+}
+
+export async function generateLmStudioText(options: {
+  baseUrl: string;
+  model: string;
+  input: string;
+  systemPrompt: string;
+  apiToken?: string;
+  signal: AbortSignal;
+}): Promise<string> {
+  const response = await fetch(endpoint(options.baseUrl, "/chat"), {
+    method: "POST",
+    headers: headers(options.apiToken),
+    body: JSON.stringify({
+      model: options.model,
+      input: options.input,
+      system_prompt: options.systemPrompt,
+      stream: false,
+      store: false,
+      temperature: 0.3,
+    }),
+    signal: options.signal,
+    dispatcher: lmStudioAgent,
+  } as LmStudioRequestInit);
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`LM Studio returned ${response.status}: ${detail.slice(0, 500)}`);
+  }
+  const body = await response.json() as {
+    output?: Array<{ type?: unknown; content?: unknown }>;
+  };
+  const message = body.output
+    ?.filter((item) => item.type === "message" && typeof item.content === "string")
+    .map((item) => item.content as string)
+    .join("\n\n")
+    .trim();
+  if (!message) throw new Error("LM Studio returned no image plan.");
+  return message;
 }
 
 export async function streamLmStudioNarration(options: {
@@ -55,7 +106,8 @@ export async function streamLmStudioNarration(options: {
         temperature: 0.8,
       }),
       signal: options.signal,
-    });
+      dispatcher: lmStudioAgent,
+    } as LmStudioRequestInit);
     if (!response.ok) {
       const detail = await response.text();
       throw new Error(`LM Studio returned ${response.status}: ${detail.slice(0, 500)}`);
@@ -173,7 +225,8 @@ export async function streamLmStudioAuthoring(options: {
       temperature: 0.6,
     }),
     signal: options.signal,
-  });
+    dispatcher: lmStudioAgent,
+  } as LmStudioRequestInit);
   if (!response.ok) throw new Error(`LM Studio returned ${response.status}: ${(await response.text()).slice(0, 500)}`);
   if (!response.body) throw new Error("LM Studio returned no response stream.");
 

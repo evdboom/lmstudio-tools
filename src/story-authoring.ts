@@ -41,6 +41,7 @@ export interface AddNarrationModeInput {
   perspective: string;
   tense: string;
   rules: string[];
+  kind?: "replace" | "supplemental";
 }
 
 export interface AddFactInput {

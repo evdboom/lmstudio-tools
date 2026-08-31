@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ToolResult } from "./tools.js";
 import {
+  resolveNarrationRules,
   type StoryBlueprint,
   type StoryRun,
 } from "./story-model.js";
@@ -61,7 +62,7 @@ function renderBeatPacket(story: StoryBlueprint, beatIndex: number): string {
     `**Tense:** ${mode.tense}`,
     "### Narration rules:",
     "- Fully dramatize the events in the beat description.",
-    ...mode.rules.map((rule) => `- ${rule}`),
+    ...resolveNarrationRules(story, mode).map((rule) => `- ${rule}`),
     ...beat.narration_rules.map((rule) => `- ${rule}`),
     ...(beat.keywords.length > 0
       ? ["", "##  Keywords:", ...beat.keywords.map((item) => `- ${item.type}: ${item.word}`)]

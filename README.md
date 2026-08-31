@@ -190,7 +190,18 @@ node dist/reader-server.js `
 	--lmstudio-url http://127.0.0.1:1234/api/v1
 ```
 
-Environment equivalents are `STORY_ROOT`, `STORY_READER_PORT`, `STORY_READER_HOST`, and `LMSTUDIO_URL`. When LM Studio authentication is enabled, set `LMSTUDIO_API_TOKEN` to one of its active API keys before starting the reader. `npm run dev:reader -- --root C:\tmp\stories` builds the UI and runs the TypeScript server directly.
+To read from another device on your local network, opt in explicitly with a Folio password:
+
+```powershell
+node dist/reader-server.js `
+	--root C:\tmp\stories `
+	--serve-on-lan `
+	--folio-password "choose-a-long-password"
+```
+
+`--serve-on-lan` binds Folio to `0.0.0.0`; the terminal prints its port, and you open `http://<computer-LAN-IP>:4317` from the other device. `--folio-password` presents a login page and protects every UI and API route with a 24-hour browser session. `--folio-password` can also protect a localhost-only reader. The aliases `--serveonlan` and `--foliopassword` are accepted. Password-protected LAN access uses HTTP, so use it only on a trusted private network; it does not encrypt traffic.
+
+Environment equivalents are `STORY_ROOT`, `STORY_READER_PORT`, `STORY_READER_HOST`, `LMSTUDIO_URL`, `FOLIO_SERVE_ON_LAN=true`, and `FOLIO_PASSWORD`. When LM Studio authentication is enabled, set `LMSTUDIO_API_TOKEN` to one of its active API keys before starting the reader. `npm run dev:reader -- --root C:\tmp\stories` builds the UI and runs the TypeScript server directly.
 
 The reader provides:
 
@@ -214,6 +225,8 @@ node dist/reader-server.js --root C:\tmp\stories
 The structured editor remains available when LM Studio is offline.
 
 Reader sessions are stored separately under `<story>/reader-runs/`. Existing MCP telling sessions remain under `<story>/runs/` and the `telling_start`, `next_beat`, and `telling_status` tools are unchanged.
+
+Completed reader sessions can also generate a separate ComfyUI image plan. Add the optional `image_generation` resource catalog documented in `comfyui/README.md` to the story blueprint, then select **Plan images** after accepting the final narration beat. The result is validated against that catalog and saved under `image_plan` in the reader-run JSON; Folio does not submit it to ComfyUI yet.
 
 ## File Tools
 
@@ -279,6 +292,8 @@ Telling tools:
 - `telling_status`
 
 Story blueprints are stored as `<story>/story.json`. Each telling stores only its next beat index and status under `<story>/runs/`. `next_beat` atomically advances progress and returns instructions for one beat. Narrated prose and emergent details remain in the model's chat context and are not persisted by the MCP.
+
+Each narration mode has a `kind` of `replace` (default) or `supplemental`. A `replace` mode's rules are used on their own whenever a beat selects it. A `supplemental` mode's rules are layered on top of the story's default mode's rules, so a beat only needs to describe what is different for that scene instead of repeating the whole rule set. The default narration mode itself always behaves as `replace`.
 
 ### Story Workflow
 

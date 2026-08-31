@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AuthoringApp } from "./authoring";
+import { useScreenWakeLock } from "./wake-lock";
 import "./styles.css";
 
 interface StoryItem { path: string; title: string; premise: string; beats: number }
@@ -15,6 +16,21 @@ interface RunItem {
   status: "active" | "completed";
 }
 interface Narration { beat_index: number; narration: string }
+interface ImagePlan {
+  generated_at: string;
+  planner_model: string;
+  checkpoint_id: string;
+  width: number;
+  height: number;
+  beats: Array<{
+    beat_index: number;
+    prompt: string;
+    negative_prompt: string;
+    framing: string;
+    loras: Array<{ id: string; strength: number }>;
+    pose: { source_id?: string; prompt: string };
+  }>;
+}
 interface ReaderState {
   run_id: string;
   story_path: string;
@@ -27,6 +43,7 @@ interface ReaderState {
   current_draft?: { narration: string };
   ongoing_instructions: string[];
   status: "active" | "completed";
+  image_plan?: ImagePlan;
 }
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
@@ -51,6 +68,7 @@ function App() {
   const [streamed, setStreamed] = useState("");
   const [instruction, setInstruction] = useState("");
   const [busy, setBusy] = useState(false);
+  useScreenWakeLock(busy);
   const [generationAction, setGenerationAction] = useState<
     "next" | "regenerate" | "regenerate_previous"
   >();
@@ -178,6 +196,15 @@ function App() {
     generationAbort.current?.abort();
   }
 
+  function returnToStories() {
+    setState(undefined);
+    setStreamed("");
+    setInstruction("");
+    setGenerationStatus("");
+    setReasoning("");
+    setError("");
+  }
+
   async function begin() {
     if (!storyPath || !model) return;
     setBusy(true);
@@ -212,6 +239,26 @@ function App() {
     }
   }
 
+  async function planImages() {
+    if (state?.status !== "completed" || !model) return;
+    setBusy(true);
+    setGenerationStatus("Planning images from the completed narration...");
+    setError("");
+    try {
+      const planned = await json<ReaderState>(`/api/runs/${state.run_id}/plan-images`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ story_path: state.story_path, model }),
+      });
+      setState(planned);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+      setGenerationStatus("");
+    }
+  }
+
   function act(action: "next" | "regenerate" | "regenerate_previous") {
     if (!state) return;
     const direction = instruction;
@@ -227,6 +274,9 @@ function App() {
       : Math.max(state.beat_index, state.accepted.length)
     : 0;
   const previousBeatIndex = state?.accepted.at(-1)?.beat_index;
+  let imagePlanActionLabel = "Plan images";
+  if (busy) imagePlanActionLabel = "Planning...";
+  else if (state?.image_plan) imagePlanActionLabel = "Regenerate plan";
 
   return (
     <main className={state ? "reader active" : "reader"}>
@@ -245,10 +295,13 @@ function App() {
               <button className="primary" disabled={!storyPath || !model || busy} onClick={begin}>Begin</button>
             </div>
           ) : (
-            <div className="progress" aria-label={`Beat ${Math.min(currentBeatIndex + 1, state.total_beats)} of ${state.total_beats}`}>
-              <span title={state.model}>{state.model ?? "Unknown model"} · {Math.min(currentBeatIndex + 1, state.total_beats)} / {state.total_beats}</span>
-              <i style={{ width: `${(state.accepted.length / state.total_beats) * 100}%` }} />
-            </div>
+            <>
+              <button className="secondary" disabled={busy} onClick={returnToStories}>Stories</button>
+              <div className="progress" aria-label={`Beat ${Math.min(currentBeatIndex + 1, state.total_beats)} of ${state.total_beats}`}>
+                <span title={state.model}>{state.model ?? "Unknown model"} · {Math.min(currentBeatIndex + 1, state.total_beats)} / {state.total_beats}</span>
+                <i style={{ width: `${(state.accepted.length / state.total_beats) * 100}%` }} />
+              </div>
+            </>
           )}
           <button
             className="theme-toggle"
@@ -319,6 +372,45 @@ function App() {
               </details>
             )}
             {state.status === "completed" && <div className="fin">End</div>}
+            {state.status === "completed" && (
+              <section className="image-planning">
+                <div className="image-planning-heading">
+                  <div>
+                    <p className="eyebrow">ComfyUI</p>
+                    <h2>Image plan</h2>
+                  </div>
+                  <button type="button" className="primary" disabled={busy || !model} onClick={() => void planImages()}>
+                    {imagePlanActionLabel}
+                  </button>
+                </div>
+                {busy && generationStatus && <p className="image-planning-status">{generationStatus}</p>}
+                {state.image_plan && (
+                  <>
+                    <p className="image-plan-meta">
+                      {state.image_plan.checkpoint_id} · {state.image_plan.width} × {state.image_plan.height} · {state.image_plan.planner_model}
+                    </p>
+                    {state.image_plan.beats.map((beat) => (
+                      <article className="image-beat" key={beat.beat_index}>
+                        <header>
+                          <strong>Beat {beat.beat_index + 1}</strong>
+                          <span>{beat.framing}</span>
+                        </header>
+                        <label>Prompt<textarea readOnly value={beat.prompt} /></label>
+                        <label>Negative<textarea readOnly value={beat.negative_prompt} /></label>
+                        <dl>
+                          <dt>LoRAs</dt>
+                          <dd>{beat.loras.length > 0
+                            ? beat.loras.map((lora) => `${lora.id} @ ${lora.strength}`).join(", ")
+                            : "None"}</dd>
+                          <dt>Pose</dt>
+                          <dd>{beat.pose.source_id ? `${beat.pose.source_id}: ` : ""}{beat.pose.prompt}</dd>
+                        </dl>
+                      </article>
+                    ))}
+                  </>
+                )}
+              </section>
+            )}
             {error && <div className="error" role="alert">{error}</div>}
           </article>
 

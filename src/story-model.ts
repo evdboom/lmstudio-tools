@@ -37,6 +37,8 @@ export const narrationModeSchema = z.object({
   perspective: nonEmpty,
   tense: nonEmpty,
   rules: z.array(nonEmpty).min(1),
+  // "supplemental" layers these rules on top of the default mode's rules; "replace" (default) uses only its own.
+  kind: z.enum(["replace", "supplemental"]).optional(),
 });
 
 export const storyFactSchema = z.object({
@@ -57,6 +59,32 @@ export const storyBeatSchema = z.object({
   narration_rules: z.array(nonEmpty),
 });
 
+const imageResourceSchema = z.object({
+  id: storyId,
+  name: nonEmpty,
+  file: nonEmpty.optional(),
+  description: nonEmpty,
+  tags: z.array(nonEmpty).default([]),
+});
+
+export const storyImageGenerationSchema = z.object({
+  checkpoints: z.array(imageResourceSchema).min(1),
+  loras: z.array(imageResourceSchema.extend({
+    trigger_words: z.array(nonEmpty).default([]),
+    default_strength: z.number().min(0).max(2).default(0.7),
+  })).default([]),
+  poses: z.array(imageResourceSchema.extend({
+    image: nonEmpty.optional(),
+  })).default([]),
+  defaults: z.object({
+    checkpoint_id: storyId.optional(),
+    width: z.number().int().positive().multipleOf(8).default(832),
+    height: z.number().int().positive().multipleOf(8).default(1216),
+    positive_prefix: z.string().default(""),
+    negative_prompt: z.string().default(""),
+  }).default({}),
+});
+
 export const storyBlueprintSchema = z.object({
   schema: z.literal("story-v2"),
   status: z.enum(["draft", "final"]),
@@ -70,9 +98,19 @@ export const storyBlueprintSchema = z.object({
   narration_modes: z.array(narrationModeSchema),
   facts: z.array(storyFactSchema),
   beats: z.array(storyBeatSchema),
+  image_generation: storyImageGenerationSchema.optional(),
 });
 
 export type StoryBlueprint = z.infer<typeof storyBlueprintSchema>;
+
+export type StoryNarrationMode = StoryBlueprint["narration_modes"][number];
+
+/** Narration rules for `mode`: a "supplemental" mode layers its rules onto the default mode's rules. */
+export function resolveNarrationRules(story: StoryBlueprint, mode: StoryNarrationMode): string[] {
+  if (mode.kind !== "supplemental" || mode.id === story.default_narration_mode) return mode.rules;
+  const base = story.narration_modes.find((item) => item.id === story.default_narration_mode);
+  return base ? [...base.rules, ...mode.rules] : mode.rules;
+}
 
 export const storyRunSchema = z.object({
   schema: z.literal("story-run-v1"),
@@ -132,6 +170,26 @@ function checkCollection(
   return ids;
 }
 
+function checkResourceIds(
+  collection: Array<{ id: string }>,
+  path: string,
+  issues: StoryValidationIssue[]
+): Set<string> {
+  const ids = new Set<string>();
+  collection.forEach((item, index) => {
+    if (ids.has(item.id)) {
+      issues.push({
+        level: "error",
+        code: "duplicate_image_resource_id",
+        path: `${path}[${index}].id`,
+        message: `Duplicate image resource id: ${item.id}.`,
+      });
+    }
+    ids.add(item.id);
+  });
+  return ids;
+}
+
 export function validateStoryBlueprint(story: StoryBlueprint): StoryValidationIssue[] {
   const issues: StoryValidationIssue[] = [];
   const characterIds = checkCollection(story.characters, "characters", issues);
@@ -139,6 +197,25 @@ export function validateStoryBlueprint(story: StoryBlueprint): StoryValidationIs
   const modeIds = checkCollection(story.narration_modes, "narration_modes", issues);
   const factIds = checkCollection(story.facts, "facts", issues);
   checkIndexes(story.beats, "beats", issues);
+
+  if (story.image_generation) {
+    const checkpointIds = checkResourceIds(
+      story.image_generation.checkpoints,
+      "image_generation.checkpoints",
+      issues
+    );
+    checkResourceIds(story.image_generation.loras, "image_generation.loras", issues);
+    checkResourceIds(story.image_generation.poses, "image_generation.poses", issues);
+    const defaultCheckpoint = story.image_generation.defaults.checkpoint_id;
+    if (defaultCheckpoint && !checkpointIds.has(defaultCheckpoint)) {
+      issues.push({
+        level: "error",
+        code: "unknown_default_image_checkpoint",
+        path: "image_generation.defaults.checkpoint_id",
+        message: `Image checkpoint '${defaultCheckpoint}' does not exist.`,
+      });
+    }
+  }
 
   if (!modeIds.has(story.default_narration_mode)) {
     issues.push({

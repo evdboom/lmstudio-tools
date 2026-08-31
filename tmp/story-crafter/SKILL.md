@@ -34,13 +34,11 @@ The tools assign indexes and reject invalid references. Do not create or modify 
 
 ## 3. Design the beats
 
-Design the beats with the user. Generate a suggestion for 3-4 beats and discuss with the user. Do not create the entire story at once. Only persist if approved by the user. Each beat must have a start, description, and end. The end of one beat must match the start of the next.
+Design the beats with the user. Generate a suggestion for 3-4 beats and discuss with the user. Do not create the entire story at once. Only persist if approved by the user. Each beat must have a clear starting situation, an ordered event list, and a stopping situation. The end of one beat must match the start of the next.
 
 Every beat must provide:
 
-- `start`: the exact situation where narration begins
-- `description`: what changes, happens, or is chosen during the beat
-- `end`: the exact situation where narration must stop
+- `events`: an ordered array covering how the beat begins, what changes or happens, and exactly where narration stops
 - one location ID and the IDs of characters present
 - an optional narration-mode ID when it differs from the story default
 
@@ -49,7 +47,7 @@ Use narration-rule overrides only when that beat genuinely needs different treat
 Separate these kinds of information:
 
 - Hard canon: facts required for later plot logic; add these with `story_add_fact`.
-- Beat constraints: events that must happen; put these in the beat description.
+- Beat constraints: events that must happen; put each one in the beat's `events` array.
 - Open execution: dialogue, gestures, imagery, and methods the narrator may invent differently in each telling.
 
 ## 4. Validate and finalize

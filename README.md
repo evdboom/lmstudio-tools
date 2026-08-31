@@ -208,8 +208,8 @@ The reader provides:
 - **Next:** accepts the current narration, advances exactly one beat, and treats entered text as an ongoing direction.
 - **Regenerate:** discards the current draft and generates the same beat again; entered text applies to that revision.
 - **Auto continue:** after a draft finishes, accepts it and generates the next beat until the final beat is reached. The preference is stored in the browser.
-- Streaming narration with LM Studio response IDs retained for continuation and regeneration branches.
-- Narration prompts contain only the current beat's `description` events, plus story context and reader instructions.
+- A context selector when starting a narration: **Full narration context** retains LM Studio response IDs and the complete accepted prose, while **Previous beat events only** starts a stateless request for every beat and supplies compact prior `story.json` events instead.
+- Story beats store an `events` array. Narration prompts list the current beat's events alongside story context and reader instructions.
 
 ### Story Authoring
 

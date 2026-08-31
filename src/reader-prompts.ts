@@ -71,7 +71,7 @@ function renderBeatPrompt(
     `## Current beat ${beatIndex + 1} of ${story.beats.length}`,
     "",
     "### Events to narrate",
-    beat.description,
+    ...beat.events.map((event) => `- ${event}`),
     "",
     "## Scene context",
     `Location: ${location.name}: ${location.description}`,
@@ -151,5 +151,45 @@ export function buildStatefulNarrationInput(
       ? [renderSystemPrompt(story), ...bootstrap].join("\n")
       : undefined,
     input: renderBeatPrompt(story, beatIndex, instruction),
+  };
+}
+
+export function buildBlueprintHistoryNarrationInput(
+  story: StoryBlueprint,
+  beatIndex: number,
+  instruction?: string
+): { systemPrompt: string; input: string } {
+  if (beatIndex < 0 || beatIndex >= story.beats.length) {
+    throw new Error(`Beat ${beatIndex} does not exist.`);
+  }
+
+  const previousBeats = story.beats.slice(0, beatIndex).flatMap((beat, index) => {
+    const location = story.locations[beat.location.index];
+    const characters = beat.characters.map((reference) => story.characters[reference.index]);
+    if (!location || characters.some((character) => !character)) {
+      throw new Error(`Beat ${index} contains an unresolved reference.`);
+    }
+    const characterNames = characters.map((character) => character.name).join(", ") || "no named characters";
+    return [
+      `### Beat ${index + 1}`,
+      `In ${location.name}, ${characterNames} had the following happen:`,
+      ...beat.events.map((event) => `- ${event}`),
+      "",
+    ];
+  });
+
+  return {
+    systemPrompt: renderSystemPrompt(story),
+    input: [
+      ...(previousBeats.length > 0
+        ? [
+            "## Previous story beats",
+            "Use these earlier blueprint events as established story context. Do not narrate them again.",
+            "",
+            ...previousBeats,
+          ]
+        : []),
+      renderBeatPrompt(story, beatIndex, instruction),
+    ].join("\n"),
   };
 }

@@ -53,7 +53,7 @@ export function buildImagePlanPrompt(story: StoryBlueprint, run: ReaderRun): {
       .join(", ");
     return [
       `## Beat ${index}`,
-      `Blueprint events: ${beat.description}`,
+      `Blueprint events: ${beat.events.join("; ")}`,
       `Location: ${location.name}. ${location.description} ${location.details.join(" ")}`,
       ...characters.map((character) =>
         `Character: ${character.name}. ${character.description} Appearance: ${character.appearance || "unspecified"}`

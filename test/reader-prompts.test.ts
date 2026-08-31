@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { StoryBlueprint } from "../src/story-model.js";
 import {
+  buildBlueprintHistoryNarrationInput,
   buildNarrationMessages,
   buildStatefulNarrationInput,
 } from "../src/reader-prompts.js";
@@ -42,7 +43,10 @@ const story: StoryBlueprint = {
       index: 0,
       location: { index: 0, id: "car" },
       characters: [{ index: 0, id: "mara" }],
-      description: "Mara enters the empty dining car and discovers a passenger, who looks up.",
+      events: [
+        "Mara enters the empty dining car.",
+        "She discovers a passenger, who looks up.",
+      ],
       facts: [],
       keywords: [],
       narration_rules: [],
@@ -51,7 +55,10 @@ const story: StoryBlueprint = {
       index: 1,
       location: { index: 0, id: "car" },
       characters: [{ index: 0, id: "mara" }],
-      description: "The passenger presents an impossible ticket, which Mara takes.",
+      events: [
+        "The passenger presents an impossible ticket.",
+        "Mara takes it.",
+      ],
       facts: [],
       keywords: [],
       narration_rules: [],
@@ -60,7 +67,7 @@ const story: StoryBlueprint = {
 };
 
 describe("reader narration prompts", () => {
-  it("replays accepted beats and narrates only the current description", () => {
+  it("replays accepted beats and narrates only the current events", () => {
     const messages = buildNarrationMessages(story, 1, [{
       beatIndex: 0,
       narration: "Accepted first narration.",
@@ -102,5 +109,18 @@ describe("reader narration prompts", () => {
     expect(prompt.systemPrompt).toContain("## Accepted story transcript");
     expect(prompt.systemPrompt).toContain("Accepted first narration.");
     expect(prompt.input).toContain("## Current beat 2 of 2");
+  });
+
+  it("uses previous blueprint beats without accepted narration in stateless mode", () => {
+    const prompt = buildBlueprintHistoryNarrationInput(story, 1, "Keep Mara suspicious.");
+
+    expect(prompt.systemPrompt).toContain("You are the narrator");
+    expect(prompt.input).toContain("## Previous story beats");
+    expect(prompt.input).toContain("In Dining Car, Mara had the following happen:");
+    expect(prompt.input).toContain("Mara enters the empty dining car");
+    expect(prompt.input).toContain("## Current beat 2 of 2");
+    expect(prompt.input).toContain("The passenger presents an impossible ticket");
+    expect(prompt.input).toContain("Keep Mara suspicious.");
+    expect(prompt.input).not.toContain("Accepted first narration.");
   });
 });

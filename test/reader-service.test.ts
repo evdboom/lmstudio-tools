@@ -49,12 +49,12 @@ beforeEach(async () => {
   await addBeat(root, storyPath, {
     locationId: "car",
     characterIds: ["mara"],
-    description: "Mara enters and finds a passenger, who looks up.",
+    events: ["Mara enters.", "She finds a passenger, who looks up."],
   });
   await addBeat(root, storyPath, {
     locationId: "car",
     characterIds: ["mara"],
-    description: "The passenger offers a strange ticket, which Mara accepts.",
+    events: ["The passenger offers a strange ticket.", "Mara accepts it."],
   });
   await finalizeStory(root, storyPath);
 });
@@ -93,7 +93,12 @@ describe("reader run service", () => {
       started.run_id,
       "The accepted first beat.",
       firstRequest.promptInstruction,
-      "resp_first"
+      "resp_first",
+      {
+        input: firstRequest.input!,
+        system_prompt: firstRequest.systemPrompt,
+        previous_response_id: firstRequest.previousResponseId,
+      }
     );
     const secondRequest = await prepareReaderGeneration(
       root,
@@ -111,6 +116,10 @@ describe("reader run service", () => {
     let state = await getReaderState(root, storyPath, started.run_id);
     expect(state.beat_index).toBe(1);
     expect(state.accepted[0].narration).toBe("The accepted first beat.");
+    expect(state.accepted[0].prompt).toEqual({
+      input: firstRequest.input,
+      system_prompt: firstRequest.systemPrompt,
+    });
     expect(state.ongoing_instructions).toEqual(["The ticket smells of smoke."]);
 
     await saveReaderDraft(root, storyPath, started.run_id, "The accepted final beat.");
@@ -126,6 +135,21 @@ describe("reader run service", () => {
     state = await getReaderState(root, storyPath, started.run_id);
     expect(state.accepted).toHaveLength(2);
     expect(state.status).toBe("completed");
+  });
+
+  it("uses blueprint events without stateful narration when requested", async () => {
+    const started = await startReaderRun(root, storyPath, "test-model", "blueprint");
+    expect(started.context_mode).toBe("blueprint");
+
+    await saveReaderDraft(root, storyPath, started.run_id, "Accepted prose must not be reused.", undefined, "resp_first");
+    const secondRequest = await prepareReaderGeneration(root, storyPath, started.run_id, "next");
+
+    expect(secondRequest.previousResponseId).toBeUndefined();
+    expect(secondRequest.systemPrompt).toContain("You are the narrator");
+    expect(secondRequest.input).toContain("## Previous story beats");
+    expect(secondRequest.input).toContain("In Dining Car, Mara had the following happen:");
+    expect(secondRequest.input).toContain("Mara enters.");
+    expect(secondRequest.input).not.toContain("Accepted prose must not be reused.");
   });
 
   it("rolls back the last accepted beat before regenerating it", async () => {

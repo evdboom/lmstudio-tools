@@ -9,6 +9,7 @@ interface RunItem {
   run_id: string;
   story_path: string;
   model?: string;
+  context_mode: "full" | "blueprint";
   beat_index: number;
   accepted_beats: number;
   has_current_draft: boolean;
@@ -35,6 +36,7 @@ interface ReaderState {
   run_id: string;
   story_path: string;
   model?: string;
+  context_mode: "full" | "blueprint";
   title: string;
   premise: string;
   beat_index: number;
@@ -64,6 +66,7 @@ function App() {
   const [runs, setRuns] = useState<RunItem[]>([]);
   const [storyPath, setStoryPath] = useState("");
   const [model, setModel] = useState("");
+  const [contextMode, setContextMode] = useState<"full" | "blueprint">("full");
   const [state, setState] = useState<ReaderState>();
   const [streamed, setStreamed] = useState("");
   const [instruction, setInstruction] = useState("");
@@ -213,7 +216,7 @@ function App() {
       const run = await json<ReaderState>("/api/runs", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ story_path: storyPath, model }),
+        body: JSON.stringify({ story_path: storyPath, model, context_mode: contextMode }),
       });
       setState(run);
       await generate(run, "regenerate");
@@ -232,6 +235,7 @@ function App() {
       );
       setState(resumed);
       if (resumed.model) setModel(resumed.model);
+      setContextMode(resumed.context_mode);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -292,6 +296,10 @@ function App() {
               <select aria-label="Model" value={model} onChange={(event) => setModel(event.target.value)}>
                 {models.map((item) => <option key={item}>{item}</option>)}
               </select>
+              <select aria-label="Narration context" value={contextMode} onChange={(event) => setContextMode(event.target.value as "full" | "blueprint")}>
+                <option value="full">Full narration context</option>
+                <option value="blueprint">Previous beat events only</option>
+              </select>
               <button className="primary" disabled={!storyPath || !model || busy} onClick={begin}>Begin</button>
             </div>
           ) : (
@@ -326,7 +334,7 @@ function App() {
                 <div className="saved-run" key={run.run_id}>
                   <div>
                     <strong>{run.status === "completed" ? "Completed" : `Beat ${run.beat_index + 1}`}</strong>
-                    <span title={run.model}>{run.model ?? "Unknown model"} · {run.accepted_beats} accepted · {new Date(run.updated_at).toLocaleString()}</span>
+                    <span title={run.model}>{run.model ?? "Unknown model"} · {run.context_mode === "full" ? "full context" : "beat events"} · {run.accepted_beats} accepted · {new Date(run.updated_at).toLocaleString()}</span>
                   </div>
                   <button className="secondary" disabled={busy} onClick={() => void resume(run)}>
                     {run.status === "completed" ? "Read" : "Continue"}

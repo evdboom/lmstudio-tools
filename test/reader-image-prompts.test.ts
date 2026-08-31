@@ -39,7 +39,7 @@ const story = storyBlueprintSchema.parse({
     index: 0,
     location: { id: "car", index: 0 },
     characters: [{ id: "mara", index: 0 }],
-    description: "Mara sees a passenger holding an impossible ticket.",
+    events: ["Mara sees a passenger holding an impossible ticket."],
     facts: [],
     keywords: [],
     narration_rules: [],

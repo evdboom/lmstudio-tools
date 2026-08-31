@@ -52,7 +52,7 @@ export const storyBeatSchema = z.object({
   index: z.number().int().nonnegative(),
   location: storyReferenceSchema,
   characters: z.array(storyReferenceSchema),
-  description: nonEmpty,
+  events: z.array(nonEmpty).min(1),
   narration_mode: storyId.optional(),
   facts: z.array(storyId),
   keywords: z.array(z.object({ type: nonEmpty, word: nonEmpty })),

@@ -15,7 +15,7 @@ interface Story {
   locations: Array<{ index: number; id: string; name: string; description: string; details: string[] }>;
   narration_modes: Array<{ index: number; id: string; perspective: string; tense: string; rules: string[]; kind?: "replace" | "supplemental" }>;
   facts: Array<{ index: number; id: string; fact: string; subjects: string[] }>;
-  beats: Array<{ index: number; location: Reference; characters: Reference[]; description: string; narration_mode?: string; facts: string[]; keywords: Array<{ type: string; word: string }>; narration_rules: string[] }>;
+  beats: Array<{ index: number; location: Reference; characters: Reference[]; events: string[]; narration_mode?: string; facts: string[]; keywords: Array<{ type: string; word: string }>; narration_rules: string[] }>;
 }
 interface ChatMessage { role: "user" | "assistant"; text: string; reasoning?: string; stopped?: boolean; failed?: boolean; noFinal?: boolean }
 interface StoredChat { messages: ChatMessage[]; responseId?: string }
@@ -59,6 +59,7 @@ function normalize(story: Story): Story {
   copy.facts.forEach((item, index) => { item.index = index; });
   copy.beats.forEach((beat, index) => {
     beat.index = index;
+    beat.events = cleanLines(beat.events);
     beat.narration_rules = cleanLines(beat.narration_rules);
     const locationIndex = copy.locations.findIndex((item) => item.id === beat.location.id);
     beat.location.index = locationIndex;
@@ -203,7 +204,7 @@ export function AuthoringApp() {
 
   function addBeat() {
     if (!story || story.locations.length === 0) { setError("Add at least one location in World data first."); return; }
-    update({ beats: [...story.beats, { index: story.beats.length, location: { id: story.locations[0].id, index: 0 }, characters: [], description: "", facts: [], keywords: [], narration_rules: [] }] });
+    update({ beats: [...story.beats, { index: story.beats.length, location: { id: story.locations[0].id, index: 0 }, characters: [], events: [""], facts: [], keywords: [], narration_rules: [] }] });
   }
 
   function changeBeat(index: number, patch: Partial<Story["beats"][number]>) { if (!story) return; const beats = [...story.beats]; beats[index] = { ...beats[index], ...patch }; update({ beats }); }
@@ -286,7 +287,7 @@ export function AuthoringApp() {
           <section className="beats-editor"><div className="panel-heading"><h2>Beats</h2><button className="secondary" onClick={addBeat}>Add beat</button></div>{story.beats.map((beat, index) => <article className="beat-editor" key={index}>
             <div className="beat-toolbar"><strong>{String(index + 1).padStart(2, "0")}</strong><select aria-label="Location" value={beat.location.id} onChange={(event) => changeBeat(index, { location: { id: event.target.value, index: 0 } })}>{story.locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}</select><button className="icon-button" title="Move up" onClick={() => moveBeat(index, -1)}>↑</button><button className="icon-button" title="Move down" onClick={() => moveBeat(index, 1)}>↓</button><button className="icon-button danger" title="Delete beat" onClick={() => update({ beats: story.beats.filter((_, beatIndex) => beatIndex !== index) })}>×</button></div>
             <div className="beat-fields">
-              <label className="wide">Events to narrate<textarea value={beat.description} onChange={(event) => changeBeat(index, { description: event.target.value })} /></label>
+              <label className="wide">Events to narrate<textarea value={beat.events.join("\n")} placeholder="One event per line" onChange={(event) => changeBeat(index, { events: event.target.value.split("\n") })} /></label>
               <label>Narration mode<select value={beat.narration_mode ?? ""} onChange={(event) => changeBeat(index, { narration_mode: event.target.value || undefined })}><option value="">Story default</option>{story.narration_modes.map((mode) => <option key={mode.id} value={mode.id}>{mode.id}: {mode.perspective}, {mode.tense}</option>)}</select></label>
               <fieldset><legend>Characters</legend><div className="reference-options">{story.characters.length === 0 ? <span>None defined</span> : story.characters.map((character) => <label key={character.id}><input type="checkbox" checked={beat.characters.some((reference) => reference.id === character.id)} onChange={(event) => toggleBeatReference(index, "characters", character.id, event.target.checked)} />{character.name}</label>)}</div></fieldset>
               <fieldset className="wide"><legend>Required facts</legend><div className="reference-options">{story.facts.length === 0 ? <span>None defined</span> : story.facts.map((fact) => <label key={fact.id}><input type="checkbox" checked={beat.facts.includes(fact.id)} onChange={(event) => toggleBeatReference(index, "facts", fact.id, event.target.checked)} />{fact.id}: {fact.fact}</label>)}</div></fieldset>

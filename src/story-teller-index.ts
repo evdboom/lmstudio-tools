@@ -147,7 +147,7 @@ export function registerStoryTools(
     story_path: storyPath,
     location_id: id,
     character_ids: z.array(id).max(64),
-    description: text,
+    events: z.array(text).min(1).max(64),
     narration_mode: id.optional(),
     fact_ids: z.array(id).max(64).default([]),
     keywords: z.array(z.object({ type: text, word: text })).max(32).default([]),

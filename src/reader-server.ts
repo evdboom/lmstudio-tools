@@ -183,10 +183,16 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
     const parsed = z.object({
       story_path: storyPathSchema,
       model: z.string().trim().min(1).max(500),
+      context_mode: z.enum(["full", "blueprint"]).default("full"),
     }).safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "A valid story_path and model are required." });
     try {
-      return await startReaderRun(options.root, parsed.data.story_path, parsed.data.model);
+      return await startReaderRun(
+        options.root,
+        parsed.data.story_path,
+        parsed.data.model,
+        parsed.data.context_mode
+      );
     } catch (error) {
       return reply.code(400).send({ error: message(error) });
     }
@@ -258,6 +264,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       reply.raw.write(`event: state\ndata: ${JSON.stringify(prepared.generationState)}\n\n`);
       const beatNumber = prepared.generationState!.beat_index + 1;
       reply.raw.write(`event: status\ndata: ${JSON.stringify(`Preparing beat ${beatNumber}...`)}\n\n`);
+      const storeResponse = prepared.generationState!.context_mode === "full";
       const generated = await streamLmStudioNarration({
         baseUrl: options.lmStudioUrl,
         model: body.data.model,
@@ -265,6 +272,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         apiToken: options.lmStudioApiToken,
         systemPrompt: prepared.systemPrompt,
         previousResponseId: prepared.previousResponseId,
+        store: storeResponse,
         signal: abort.signal,
         onDelta: (delta) => {
           reply.raw.write(`event: delta\ndata: ${JSON.stringify(delta)}\n\n`);
@@ -285,7 +293,12 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         params.data.runId,
         generated.narration,
         prepared.promptInstruction,
-        generated.responseId
+        storeResponse ? generated.responseId : undefined,
+        {
+          input: prepared.input!,
+          system_prompt: prepared.systemPrompt,
+          previous_response_id: prepared.previousResponseId,
+        }
       );
       reply.raw.write(`event: done\ndata: ${JSON.stringify(state)}\n\n`);
     } catch (error) {

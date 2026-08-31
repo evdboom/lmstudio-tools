@@ -14,7 +14,7 @@ const blueprint = {
   locations: [{ index: 0, id: "tower", name: "Tower", description: "A salt-streaked lighthouse.", details: [] }],
   narration_modes: [{ index: 0, id: "close", perspective: "third-person limited", tense: "past", rules: ["Stay close to the keeper."] }],
   facts: [],
-  beats: [{ index: 0, location: { id: "tower", index: 0 }, characters: [], description: "The second light answers her signal.", facts: [], keywords: [], narration_rules: [] }],
+  beats: [{ index: 0, location: { id: "tower", index: 0 }, characters: [], events: ["The second light answers her signal."], facts: [], keywords: [], narration_rules: [] }],
 };
 
 describe("story editor API", () => {

@@ -95,6 +95,33 @@ describe("LM Studio streaming client", () => {
     expect(result).toEqual({ narration: "The terminal-only scene.", responseId: "resp_terminal" });
   });
 
+  it("does not retain a response id when narration storage is disabled", async () => {
+    const stream = [
+      'event: message.delta\ndata: {"type":"message.delta","content":"A stateless scene."}\n\n',
+      'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_ignored"}}\n\n',
+    ].join("");
+    const fetchMock = vi.fn(async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await streamLmStudioNarration({
+      baseUrl: "http://127.0.0.1:1234/api/v1",
+      model: "test-model",
+      input: "Narrate from blueprint events.",
+      systemPrompt: "Narrator rules.",
+      store: false,
+      signal: new AbortController().signal,
+      onDelta: vi.fn(),
+    });
+
+    const request = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string);
+    expect(request.store).toBe(false);
+    expect(request).not.toHaveProperty("previous_response_id");
+    expect(result).toEqual({ narration: "A stateless scene." });
+  });
+
   it("continues once when reasoning ends without narration", async () => {
     const responses = [
       [

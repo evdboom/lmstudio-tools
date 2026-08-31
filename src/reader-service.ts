@@ -1,9 +1,13 @@
-import { buildStatefulNarrationInput } from "./reader-prompts.js";
+import {
+  buildBlueprintHistoryNarrationInput,
+  buildStatefulNarrationInput,
+} from "./reader-prompts.js";
 import { buildImagePlanPrompt, parseImagePlan } from "./reader-image-prompts.js";
 import {
   createReaderRun,
   mutateReaderRun,
   readReaderRun,
+  type NarrationPrompt,
   type ReaderRun,
 } from "./reader-store.js";
 import { readStoryFile } from "./story-store.js";
@@ -12,6 +16,7 @@ export interface ReaderState {
   run_id: string;
   story_path: string;
   model?: string;
+  context_mode: ReaderRun["context_mode"];
   title: string;
   premise: string;
   beat_index: number;
@@ -29,6 +34,7 @@ async function toState(root: string, run: ReaderRun): Promise<ReaderState> {
     run_id: run.run_id,
     story_path: run.story_path,
     model: run.model,
+    context_mode: run.context_mode,
     title: story.title,
     premise: story.premise,
     beat_index: run.beat_index,
@@ -44,9 +50,10 @@ async function toState(root: string, run: ReaderRun): Promise<ReaderState> {
 export async function startReaderRun(
   root: string,
   storyPath: string,
-  model?: string
+  model?: string,
+  contextMode: ReaderRun["context_mode"] = "full"
 ): Promise<ReaderState> {
-  return toState(root, await createReaderRun(root, storyPath, model));
+  return toState(root, await createReaderRun(root, storyPath, model, contextMode));
 }
 
 export async function getReaderState(
@@ -109,6 +116,7 @@ export async function prepareReaderGeneration(
           narration: run.current_draft.narration,
           prompt_instruction: run.current_draft.prompt_instruction,
           response_id: run.current_draft.response_id,
+          prompt: run.current_draft.prompt,
         });
         run.current_draft = undefined;
         run.beat_index += 1;
@@ -124,18 +132,22 @@ export async function prepareReaderGeneration(
       run.ongoing_instructions,
       action === "regenerate" || action === "regenerate_previous" ? instruction : undefined
     );
-    const previousResponseId = run.accepted.at(-1)?.response_id;
-    const prompt = buildStatefulNarrationInput(
-      story,
-      run.beat_index,
-      run.accepted.map((item) => ({
-        beatIndex: item.beat_index,
-        narration: item.narration,
-        instruction: item.prompt_instruction,
-      })),
-      activeInstruction,
-      !previousResponseId
-    );
+    const previousResponseId = run.context_mode === "full"
+      ? run.accepted.at(-1)?.response_id
+      : undefined;
+    const prompt = run.context_mode === "full"
+      ? buildStatefulNarrationInput(
+          story,
+          run.beat_index,
+          run.accepted.map((item) => ({
+            beatIndex: item.beat_index,
+            narration: item.narration,
+            instruction: item.prompt_instruction,
+          })),
+          activeInstruction,
+          !previousResponseId
+        )
+      : buildBlueprintHistoryNarrationInput(story, run.beat_index, activeInstruction);
     return {
       complete: false as const,
       run,
@@ -162,13 +174,15 @@ export async function saveReaderDraft(
   runId: string,
   narration: string,
   instruction?: string,
-  responseId?: string
+  responseId?: string,
+  prompt?: NarrationPrompt
 ): Promise<ReaderState> {
   const run = await mutateReaderRun(root, storyPath, runId, (current) => {
     current.current_draft = {
       narration,
       prompt_instruction: instruction,
       response_id: responseId,
+      prompt,
     };
     return current;
   });

@@ -43,7 +43,7 @@ function renderBeatPacket(story: StoryBlueprint, beatIndex: number): string {
     "*Treat this context as canon while realizing the current beat.*",
     "",
     "## What happens",
-    beat.description,
+    ...beat.events.map((event) => `- ${event}`),
     "",
     "## Location",
     `${location.name}: ${location.description}`,
@@ -61,7 +61,7 @@ function renderBeatPacket(story: StoryBlueprint, beatIndex: number): string {
     `**Perspective:** ${mode.perspective}`,
     `**Tense:** ${mode.tense}`,
     "### Narration rules:",
-    "- Fully dramatize the events in the beat description.",
+    "- Fully dramatize every event listed for the beat.",
     ...resolveNarrationRules(story, mode).map((rule) => `- ${rule}`),
     ...beat.narration_rules.map((rule) => `- ${rule}`),
     ...(beat.keywords.length > 0

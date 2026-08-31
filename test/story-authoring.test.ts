@@ -101,7 +101,11 @@ describe("story authoring foundation", () => {
     const beat = await addBeat(root, input.storyPath, {
       locationId: "dining-car",
       characterIds: ["mara"],
-      description: "Mara enters the apparently empty dining car, finds a passenger whose ticket has no destination, and hears the passenger say her full name.",
+      events: [
+        "Mara enters the apparently empty dining car.",
+        "She finds a passenger whose ticket has no destination.",
+        "The passenger says her full name.",
+      ],
       factIds: ["missing-passenger"],
     });
     expect(beat.ok).toBe(true);
@@ -125,7 +129,7 @@ describe("story authoring foundation", () => {
     const rejected = await addBeat(root, input.storyPath, {
       locationId: "missing",
       characterIds: [],
-      description: "Change.",
+      events: ["Change."],
     });
     expect(rejected.ok).toBe(false);
 

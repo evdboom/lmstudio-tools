@@ -42,14 +42,14 @@ beforeEach(async () => {
     name: "Dining Car",
     description: "An empty carriage lit by brass lamps.",
   });
-  for (const description of [
+  for (const event of [
     "Mara enters the dining car, sees an unknown passenger, and watches him look up.",
     "The passenger presents an impossible ticket, which Mara takes.",
   ]) {
     await addBeat(root, storyPath, {
       locationId: "dining-car",
       characterIds: ["mara"],
-      description,
+      events: [event],
     });
   }
   await finalizeStory(root, storyPath);
@@ -178,7 +178,7 @@ describe("story telling runtime", () => {
     await addBeat(root, supplementalPath, {
       locationId: "chapel",
       characterIds: [],
-      description: "The choir begins to sing.",
+      events: ["The choir begins to sing."],
       narrationMode: "choir-scene",
     });
     await finalizeStory(root, supplementalPath);

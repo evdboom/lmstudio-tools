@@ -5,17 +5,25 @@ import { z } from "zod";
 import { safeResolve } from "./sandbox.js";
 import { readStoryFile } from "./story-store.js";
 
+const narrationPromptSchema = z.object({
+  input: z.string().min(1),
+  system_prompt: z.string().min(1).optional(),
+  previous_response_id: z.string().startsWith("resp_").optional(),
+});
+
 const acceptedNarrationSchema = z.object({
   beat_index: z.number().int().nonnegative(),
   narration: z.string().min(1),
   prompt_instruction: z.string().optional(),
   response_id: z.string().startsWith("resp_").optional(),
+  prompt: narrationPromptSchema.optional(),
 });
 
 const draftNarrationSchema = z.object({
   narration: z.string().min(1),
   prompt_instruction: z.string().optional(),
   response_id: z.string().startsWith("resp_").optional(),
+  prompt: narrationPromptSchema.optional(),
 });
 
 export const readerImagePlanSchema = z.object({
@@ -48,6 +56,7 @@ export const readerRunSchema = z.object({
   run_id: z.string().uuid(),
   story_path: z.string().min(1),
   model: z.string().trim().min(1).max(500).optional(),
+  context_mode: z.enum(["full", "blueprint"]).default("full"),
   beat_index: z.number().int().nonnegative(),
   accepted: z.array(acceptedNarrationSchema),
   ongoing_instructions: z.array(z.string().min(1)),
@@ -59,6 +68,7 @@ export const readerRunSchema = z.object({
 });
 
 export type ReaderRun = z.infer<typeof readerRunSchema>;
+export type NarrationPrompt = z.infer<typeof narrationPromptSchema>;
 
 const mutationQueues = new Map<string, Promise<void>>();
 
@@ -100,7 +110,8 @@ async function writeRun(file: string, run: ReaderRun): Promise<void> {
 export async function createReaderRun(
   root: string,
   storyPath: string,
-  model?: string
+  model?: string,
+  contextMode: ReaderRun["context_mode"] = "full"
 ): Promise<ReaderRun> {
   const story = await readStoryFile(root, storyPath);
   if (story.status !== "final") throw new Error("Story must be finalized before reading.");
@@ -111,6 +122,7 @@ export async function createReaderRun(
     run_id: randomUUID(),
     story_path: storyPath,
     model,
+    context_mode: contextMode,
     beat_index: 0,
     accepted: [],
     ongoing_instructions: [],
@@ -167,6 +179,7 @@ export interface ReaderRunListItem {
   run_id: string;
   story_path: string;
   model?: string;
+  context_mode: ReaderRun["context_mode"];
   beat_index: number;
   accepted_beats: number;
   has_current_draft: boolean;
@@ -196,6 +209,7 @@ export async function listReaderRuns(
         run_id: run.run_id,
         story_path: run.story_path,
         model: run.model,
+        context_mode: run.context_mode,
         beat_index: run.beat_index,
         accepted_beats: run.accepted.length,
         has_current_draft: Boolean(run.current_draft),

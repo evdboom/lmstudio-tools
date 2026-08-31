@@ -84,13 +84,15 @@ export async function streamLmStudioNarration(options: {
   apiToken?: string;
   systemPrompt?: string;
   previousResponseId?: string;
+  store?: boolean;
   signal: AbortSignal;
   onDelta: (delta: string) => void;
   onReasoning?: () => void;
   onReasoningDelta?: (delta: string) => void;
   onRecovery?: () => void;
-}): Promise<{ narration: string; responseId: string }> {
+}): Promise<{ narration: string; responseId?: string }> {
   let reasoningReported = false;
+  const store = options.store ?? true;
 
   async function attempt(input: string, previousResponseId?: string, systemPrompt?: string) {
     const response = await fetch(endpoint(options.baseUrl, "/chat"), {
@@ -102,7 +104,7 @@ export async function streamLmStudioNarration(options: {
         system_prompt: systemPrompt,
         previous_response_id: previousResponseId,
         stream: true,
-        store: true,
+        store,
         temperature: 0.8,
       }),
       signal: options.signal,
@@ -179,19 +181,27 @@ export async function streamLmStudioNarration(options: {
 
   const first = await attempt(options.input, options.previousResponseId, options.systemPrompt);
   if (first.narration) {
-    if (!first.responseId) throw new Error("LM Studio did not return a stateful response_id.");
-    return { narration: first.narration, responseId: first.responseId };
+    if (store && !first.responseId) throw new Error("LM Studio did not return a stateful response_id.");
+    return {
+      narration: first.narration,
+      ...(store && first.responseId ? { responseId: first.responseId } : {}),
+    };
   }
-  if (!first.responseId) throw new Error("LM Studio returned an empty narration without a response_id.");
+  if (store && !first.responseId) {
+    throw new Error("LM Studio returned an empty narration without a response_id.");
+  }
 
   options.onRecovery?.();
-  const recovered = await attempt(
-    "You completed the reasoning but did not provide the narrated scene as your final answer. Output the complete story narration now. Do not explain, plan, summarize, or mention this correction; return only the prose for the requested beat.",
-    first.responseId
-  );
+  const recoveryInstruction = "You completed the reasoning but did not provide the narrated scene as your final answer. Output the complete story narration now. Do not explain, plan, summarize, or mention this correction; return only the prose for the requested beat.";
+  const recovered = store
+    ? await attempt(recoveryInstruction, first.responseId)
+    : await attempt(`${options.input}\n\n${recoveryInstruction}`, undefined, options.systemPrompt);
   if (!recovered.narration) throw new Error("LM Studio returned an empty narration after one recovery attempt.");
-  if (!recovered.responseId) throw new Error("LM Studio did not return a stateful response_id.");
-  return { narration: recovered.narration, responseId: recovered.responseId };
+  if (store && !recovered.responseId) throw new Error("LM Studio did not return a stateful response_id.");
+  return {
+    narration: recovered.narration,
+    ...(store && recovered.responseId ? { responseId: recovered.responseId } : {}),
+  };
 }
 
 export async function streamLmStudioAuthoring(options: {

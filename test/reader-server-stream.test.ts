@@ -39,6 +39,7 @@ vi.mock("../src/lmstudio-client.js", () => ({
 }));
 
 import { createReaderServer, readerUrls } from "../src/reader-server.js";
+import { streamLmStudioNarration } from "../src/lmstudio-client.js";
 
 let root: string;
 let cleanup: () => Promise<void>;
@@ -73,12 +74,12 @@ beforeEach(async () => {
   await addBeat(root, storyPath, {
     locationId: "car",
     characterIds: ["mara"],
-    description: "Mara enters and finds a passenger, who looks up.",
+    events: ["Mara enters.", "She finds a passenger, who looks up."],
   });
   await addBeat(root, storyPath, {
     locationId: "car",
     characterIds: ["mara"],
-    description: "The passenger offers an impossible ticket, which Mara takes.",
+    events: ["The passenger offers an impossible ticket.", "Mara takes it."],
   });
   await finalizeStory(root, storyPath);
 });
@@ -192,6 +193,40 @@ describe("reader generation stream", () => {
     expect(savedRun.accepted[0]?.response_id).toBe("resp_test");
     expect(savedRun.current_draft?.response_id).toBe("resp_test");
     expect(savedRun.model).toBe("test-model");
+  });
+
+  it("does not store or persist response ids for blueprint context runs", async () => {
+    const app = await createReaderServer({ root, lmStudioUrl: "http://lmstudio.test/api/v1" });
+    const started = await app.inject({
+      method: "POST",
+      url: "/api/runs",
+      payload: {
+        story_path: storyPath,
+        model: "test-model",
+        context_mode: "blueprint",
+      },
+    });
+    const run = started.json<{ run_id: string }>();
+
+    await app.inject({
+      method: "POST",
+      url: `/api/runs/${run.run_id}/generate`,
+      payload: { story_path: storyPath, model: "test-model", action: "regenerate" },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/runs/${run.run_id}/generate`,
+      payload: { story_path: storyPath, model: "test-model", action: "next" },
+    });
+    const savedRun = await readReaderRun(root, storyPath, run.run_id);
+    await app.close();
+
+    expect(vi.mocked(streamLmStudioNarration).mock.calls.at(-1)?.[0]).toMatchObject({
+      store: false,
+      previousResponseId: undefined,
+    });
+    expect(savedRun.accepted[0]?.response_id).toBeUndefined();
+    expect(savedRun.current_draft?.response_id).toBeUndefined();
   });
 
   it("plans images separately after a completed narration run", async () => {

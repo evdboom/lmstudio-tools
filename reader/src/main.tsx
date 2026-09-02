@@ -5,7 +5,7 @@ import { useScreenWakeLock } from "./wake-lock";
 import "./styles.css";
 
 type ContextMode = "full" | "blueprint" | "hybrid";
-type ReasoningMode = "native" | "think" | "thinking";
+type ReasoningMode = "native" | "template_think" | "think" | "thinking";
 
 const CONTEXT_MODE_LABELS: Record<ContextMode, string> = {
   full: "full context",
@@ -321,8 +321,9 @@ function App() {
               </select>
               <select aria-label="Reasoning mode" value={reasoningMode} onChange={(event) => setReasoningMode(event.target.value as ReasoningMode)}>
                 <option value="native">Native reasoning</option>
-                <option value="think">Reason in &lt;think&gt;</option>
-                <option value="thinking">Reason in &lt;thinking&gt;</option>
+                <option value="template_think">Template /think ([THINK])</option>
+                <option value="think">XML &lt;think&gt;</option>
+                <option value="thinking">XML &lt;thinking&gt;</option>
               </select>
               <button className="primary" disabled={!storyPath || !model || busy} onClick={begin}>Begin</button>
             </div>

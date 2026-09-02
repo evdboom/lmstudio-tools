@@ -132,6 +132,30 @@ describe("LM Studio streaming client", () => {
     });
   });
 
+  it("routes square THINK tags used by slash-think templates", async () => {
+    const stream = [
+      'event: message.delta\ndata: {"type":"message.delta","content":"[THI"}\n\n',
+      'event: message.delta\ndata: {"type":"message.delta","content":"NK]Checking the beat.[/TH"}\n\n',
+      'event: message.delta\ndata: {"type":"message.delta","content":"INK]The bell rang."}\n\n',
+      'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_square_think"}}\n\n',
+    ].join("");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(stream)));
+
+    const result = await streamLmStudioNarration({
+      baseUrl: "http://127.0.0.1:1234/api/v1",
+      model: "test-model",
+      input: "Narrate.",
+      signal: new AbortController().signal,
+      onDelta: vi.fn(),
+    });
+
+    expect(result).toEqual({
+      narration: "The bell rang.",
+      reasoning: "Checking the beat.",
+      responseId: "resp_square_think",
+    });
+  });
+
   it("uses narration found only in the terminal chat result", async () => {
     const stream = [
       'event: reasoning.delta\ndata: {"type":"reasoning.delta","content":"Drafting."}\n\n',

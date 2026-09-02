@@ -23,7 +23,12 @@ function createThinkTagSplitter(callbacks: {
   onMessage: (content: string) => void;
   onReasoning: (content: string) => void;
 }): { push: (content: string) => void; flush: () => void } {
-  const openTags = ["<thinking>", "<think>"];
+  const tagPairs = [
+    { open: "<thinking>", close: "</thinking>" },
+    { open: "<think>", close: "</think>" },
+    { open: "[think]", close: "[/think]" },
+  ];
+  const openTags = tagPairs.map(({ open }) => open);
   let closeTag = "";
   let pending = "";
   let thinking = false;
@@ -56,7 +61,7 @@ function createThinkTagSplitter(callbacks: {
       closeTag = "";
     } else {
       thinking = true;
-      closeTag = `</${match.tag.slice(1)}`;
+      closeTag = tagPairs.find(({ open }) => open === match.tag)!.close;
     }
     return true;
   };
@@ -169,7 +174,7 @@ export async function streamLmStudioNarration(options: {
         previous_response_id: previousResponseId,
         stream: true,
         store,
-        temperature: 0.8,
+        temperature: 0.6,
       }),
       signal: options.signal,
       dispatcher: lmStudioAgent,

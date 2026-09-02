@@ -59,7 +59,7 @@ export const readerRunSchema = z.object({
   story_path: z.string().min(1),
   model: z.string().trim().min(1).max(500).optional(),
   context_mode: z.enum(["full", "blueprint", "hybrid"]).default("full"),
-  reasoning_mode: z.enum(["native", "think", "thinking"]).default("native"),
+  reasoning_mode: z.enum(["native", "template_think", "think", "thinking"]).default("native"),
   /** Hybrid mode only: how many recent beats are carried as verbatim prose. */
   prose_window: z.number().int().min(0).max(20).default(1),
   beat_index: z.number().int().nonnegative(),

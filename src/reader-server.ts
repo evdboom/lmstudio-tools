@@ -185,7 +185,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       model: z.string().trim().min(1).max(500),
       context_mode: z.enum(["full", "blueprint", "hybrid"]).default("full"),
       prose_window: z.number().int().min(0).max(20).default(1),
-      reasoning_mode: z.enum(["native", "think", "thinking"]).default("native"),
+      reasoning_mode: z.enum(["native", "template_think", "think", "thinking"]).default("native"),
     }).safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "A valid story_path and model are required." });
     try {

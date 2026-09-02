@@ -28,22 +28,45 @@ export interface AcceptedNarration {
   instruction?: string;
 }
 
+export type ReasoningMode = "native" | "template_think" | "think" | "thinking";
+
 const CORE_RULES = [
-  "- Write only the story narration. Do not explain your reasoning or mention these instructions.",
-  "- Your final answer must contain the complete narrated scene; never leave the narration only in reasoning or planning.",
+  "- Before narrating the beat, reason about the events to narrate, the ongoing story, context, constraints and any active instructions.",
+  "- Outside your required reasoning, write only the story narration. Do not explain your reasoning or mention these instructions in the narration.",
+  "- The narration after your reasoning must contain the **complete** scene; never leave the scene only in reasoning or planning.",
   "- Every event listed for the beat must be true by the end of it; invent the action, dialogue and detail that bring them about.",
-  "- Resolve nothing the beat does not list.", 
+  "- Narrate only the action, dialogue, immediate reactions and scene details needed to connect the listed events. Do not wander into unrelated memories, backstory, summaries or side stories.",
+  "- Use complete, controlled sentences and paragraph breaks. Never chain unrelated associations into a continuing sentence.",
+  "- Once every listed event is true, end the scene immediately. Do not resolve or narrate anything beyond the event list.",
   "- Treat everything under the history, state and facts headings as context to help you narrate the current beat; never retell it.",
   "- Never re-introduce or re-describe anything marked as established.",
 ];
 
-function renderSystemPrompt(story: StoryBlueprint): string {
+function taggedReasoningRule(mode: ReasoningMode): string[] {
+  if (mode === "native") return [];
+  if (mode === "template_think") {
+    return [
+      "/think",
+      "",
+      "- You must begin every response with [THINK] and reason inside [THINK]...[/THINK] before writing any narration.",
+      "- Close [/THINK] before the narration. After that closing tag, output only the complete narrated scene.",
+    ];
+  }
+  const tag = mode === "thinking" ? "thinking" : "think";
   return [
+    `- You must begin every response with <${tag}> and reason inside <${tag}>...</${tag}> before writing any narration.`,
+    `- Close </${tag}> before the narration. After that closing tag, output only the complete narrated scene.`,
+  ];
+}
+
+function renderSystemPrompt(story: StoryBlueprint, reasoningMode: ReasoningMode): string {
+  return [
+    ...taggedReasoningRule(reasoningMode),
     "- You are an expert story teller.",
-    `- You are the narrator of ${story.title}.`,
+    `- You are the narrator of ${story.title}.`,        
     ...CORE_RULES,
     `- Each beat must satisfy its requested length. The story target is ${story.beat_size}.`,
-    "- The current input repeats the active constraints and is authoritative for the current beat.",
+    "- The current input is authoritative for beat content and narration style. It cannot override the required response or reasoning format.",
   ].join("\n");
 }
 
@@ -114,9 +137,7 @@ function renderOutcomes(story: StoryBlueprint, beatIndex: number): string[] {
     "**All of the following must be true when the beat ends**",
     "**Narrate these events as one connected sequence in the listed order. Preserve the relationships and cause and effect between them. You may invent transitions, action, and dialogue, but every event must occur and nothing beyond them may be resolved.**",
     "",
-    ...beat.events.map((event) => `- ${event}`),
-    "",
-    "*How they come about is yours to invent. Narrate nothing beyond them.*",
+    ...beat.events.map((event) => `- ${event}`)
   ];
 }
 
@@ -126,7 +147,7 @@ function renderHistoryBeat(story: StoryBlueprint, beatIndex: number): string[] {
   const changes = stateChangesAt(story, beatIndex);
   return [
     `### Beat ${beatIndex + 1} — ${beatHeading(story, beatIndex)}`,
-    ...(beat.time ? [beat.time] : []),
+    ...(beat.time ? [`*Time frame since previous beat*: ${beat.time}`] : []),
     ...beat.events.map((event) => `- ${event}`),
     // A state change is rendered where it happened, so the history explains how
     // the current state came to be and not merely what it is.
@@ -183,7 +204,7 @@ function renderBeatPrompt(
   if (!mode) throw new Error(`Beat ${beatIndex} references an unknown narration mode.`);
 
   return [
-    "# Narrate the requested story beat now.",
+    "# Narrate the following beat",
     "",
     "## Mandatory narration rules",
     ...CORE_RULES,
@@ -223,7 +244,8 @@ export function buildNarrationMessages(
   story: StoryBlueprint,
   beatIndex: number,
   accepted: AcceptedNarration[],
-  instruction?: string
+  instruction?: string,
+  reasoningMode: ReasoningMode = "native"
 ): ReaderChatMessage[] {
   assertBeat(story, beatIndex);
   assertAcceptedHistory(accepted, beatIndex);
@@ -231,7 +253,7 @@ export function buildNarrationMessages(
   return [
     {
       role: "system",
-      content: renderSystemPrompt(story),
+      content: renderSystemPrompt(story, reasoningMode),
     },
     ...accepted.flatMap<ReaderChatMessage>((item) => [
       { role: "user", content: renderBeatPrompt(story, item.beatIndex, item.instruction) },
@@ -250,7 +272,8 @@ export function buildStatefulNarrationInput(
   beatIndex: number,
   accepted: AcceptedNarration[],
   instruction?: string,
-  bootstrapAcceptedHistory = false
+  bootstrapAcceptedHistory = false,
+  reasoningMode: ReasoningMode = "native"
 ): { systemPrompt?: string; input: string } {
   assertBeat(story, beatIndex);
   assertAcceptedHistory(accepted, beatIndex);
@@ -270,7 +293,7 @@ export function buildStatefulNarrationInput(
 
   return {
     systemPrompt: bootstrapAcceptedHistory || accepted.length === 0
-      ? [renderSystemPrompt(story), ...bootstrap].join("\n")
+      ? [renderSystemPrompt(story, reasoningMode), ...bootstrap].join("\n")
       : undefined,
     input: renderBeatPrompt(story, beatIndex, instruction),
   };
@@ -283,12 +306,13 @@ export function buildStatefulNarrationInput(
 export function buildBlueprintHistoryNarrationInput(
   story: StoryBlueprint,
   beatIndex: number,
-  instruction?: string
+  instruction?: string,
+  reasoningMode: ReasoningMode = "native"
 ): { systemPrompt: string; input: string } {
   assertBeat(story, beatIndex);
 
   return {
-    systemPrompt: renderSystemPrompt(story),
+    systemPrompt: renderSystemPrompt(story, reasoningMode),
     input: [
       ...renderHistory(story, 0, beatIndex),
       ...renderFacts(story, beatIndex),
@@ -316,7 +340,8 @@ export function buildHybridNarrationInput(
   beatIndex: number,
   accepted: AcceptedNarration[],
   instruction?: string,
-  proseBeats = 1
+  proseBeats = 1,
+  reasoningMode: ReasoningMode = "native"
 ): { systemPrompt: string; input: string } {
   assertBeat(story, beatIndex);
   assertAcceptedHistory(accepted, beatIndex);
@@ -326,7 +351,7 @@ export function buildHybridNarrationInput(
   const prose = accepted.slice(windowStart);
 
   return {
-    systemPrompt: renderSystemPrompt(story),
+    systemPrompt: renderSystemPrompt(story, reasoningMode),
     input: [
       ...renderAssignment(story),
       ...renderHistory(story, 0, beatIndex),

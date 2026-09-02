@@ -20,35 +20,41 @@ describe("beat block", () => {
   const { input } = buildBlueprintHistoryNarrationInput(tidewrack(), 5);
 
   it("frames events as postconditions rather than a script", () => {
-    expect(input).toContain("### All of the following must be true when the beat ends");
+    expect(input).toContain("### Events to narrate");
+    expect(input).toContain("All of the following must be true when the beat ends");
     expect(input).toContain("- Mara has scrubbed the grating clean.");
-    expect(input).toContain("How they come about is yours to invent. Narrate nothing beyond them.");
+    expect(input).toContain("You may invent transitions, action, and dialogue, but every event must occur and nothing beyond them may be resolved.");
+  });
+
+  it("sets explicit boundaries against runaway narration", () => {
+    expect(input).toContain("Do not wander into unrelated memories, backstory, summaries or side stories.");
+    expect(input).toContain("Never chain unrelated associations into a continuing sentence.");
+    expect(input).toContain("Once every listed event is true, end the scene immediately.");
   });
 
   it("lists a state change as an outcome of the beat", () => {
-    expect(input).toContain("- Mara Kest: A stiff white scar.");
-    expect(input).toContain("- The Lamp Room: no longer — Blood dried into the floor grating.");
+    expect(input).toContain("- [New this beat]: A stiff white scar.");
+    expect(input).toContain("- [Leaving this beat]: Blood dried into the floor grating.");
   });
 
   it("marks an established location and character", () => {
-    expect(input).toContain("[established in beat 2 — the reader has seen it; do not describe it again]");
-    expect(input).toContain("Character: Mara Kest: Smuggler washed off a foundering cutter. [established in beat 2");
+    expect(input).toContain("[established in beat 2 — do not reintroduce]");
+    expect(input).toContain("**Mara Kest** **[introduced in beat 2 — do not re-introduce or re-describe]**");
   });
 
-  it("keeps identity but drops appearance once established", () => {
+  it("keeps identity and relevant appearance after establishment", () => {
     expect(input).toContain("Smuggler washed off a foundering cutter.");
-    expect(input).not.toContain("Late twenties, shorn dark hair.");
+    expect(input).toContain("Late twenties, shorn dark hair.");
   });
 
   it("introduces an entity in full on its first appearance", () => {
     const first = buildBlueprintHistoryNarrationInput(tidewrack(), 0).input;
-    expect(first).toContain("Appearance: Sixty, salt-cracked hands.");
+    expect(first).toContain("*Appearance*: Sixty, salt-cracked hands.");
     expect(first).not.toContain("established in beat");
-    expect(first).toContain("This is the opening beat. Establish the scene from nothing.");
   });
 
   it("carries the state a character enters the beat with", () => {
-    expect(input).toContain("- Entering this beat: Shoulder bandaged, arm in a sling.");
+    expect(input).toContain("- Shoulder bandaged, arm in a sling.");
   });
 
   it("never renders state for a subject who is off stage", () => {
@@ -68,33 +74,16 @@ describe("beat block", () => {
     expect(scene).not.toContain("Off-stage");
   });
 
-  it("does not present a state that only becomes true during the beat as current", () => {
-    const entering = input.slice(input.indexOf("## Scene context"), input.indexOf("### All of"));
-    expect(entering).not.toContain("A stiff white scar");
+  it("marks a state that becomes true during the beat as new", () => {
+    const scene = input.slice(input.indexOf("## Scene context"), input.indexOf("### Events to narrate"));
+    expect(scene).toContain("[New this beat]: A stiff white scar");
   });
 });
 
-describe("continuity", () => {
-  it("refuses to continue the previous moment across a time gap", () => {
+describe("scene timing", () => {
+  it("renders an authored time gap", () => {
     const { input } = buildBlueprintHistoryNarrationInput(tidewrack(), 5);
-    expect(input).toContain("Time: Three weeks later.");
-    expect(input).toContain("This beat opens a new scene.");
-    expect(input).toContain("Present in the previous beat and absent here: Bailiff Kest.");
-  });
-
-  it("continues directly when nothing separates the beats", () => {
-    const story = tidewrack();
-    story.beats[4].characters = ["joris", "mara"];
-    const { input } = buildBlueprintHistoryNarrationInput(story, 4);
-    expect(input).toContain("This beat continues directly from the final moment of the previous one.");
-  });
-
-  it("announces a viewpoint change", () => {
-    const story = tidewrack();
-    story.beats[5].narration_mode = "mara_pov";
-    const { input } = buildBlueprintHistoryNarrationInput(story, 5);
-    expect(input).toContain("The viewpoint changes here.");
-    expect(input).toContain("Perspective: close third person, limited to Mara");
+    expect(input).toContain("*Time frame since last beat*: Three weeks later.");
   });
 });
 
@@ -116,7 +105,7 @@ describe("fact windows in prompts", () => {
     const facts = (beatIndex: number): string => {
       const input = buildBlueprintHistoryNarrationInput(tidewrack(), beatIndex).input;
       const start = input.indexOf("## Established facts");
-      return start < 0 ? "" : input.slice(start, input.indexOf("Narrate the requested story beat now."));
+      return start < 0 ? "" : input.slice(start, input.indexOf("Narrate the following beat"));
     };
     expect(facts(4)).toContain("The harbour believes the cutter went down with all hands.");
     expect(facts(5)).not.toContain("The harbour believes the cutter went down with all hands.");
@@ -168,8 +157,8 @@ describe("hybrid context mode", () => {
     expect(input).toContain("### Beat 4 — The Lamp Room · Joris Vandel, Mara Kest");
     expect(input).toContain("## Recent narration");
     expect(input).toContain("Prose of beat 5.");
-    // The windowed beat is prose, so it must not also appear as bullets.
-    expect(input).not.toContain("### Beat 5 — The Lamp Room");
+    // The windowed beat keeps both its blueprint instructions and accepted prose.
+    expect(input).toContain("### Beat 5 — The Lamp Room");
     expect(input).not.toContain("Prose of beat 4.");
   });
 
@@ -179,16 +168,6 @@ describe("hybrid context mode", () => {
     expect(input).toContain("Prose of beat 5.");
     expect(input).not.toContain("Prose of beat 2.");
     expect(input).toContain("### Beat 2 — The Lamp Room · Joris Vandel, Mara Kest");
-  });
-
-  it("tells the narrator whether the prose leads into this beat", () => {
-    const broken = buildHybridNarrationInput(tidewrack(), 5, accepted(5)).input;
-    expect(broken).toContain("The current beat does not continue from where this prose ends");
-
-    const story = tidewrack();
-    story.beats[4].characters = ["joris", "mara"];
-    const continuous = buildHybridNarrationInput(story, 4, accepted(4)).input;
-    expect(continuous).toContain("The current beat continues directly from where this prose ends.");
   });
 
   it("omits the prose section on the opening beat", () => {
@@ -230,8 +209,35 @@ describe("full context mode", () => {
 
   it("still gets the derived state and established markers", () => {
     const prompt = buildStatefulNarrationInput(tidewrack(), 5, accepted(5));
-    expect(prompt.input).toContain("- Entering this beat: Shoulder bandaged, arm in a sling.");
+    expect(prompt.input).toContain("- Shoulder bandaged, arm in a sling.");
     expect(prompt.input).toContain("do not re-introduce or re-describe");
+  });
+
+  it("only adds explicit tags for tagged reasoning modes", () => {
+    const native = buildStatefulNarrationInput(tidewrack(), 0, []);
+    const think = buildStatefulNarrationInput(tidewrack(), 0, [], undefined, false, "think");
+    const thinking = buildStatefulNarrationInput(tidewrack(), 0, [], undefined, false, "thinking");
+
+    expect(native.systemPrompt).not.toContain("<think");
+    expect(think.systemPrompt).toContain("must begin every response with <think>");
+    expect(thinking.systemPrompt).toContain("must begin every response with <thinking>");
+  });
+
+  it("activates slash-think templates and requires their native tag format", () => {
+    const prompt = buildStatefulNarrationInput(
+      tidewrack(),
+      0,
+      [],
+      undefined,
+      false,
+      "template_think"
+    );
+
+    expect(prompt.systemPrompt?.split("\n")).toContain("/think");
+    expect(prompt.systemPrompt).toContain("must begin every response with [THINK]");
+    expect(prompt.systemPrompt).toContain("reason inside [THINK]...[/THINK]");
+    expect(prompt.systemPrompt).not.toContain("must begin every response with <think>");
+    expect(prompt.systemPrompt).not.toContain("must begin every response with <thinking>");
   });
 
   it("replays the accepted beats as chat turns when messages are needed", () => {

@@ -91,8 +91,53 @@ describe("reader run service", () => {
     );
     expect(tagged.reasoning_mode).toBe("thinking");
     expect(taggedRequest.systemPrompt).toContain(
-      "reason through the beat inside <thinking>...</thinking>"
+      "reason inside <thinking>...</thinking>"
     );
+  });
+
+  it.each(["full", "hybrid", "blueprint"] as const)(
+    "adds tagged reasoning to %s context mode",
+    async (contextMode) => {
+      const started = await startReaderRun(
+        root,
+        storyPath,
+        `${contextMode}-model`,
+        contextMode,
+        1,
+        "think"
+      );
+      const request = await prepareReaderGeneration(
+        root,
+        storyPath,
+        started.run_id,
+        "regenerate"
+      );
+
+      expect(request.systemPrompt).toContain("must begin every response with <think>");
+      expect(request.recordedSystemPrompt).toBe(request.systemPrompt);
+    }
+  );
+
+  it("uses the chat template activation mode when requested", async () => {
+    const started = await startReaderRun(
+      root,
+      storyPath,
+      "template-model",
+      "full",
+      1,
+      "template_think"
+    );
+    const request = await prepareReaderGeneration(
+      root,
+      storyPath,
+      started.run_id,
+      "regenerate"
+    );
+
+    expect(started.reasoning_mode).toBe("template_think");
+    expect(request.systemPrompt?.split("\n")).toContain("/think");
+    expect(request.systemPrompt).toContain("must begin every response with [THINK]");
+    expect(request.systemPrompt).not.toContain("must begin every response with <think>");
   });
 
   it("keeps regeneration temporary and next-button directions ongoing", async () => {
@@ -143,6 +188,7 @@ describe("reader run service", () => {
 
     expect(secondRequest.previousResponseId).toBe("resp_first");
     expect(secondRequest.systemPrompt).toBeUndefined();
+    expect(secondRequest.recordedSystemPrompt).toBe(firstRequest.systemPrompt);
     expect(secondRequest.input).toContain("Ongoing reader directions");
     expect(secondRequest.input).toContain("The ticket smells of smoke.");
 

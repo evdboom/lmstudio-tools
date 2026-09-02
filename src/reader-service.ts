@@ -70,21 +70,6 @@ export async function startReaderRun(
   ));
 }
 
-function taggedReasoningPrompt(mode: ReaderRun["reasoning_mode"]): string | undefined {
-  if (mode === "native") return undefined;
-  const tag = mode === "thinking" ? "thinking" : "think";
-  return `Before the final narration, reason through the beat inside <${tag}>...</${tag}>. After closing </${tag}>, output the complete narration only. Never put narration inside the reasoning tags.`;
-}
-
-function withTaggedReasoning(
-  systemPrompt: string | undefined,
-  mode: ReaderRun["reasoning_mode"]
-): string | undefined {
-  const instruction = taggedReasoningPrompt(mode);
-  if (!systemPrompt || !instruction) return systemPrompt;
-  return `${systemPrompt}\n${instruction}`;
-}
-
 export async function getReaderState(
   root: string,
   storyPath: string,
@@ -171,31 +156,45 @@ export async function prepareReaderGeneration(
       narration: item.narration,
       instruction: item.prompt_instruction,
     }));
-    const prompt = run.context_mode === "full"
-      ? buildStatefulNarrationInput(
+    let prompt: { systemPrompt?: string; input: string };
+    switch (run.context_mode) {
+      case "full":
+        prompt = buildStatefulNarrationInput(
           story,
           run.beat_index,
           acceptedHistory,
           activeInstruction,
-          !previousResponseId
-        )
-      : run.context_mode === "hybrid"
-        ? buildHybridNarrationInput(
-            story,
-            run.beat_index,
-            acceptedHistory,
-            activeInstruction,
-            run.prose_window
-          )
-        : buildBlueprintHistoryNarrationInput(story, run.beat_index, activeInstruction);
-    const systemPrompt = withTaggedReasoning(prompt.systemPrompt, run.reasoning_mode);
-    const recordedSystemPrompt = systemPrompt
+          !previousResponseId,
+          run.reasoning_mode
+        );
+        break;
+      case "hybrid":
+        prompt = buildHybridNarrationInput(
+          story,
+          run.beat_index,
+          acceptedHistory,
+          activeInstruction,
+          run.prose_window,
+          run.reasoning_mode
+        );
+        break;
+      case "blueprint":
+        prompt = buildBlueprintHistoryNarrationInput(
+          story,
+          run.beat_index,
+          activeInstruction,
+          run.reasoning_mode
+        );
+        break;
+    }
+    const recordedSystemPrompt = prompt.systemPrompt
       ?? run.accepted.at(-1)?.prompt?.system_prompt;
+
     return {
       complete: false as const,
       run,
       input: prompt.input,
-      systemPrompt,
+      systemPrompt: prompt.systemPrompt,
       recordedSystemPrompt,
       previousResponseId,
       activeInstruction,

@@ -42,7 +42,7 @@ describe("story authoring foundation", () => {
       await fs.readFile(path.join(root, "stories", "night-train", "story.json"), "utf8")
     );
     expect(story).toMatchObject({
-      schema: "story-v2",
+      schema: "story-v3",
       status: "draft",
       title: "The Night Train",
       default_narration_mode: "cinematic",
@@ -96,9 +96,9 @@ describe("story authoring foundation", () => {
     await addFact(root, input.storyPath, {
       id: "missing-passenger",
       fact: "The passenger does not appear on the manifest.",
-      subjects: ["mara"],
     });
     const beat = await addBeat(root, input.storyPath, {
+      id: "b01",
       locationId: "dining-car",
       characterIds: ["mara"],
       events: [
@@ -106,7 +106,6 @@ describe("story authoring foundation", () => {
         "She finds a passenger whose ticket has no destination.",
         "The passenger says her full name.",
       ],
-      factIds: ["missing-passenger"],
     });
     expect(beat.ok).toBe(true);
 
@@ -124,9 +123,10 @@ describe("story authoring foundation", () => {
     if (!mutation.ok) expect(mutation.error).toMatch(/finalized/i);
   });
 
-  it("rejects unknown beat references without consuming an index", async () => {
+  it("rejects unknown beat references without appending a beat", async () => {
     await createStory(root, input);
     const rejected = await addBeat(root, input.storyPath, {
+      id: "b01",
       locationId: "missing",
       characterIds: [],
       events: ["Change."],

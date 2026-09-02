@@ -183,7 +183,9 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
     const parsed = z.object({
       story_path: storyPathSchema,
       model: z.string().trim().min(1).max(500),
-      context_mode: z.enum(["full", "blueprint"]).default("full"),
+      context_mode: z.enum(["full", "blueprint", "hybrid"]).default("full"),
+      prose_window: z.number().int().min(0).max(20).default(1),
+      reasoning_mode: z.enum(["native", "think", "thinking"]).default("native"),
     }).safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "A valid story_path and model are required." });
     try {
@@ -191,7 +193,9 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         options.root,
         parsed.data.story_path,
         parsed.data.model,
-        parsed.data.context_mode
+        parsed.data.context_mode,
+        parsed.data.prose_window,
+        parsed.data.reasoning_mode
       );
     } catch (error) {
       return reply.code(400).send({ error: message(error) });
@@ -296,8 +300,9 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         storeResponse ? generated.responseId : undefined,
         {
           input: prepared.input!,
-          system_prompt: prepared.systemPrompt,
+          system_prompt: prepared.recordedSystemPrompt,
           previous_response_id: prepared.previousResponseId,
+          reasoning: generated.reasoning || undefined,
         }
       );
       reply.raw.write(`event: done\ndata: ${JSON.stringify(state)}\n\n`);

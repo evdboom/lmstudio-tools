@@ -1,5 +1,6 @@
 import {
   buildBlueprintHistoryNarrationInput,
+  buildHybridNarrationInput,
   buildStatefulNarrationInput,
 } from "./reader-prompts.js";
 import { buildImagePlanPrompt, parseImagePlan } from "./reader-image-prompts.js";
@@ -17,6 +18,8 @@ export interface ReaderState {
   story_path: string;
   model?: string;
   context_mode: ReaderRun["context_mode"];
+  reasoning_mode: ReaderRun["reasoning_mode"];
+  prose_window: number;
   title: string;
   premise: string;
   beat_index: number;
@@ -35,6 +38,8 @@ async function toState(root: string, run: ReaderRun): Promise<ReaderState> {
     story_path: run.story_path,
     model: run.model,
     context_mode: run.context_mode,
+    reasoning_mode: run.reasoning_mode,
+    prose_window: run.prose_window,
     title: story.title,
     premise: story.premise,
     beat_index: run.beat_index,
@@ -51,9 +56,33 @@ export async function startReaderRun(
   root: string,
   storyPath: string,
   model?: string,
-  contextMode: ReaderRun["context_mode"] = "full"
+  contextMode: ReaderRun["context_mode"] = "full",
+  proseWindow = 1,
+  reasoningMode: ReaderRun["reasoning_mode"] = "native"
 ): Promise<ReaderState> {
-  return toState(root, await createReaderRun(root, storyPath, model, contextMode));
+  return toState(root, await createReaderRun(
+    root,
+    storyPath,
+    model,
+    contextMode,
+    proseWindow,
+    reasoningMode
+  ));
+}
+
+function taggedReasoningPrompt(mode: ReaderRun["reasoning_mode"]): string | undefined {
+  if (mode === "native") return undefined;
+  const tag = mode === "thinking" ? "thinking" : "think";
+  return `Before the final narration, reason through the beat inside <${tag}>...</${tag}>. After closing </${tag}>, output the complete narration only. Never put narration inside the reasoning tags.`;
+}
+
+function withTaggedReasoning(
+  systemPrompt: string | undefined,
+  mode: ReaderRun["reasoning_mode"]
+): string | undefined {
+  const instruction = taggedReasoningPrompt(mode);
+  if (!systemPrompt || !instruction) return systemPrompt;
+  return `${systemPrompt}\n${instruction}`;
 }
 
 export async function getReaderState(
@@ -84,6 +113,7 @@ export async function prepareReaderGeneration(
 ): Promise<{
   input?: string;
   systemPrompt?: string;
+  recordedSystemPrompt?: string;
   previousResponseId?: string;
   promptInstruction?: string;
   state?: ReaderState;
@@ -113,7 +143,8 @@ export async function prepareReaderGeneration(
       if (run.current_draft) {
         run.accepted.push({
           beat_index: run.beat_index,
-          narration: run.current_draft.narration,
+          narration: run.current_draft.narration.replace("```", "\n"),
+          reasoning: run.current_draft.reasoning,
           prompt_instruction: run.current_draft.prompt_instruction,
           response_id: run.current_draft.response_id,
           prompt: run.current_draft.prompt,
@@ -135,24 +166,37 @@ export async function prepareReaderGeneration(
     const previousResponseId = run.context_mode === "full"
       ? run.accepted.at(-1)?.response_id
       : undefined;
+    const acceptedHistory = run.accepted.map((item) => ({
+      beatIndex: item.beat_index,
+      narration: item.narration,
+      instruction: item.prompt_instruction,
+    }));
     const prompt = run.context_mode === "full"
       ? buildStatefulNarrationInput(
           story,
           run.beat_index,
-          run.accepted.map((item) => ({
-            beatIndex: item.beat_index,
-            narration: item.narration,
-            instruction: item.prompt_instruction,
-          })),
+          acceptedHistory,
           activeInstruction,
           !previousResponseId
         )
-      : buildBlueprintHistoryNarrationInput(story, run.beat_index, activeInstruction);
+      : run.context_mode === "hybrid"
+        ? buildHybridNarrationInput(
+            story,
+            run.beat_index,
+            acceptedHistory,
+            activeInstruction,
+            run.prose_window
+          )
+        : buildBlueprintHistoryNarrationInput(story, run.beat_index, activeInstruction);
+    const systemPrompt = withTaggedReasoning(prompt.systemPrompt, run.reasoning_mode);
+    const recordedSystemPrompt = systemPrompt
+      ?? run.accepted.at(-1)?.prompt?.system_prompt;
     return {
       complete: false as const,
       run,
       input: prompt.input,
-      systemPrompt: prompt.systemPrompt,
+      systemPrompt,
+      recordedSystemPrompt,
       previousResponseId,
       activeInstruction,
     };
@@ -162,6 +206,7 @@ export async function prepareReaderGeneration(
   return {
     input: prepared.input,
     systemPrompt: prepared.systemPrompt,
+    recordedSystemPrompt: prepared.recordedSystemPrompt,
     previousResponseId: prepared.previousResponseId,
     promptInstruction: prepared.activeInstruction,
     generationState: await toState(root, prepared.run),
@@ -175,14 +220,16 @@ export async function saveReaderDraft(
   narration: string,
   instruction?: string,
   responseId?: string,
-  prompt?: NarrationPrompt
+  prompt?: NarrationPrompt & { reasoning?: string }
 ): Promise<ReaderState> {
+  const { reasoning, ...requestPrompt } = prompt ?? {};
   const run = await mutateReaderRun(root, storyPath, runId, (current) => {
     current.current_draft = {
       narration,
+      reasoning,
       prompt_instruction: instruction,
       response_id: responseId,
-      prompt,
+      prompt: prompt ? requestPrompt as NarrationPrompt : undefined,
     };
     return current;
   });

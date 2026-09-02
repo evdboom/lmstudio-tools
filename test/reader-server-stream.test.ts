@@ -34,7 +34,11 @@ vi.mock("../src/lmstudio-client.js", () => ({
     options.onReasoning?.();
     options.onReasoningDelta?.("Checking continuity.");
     options.onDelta("The carriage stirred.");
-    return { narration: "The carriage stirred.", responseId: "resp_test" };
+    return {
+      narration: "The carriage stirred.",
+      reasoning: "Checking continuity.",
+      responseId: "resp_test",
+    };
   }),
 }));
 
@@ -72,11 +76,13 @@ beforeEach(async () => {
     description: "A dim carriage.",
   });
   await addBeat(root, storyPath, {
+    id: "b01",
     locationId: "car",
     characterIds: ["mara"],
     events: ["Mara enters.", "She finds a passenger, who looks up."],
   });
   await addBeat(root, storyPath, {
+    id: "b02",
     locationId: "car",
     characterIds: ["mara"],
     events: ["The passenger offers an impossible ticket.", "Mara takes it."],
@@ -191,7 +197,11 @@ describe("reader generation stream", () => {
     expect(beatTwo).toBeGreaterThan(state);
     expect(beatTwoNarration).toBeGreaterThan(beatTwo);
     expect(savedRun.accepted[0]?.response_id).toBe("resp_test");
+    expect(savedRun.accepted[0]?.reasoning).toBe("Checking continuity.");
     expect(savedRun.current_draft?.response_id).toBe("resp_test");
+    expect(savedRun.current_draft?.reasoning).toBe("Checking continuity.");
+    expect(savedRun.current_draft?.prompt?.input).toContain("## Current beat 2 of 2");
+    expect(savedRun.current_draft?.prompt?.system_prompt).toContain("You are the narrator");
     expect(savedRun.model).toBe("test-model");
   });
 

@@ -47,11 +47,13 @@ beforeEach(async () => {
     description: "A dim carriage.",
   });
   await addBeat(root, storyPath, {
+    id: "b01",
     locationId: "car",
     characterIds: ["mara"],
     events: ["Mara enters.", "She finds a passenger, who looks up."],
   });
   await addBeat(root, storyPath, {
+    id: "b02",
     locationId: "car",
     characterIds: ["mara"],
     events: ["The passenger offers a strange ticket.", "Mara accepts it."],
@@ -62,6 +64,37 @@ beforeEach(async () => {
 afterEach(async () => cleanup());
 
 describe("reader run service", () => {
+  it("only requests tagged reasoning when the run opts in", async () => {
+    const native = await startReaderRun(root, storyPath, "native-model");
+    const nativeRequest = await prepareReaderGeneration(
+      root,
+      storyPath,
+      native.run_id,
+      "regenerate"
+    );
+    expect(native.reasoning_mode).toBe("native");
+    expect(nativeRequest.systemPrompt).not.toContain("<think");
+
+    const tagged = await startReaderRun(
+      root,
+      storyPath,
+      "tagged-model",
+      "full",
+      1,
+      "thinking"
+    );
+    const taggedRequest = await prepareReaderGeneration(
+      root,
+      storyPath,
+      tagged.run_id,
+      "regenerate"
+    );
+    expect(tagged.reasoning_mode).toBe("thinking");
+    expect(taggedRequest.systemPrompt).toContain(
+      "reason through the beat inside <thinking>...</thinking>"
+    );
+  });
+
   it("keeps regeneration temporary and next-button directions ongoing", async () => {
     const started = await startReaderRun(root, storyPath, "test-model");
     expect(started.model).toBe("test-model");
@@ -129,12 +162,35 @@ describe("reader run service", () => {
       started.run_id,
       "next"
     );
-    expect(completed.messages).toBeUndefined();
+    expect(completed.input).toBeUndefined();
     expect(completed.state?.status).toBe("completed");
 
     state = await getReaderState(root, storyPath, started.run_id);
     expect(state.accepted).toHaveLength(2);
     expect(state.status).toBe("completed");
+  });
+
+  it("carries recent prose and derived history in hybrid mode", async () => {
+    const started = await startReaderRun(root, storyPath, "test-model", "hybrid", 1);
+    expect(started.context_mode).toBe("hybrid");
+    expect(started.prose_window).toBe(1);
+
+    await saveReaderDraft(
+      root,
+      storyPath,
+      started.run_id,
+      "Mara stepped between the brass lamps.",
+      undefined,
+      "resp_first"
+    );
+    const second = await prepareReaderGeneration(root, storyPath, started.run_id, "next");
+
+    // Hybrid rebuilds the prompt each beat rather than chaining responses.
+    expect(second.previousResponseId).toBeUndefined();
+    expect(second.systemPrompt).toContain("You are the narrator");
+    expect(second.input).toContain("## Recent narration");
+    expect(second.input).toContain("Mara stepped between the brass lamps.");
+    expect(second.input).toContain("## Current beat 2 of 2");
   });
 
   it("uses blueprint events without stateful narration when requested", async () => {
@@ -146,8 +202,8 @@ describe("reader run service", () => {
 
     expect(secondRequest.previousResponseId).toBeUndefined();
     expect(secondRequest.systemPrompt).toContain("You are the narrator");
-    expect(secondRequest.input).toContain("## Previous story beats");
-    expect(secondRequest.input).toContain("In Dining Car, Mara had the following happen:");
+    expect(secondRequest.input).toContain("## Story so far");
+    expect(secondRequest.input).toContain("### Beat 1 — Dining Car · Mara");
     expect(secondRequest.input).toContain("Mara enters.");
     expect(secondRequest.input).not.toContain("Accepted prose must not be reused.");
   });

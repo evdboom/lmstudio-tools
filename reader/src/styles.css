@@ -275,10 +275,14 @@ summary span { color: var(--muted); font-size: 12px; font-weight: 400; }
 .relation-row { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) auto; gap: 8px; margin-bottom: 8px; }
 .relation-row select { max-width: none; }
 .compact-button { min-height: 34px; padding: 0 12px; border-color: var(--line); background: var(--paper); color: var(--ink); font-size: 12px; }
+.state-row { display: grid; grid-template-columns: minmax(90px, 0.6fr) minmax(160px, 2fr) minmax(90px, 0.8fr) minmax(90px, 0.8fr) auto; gap: 8px; margin-bottom: 8px; }
+.state-row select, .state-row input { min-height: 34px; max-width: none; }
+.field-hint { margin: 0 0 10px; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .add-world-item { justify-self: start; }
 .beats-editor { margin-top: 34px; }
 .beat-editor { margin-top: 12px; border: 1px solid var(--line); background: var(--surface); }
-.beat-toolbar { display: grid; grid-template-columns: 34px 1fr auto auto auto; gap: 6px; align-items: center; padding: 8px; border-bottom: 1px solid var(--line); }
+.beat-toolbar { display: grid; grid-template-columns: 34px minmax(70px, 0.5fr) 1fr auto auto auto; gap: 6px; align-items: center; padding: 8px; border-bottom: 1px solid var(--line); }
+.beat-id { min-height: 34px; font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 12px; }
 .beat-toolbar strong { color: var(--red); font-size: 12px; text-align: center; }
 .beat-toolbar select { min-height: 34px; max-width: none; }
 .beat-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; padding: 14px; }
@@ -351,7 +355,11 @@ summary span { color: var(--muted); font-size: 12px; font-weight: 400; }
   .world-fields .wide { grid-column: auto; }
   .relation-row { grid-template-columns: 1fr auto; }
   .relation-row select { grid-column: 1 / -1; }
+  .state-row { grid-template-columns: 1fr 1fr auto; }
+  .state-row input:nth-child(2) { grid-column: 1 / -1; }
   .beat-toolbar { grid-template-columns: 30px minmax(0, 1fr) auto auto auto; }
+  .beat-toolbar .beat-id { grid-column: 2 / -1; }
+  .beat-toolbar select { grid-column: 1 / -1; }
   .beat-fields { grid-template-columns: 1fr; }
   .beat-fields .wide, .beat-advanced { grid-column: auto; }
   .author-chat { border-left: 0; border-top: 1px solid var(--line); box-shadow: none; display: grid; min-height: 520px; }

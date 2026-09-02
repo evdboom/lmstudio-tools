@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ReaderImagePlan, ReaderRun } from "./reader-store.js";
-import type { StoryBlueprint } from "./story-model.js";
+import { findCharacter, findLocation, type StoryBlueprint } from "./story-model.js";
 
 const imagePlanDraftSchema = z.object({
   checkpoint_id: z.string().trim().min(1),
@@ -46,8 +46,8 @@ export function buildImagePlanPrompt(story: StoryBlueprint, run: ReaderRun): {
   }
 
   const beats = story.beats.map((beat, index) => {
-    const location = story.locations[beat.location.index];
-    const characters = beat.characters.map((reference) => story.characters[reference.index]);
+    const location = findLocation(story, beat.location)!;
+    const characters = beat.characters.map((id) => findCharacter(story, id)!);
     const keywords = beat.keywords
       .map((keyword) => `${keyword.type}: ${keyword.word}`)
       .join(", ");

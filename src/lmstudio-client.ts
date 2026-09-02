@@ -19,6 +19,70 @@ function headers(apiToken?: string): Record<string, string> {
   };
 }
 
+function createThinkTagSplitter(callbacks: {
+  onMessage: (content: string) => void;
+  onReasoning: (content: string) => void;
+}): { push: (content: string) => void; flush: () => void } {
+  const openTags = ["<thinking>", "<think>"];
+  let closeTag = "";
+  let pending = "";
+  let thinking = false;
+
+  const matchingSuffixLength = (content: string, tags: string[]): number => {
+    const lower = content.toLowerCase();
+    const maxLength = Math.max(...tags.map((tag) => tag.length)) - 1;
+    for (let length = Math.min(maxLength, content.length); length > 0; length -= 1) {
+      if (tags.some((tag) => tag.startsWith(lower.slice(-length)))) return length;
+    }
+    return 0;
+  };
+
+  const emit = (content: string): void => {
+    if (content) (thinking ? callbacks.onReasoning : callbacks.onMessage)(content);
+  };
+
+  const consumeTag = (): boolean => {
+    const tags = thinking ? [closeTag] : openTags;
+    const lower = pending.toLowerCase();
+    const match = tags
+      .map((tag) => ({ tag, index: lower.indexOf(tag) }))
+      .filter(({ index }) => index >= 0)
+      .sort((left, right) => left.index - right.index)[0];
+    if (!match) return false;
+    emit(pending.slice(0, match.index));
+    pending = pending.slice(match.index + match.tag.length);
+    if (thinking) {
+      thinking = false;
+      closeTag = "";
+    } else {
+      thinking = true;
+      closeTag = `</${match.tag.slice(1)}`;
+    }
+    return true;
+  };
+
+  const drain = (flush: boolean): void => {
+    while (pending && consumeTag()) {
+      // Continue through adjacent content and tags in the same chunk.
+    }
+    if (!pending) return;
+    const tags = thinking ? [closeTag] : openTags;
+    const retained = flush ? 0 : matchingSuffixLength(pending, tags);
+    emit(pending.slice(0, pending.length - retained));
+    pending = pending.slice(pending.length - retained);
+  };
+
+  return {
+    push(content) {
+      pending += content;
+      drain(false);
+    },
+    flush() {
+      drain(true);
+    },
+  };
+}
+
 export async function listLmStudioModels(baseUrl: string, apiToken?: string): Promise<string[]> {
   const response = await fetch(endpoint(baseUrl, "/models"), {
     headers: headers(apiToken),
@@ -90,7 +154,7 @@ export async function streamLmStudioNarration(options: {
   onReasoning?: () => void;
   onReasoningDelta?: (delta: string) => void;
   onRecovery?: () => void;
-}): Promise<{ narration: string; responseId?: string }> {
+}): Promise<{ narration: string; reasoning: string; responseId?: string }> {
   let reasoningReported = false;
   const store = options.store ?? true;
 
@@ -120,7 +184,22 @@ export async function streamLmStudioNarration(options: {
     const decoder = new TextDecoder();
     let buffer = "";
     let narration = "";
+    let reasoning = "";
     let responseId: string | undefined;
+    const taggedContent = createThinkTagSplitter({
+      onMessage: (content) => {
+        narration += content;
+        options.onDelta(content);
+      },
+      onReasoning: (content) => {
+        reasoning += content;
+        if (!reasoningReported) {
+          reasoningReported = true;
+          options.onReasoning?.();
+        }
+        options.onReasoningDelta?.(content);
+      },
+    });
 
     function processEvent(raw: string): void {
       const data = raw.split(/\r?\n/)
@@ -138,7 +217,8 @@ export async function streamLmStudioNarration(options: {
         };
       };
       if (event.type === "error") {
-        throw new Error(String(event.error?.message ?? "LM Studio generation failed."));
+        const detail = event.error?.message;
+        throw new Error(typeof detail === "string" ? detail : "LM Studio generation failed.");
       }
       if ((event.type === "reasoning.start" || event.type === "reasoning.delta") &&
           !reasoningReported) {
@@ -146,13 +226,14 @@ export async function streamLmStudioNarration(options: {
         options.onReasoning?.();
       }
       if (event.type === "reasoning.delta" && typeof event.content === "string") {
+        reasoning += event.content;
         options.onReasoningDelta?.(event.content);
       }
       if (event.type === "message.delta" && typeof event.content === "string") {
-        narration += event.content;
-        options.onDelta(event.content);
+        taggedContent.push(event.content);
       }
       if (event.type === "chat.end") {
+        taggedContent.flush();
         if (typeof event.result?.response_id === "string") responseId = event.result.response_id;
         if (!narration.trim()) {
           const finalMessage = event.result?.output
@@ -160,8 +241,8 @@ export async function streamLmStudioNarration(options: {
             .map((item) => item.content as string)
             .join("\n\n");
           if (finalMessage?.trim()) {
-            narration = finalMessage;
-            options.onDelta(finalMessage);
+            taggedContent.push(finalMessage);
+            taggedContent.flush();
           }
         }
       }
@@ -176,7 +257,7 @@ export async function streamLmStudioNarration(options: {
       if (done) break;
     }
     if (buffer.trim()) processEvent(buffer);
-    return { narration: narration.trim(), responseId };
+    return { narration: narration.trim(), reasoning: reasoning.trim(), responseId };
   }
 
   const first = await attempt(options.input, options.previousResponseId, options.systemPrompt);
@@ -184,6 +265,7 @@ export async function streamLmStudioNarration(options: {
     if (store && !first.responseId) throw new Error("LM Studio did not return a stateful response_id.");
     return {
       narration: first.narration,
+      reasoning: first.reasoning,
       ...(store && first.responseId ? { responseId: first.responseId } : {}),
     };
   }
@@ -200,6 +282,7 @@ export async function streamLmStudioNarration(options: {
   if (store && !recovered.responseId) throw new Error("LM Studio did not return a stateful response_id.");
   return {
     narration: recovered.narration,
+    reasoning: [first.reasoning, recovered.reasoning].filter(Boolean).join("\n\n"),
     ...(store && recovered.responseId ? { responseId: recovered.responseId } : {}),
   };
 }
@@ -245,6 +328,13 @@ export async function streamLmStudioAuthoring(options: {
   let buffer = "";
   let message = "";
   let responseId: string | undefined;
+  const taggedContent = createThinkTagSplitter({
+    onMessage: (content) => {
+      message += content;
+      options.onDelta(content);
+    },
+    onReasoning: (content) => options.onReasoningDelta?.(content),
+  });
   const processEvent = (raw: string) => {
     const data = raw.split(/\r?\n/).filter((line) => line.startsWith("data:"))
       .map((line) => line.slice(5).trim()).join("\n");
@@ -261,14 +351,14 @@ export async function streamLmStudioAuthoring(options: {
     };
     if (event.type === "error") throw new Error(event.error?.message ?? "LM Studio authoring failed.");
     if (event.type === "message.delta" && event.content) {
-      message += event.content;
-      options.onDelta(event.content);
+      taggedContent.push(event.content);
     }
     if (event.type === "reasoning.delta" && event.content) {
       options.onReasoningDelta?.(event.content);
     }
     if (event.type === "tool_call.start" && event.tool) options.onTool?.(event.tool);
     if (event.type === "chat.end") {
+      taggedContent.flush();
       responseId = event.result?.response_id;
       if (!message.trim()) {
         const finalMessage = event.result?.output
@@ -276,8 +366,8 @@ export async function streamLmStudioAuthoring(options: {
           .map((item) => item.content)
           .join("\n\n");
         if (finalMessage?.trim()) {
-          message = finalMessage;
-          options.onDelta(finalMessage);
+          taggedContent.push(finalMessage);
+          taggedContent.flush();
         }
       }
     }

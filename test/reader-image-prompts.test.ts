@@ -4,7 +4,7 @@ import { readerRunSchema } from "../src/reader-store.js";
 import { storyBlueprintSchema } from "../src/story-model.js";
 
 const story = storyBlueprintSchema.parse({
-  schema: "story-v2",
+  schema: "story-v3",
   status: "final",
   title: "Night Train",
   premise: "A conductor meets an impossible passenger.",
@@ -12,7 +12,6 @@ const story = storyBlueprintSchema.parse({
   default_narration_mode: "close",
   beat_size: "500 words",
   characters: [{
-    index: 0,
     id: "mara",
     name: "Mara",
     description: "A wary train conductor.",
@@ -21,14 +20,12 @@ const story = storyBlueprintSchema.parse({
     attributes: [],
   }],
   locations: [{
-    index: 0,
     id: "car",
     name: "Dining Car",
     description: "A dim vintage carriage.",
     details: ["Rain streaks the windows."],
   }],
   narration_modes: [{
-    index: 0,
     id: "close",
     perspective: "third-person limited",
     tense: "past",
@@ -36,11 +33,10 @@ const story = storyBlueprintSchema.parse({
   }],
   facts: [],
   beats: [{
-    index: 0,
-    location: { id: "car", index: 0 },
-    characters: [{ id: "mara", index: 0 }],
+    id: "b01",
+    location: "car",
+    characters: ["mara"],
     events: ["Mara sees a passenger holding an impossible ticket."],
-    facts: [],
     keywords: [],
     narration_rules: [],
   }],

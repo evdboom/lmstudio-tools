@@ -29,6 +29,14 @@ export interface AddCharacterInput {
   relations?: Array<{ to: string; kind: string }>;
 }
 
+export interface AddStateInput {
+  subjectId: string;
+  id: string;
+  state: string;
+  from: string;
+  until?: string;
+}
+
 export interface AddLocationInput {
   id: string;
   name: string;
@@ -47,15 +55,19 @@ export interface AddNarrationModeInput {
 export interface AddFactInput {
   id: string;
   fact: string;
+  from?: string;
+  until?: string;
+  beats?: string[];
   subjects?: string[];
 }
 
 export interface AddBeatInput {
+  id: string;
   locationId: string;
   characterIds: string[];
   events: string[];
+  time?: string;
   narrationMode?: string;
-  factIds?: string[];
   keywords?: Array<{ type: string; word: string }>;
   narrationRules?: string[];
 }
@@ -75,8 +87,25 @@ function assertUniqueId(story: StoryBlueprint, id: string): void {
     ...story.locations,
     ...story.narration_modes,
     ...story.facts,
+    ...story.beats,
   ].some((item) => item.id === id);
   if (exists) throw new Error(`Duplicate story id: '${id}'.`);
+}
+
+/**
+ * A state or fact window names the beat during which it opens or closes.
+ * Beats may be authored after the subject they constrain, so an unresolved
+ * bound is only an error once it is written, not while it is being added.
+ */
+function assertBeatBound(
+  story: StoryBlueprint,
+  beatId: string | undefined,
+  field: "from" | "until"
+): void {
+  if (beatId === undefined) return;
+  if (!story.beats.some((beat) => beat.id === beatId)) {
+    throw new Error(`Unknown beat in '${field}': '${beatId}'.`);
+  }
 }
 
 async function mutateStory(
@@ -100,7 +129,7 @@ export async function createStory(
   input: CreateStoryInput
 ): Promise<ToolResult> {
   const story: StoryBlueprint = {
-    schema: "story-v2",
+    schema: "story-v3",
     status: "draft",
     title: input.title.trim(),
     premise: input.premise.trim(),
@@ -132,17 +161,16 @@ export async function addCharacter(
 ): Promise<ToolResult> {
   return mutateStory(root, storyPath, (story) => {
     assertUniqueId(story, input.id);
-    const index = story.characters.length;
     story.characters.push({
-      index,
       id: input.id,
       name: input.name.trim(),
       description: input.description.trim(),
       appearance: input.appearance?.trim() ?? "",
       attributes: input.attributes ?? [],
       relations: input.relations ?? [],
+      states: [],
     });
-    return { id: input.id, index };
+    return { id: input.id };
   });
 }
 
@@ -153,15 +181,14 @@ export async function addLocation(
 ): Promise<ToolResult> {
   return mutateStory(root, storyPath, (story) => {
     assertUniqueId(story, input.id);
-    const index = story.locations.length;
     story.locations.push({
-      index,
       id: input.id,
       name: input.name.trim(),
       description: input.description.trim(),
       details: input.details ?? [],
+      states: [],
     });
-    return { id: input.id, index };
+    return { id: input.id };
   });
 }
 
@@ -172,9 +199,8 @@ export async function addNarrationMode(
 ): Promise<ToolResult> {
   return mutateStory(root, storyPath, (story) => {
     assertUniqueId(story, input.id);
-    const index = story.narration_modes.length;
-    story.narration_modes.push({ index, ...input });
-    return { id: input.id, index };
+    story.narration_modes.push({ ...input });
+    return { id: input.id };
   });
 }
 
@@ -185,15 +211,65 @@ export async function addFact(
 ): Promise<ToolResult> {
   return mutateStory(root, storyPath, (story) => {
     assertUniqueId(story, input.id);
+    assertBeatBound(story, input.from, "from");
+    assertBeatBound(story, input.until, "until");
+    const beats = input.beats ?? [];
+    for (const beatId of beats) {
+      if (!story.beats.some((beat) => beat.id === beatId)) {
+        throw new Error(`Unknown beat: '${beatId}'.`);
+      }
+    }
     const subjects = input.subjects ?? [];
     for (const subject of subjects) {
       const known = story.characters.some((item) => item.id === subject) ||
         story.locations.some((item) => item.id === subject);
       if (!known) throw new Error(`Unknown fact subject: '${subject}'.`);
     }
-    const index = story.facts.length;
-    story.facts.push({ index, id: input.id, fact: input.fact.trim(), subjects });
-    return { id: input.id, index };
+    if (beats.length > 0 && (input.from || input.until || subjects.length > 0)) {
+      throw new Error("A fact pinned to beats cannot also carry a window or subjects.");
+    }
+    story.facts.push({
+      id: input.id,
+      fact: input.fact.trim(),
+      from: input.from,
+      until: input.until,
+      beats,
+      subjects,
+    });
+    return { id: input.id };
+  });
+}
+
+/**
+ * Attach a transient state to a character or location.
+ *
+ * Anything true for the whole story belongs in the subject's description,
+ * appearance, attributes or details instead: `from` is required precisely so
+ * that a permanent trait cannot be smuggled in as a state.
+ */
+export async function addState(
+  root: string,
+  storyPath: string,
+  input: AddStateInput
+): Promise<ToolResult> {
+  return mutateStory(root, storyPath, (story) => {
+    const subject =
+      story.characters.find((item) => item.id === input.subjectId) ??
+      story.locations.find((item) => item.id === input.subjectId);
+    if (!subject) throw new Error(`Unknown state subject: '${input.subjectId}'.`);
+    if (subject.states.some((item) => item.id === input.id)) {
+      throw new Error(`Duplicate state id '${input.id}' on '${input.subjectId}'.`);
+    }
+    assertBeatBound(story, input.from, "from");
+    assertBeatBound(story, input.until, "until");
+
+    subject.states.push({
+      id: input.id,
+      state: input.state.trim(),
+      from: input.from,
+      until: input.until,
+    });
+    return { subject_id: input.subjectId, id: input.id };
   });
 }
 
@@ -203,36 +279,34 @@ export async function addBeat(
   input: AddBeatInput
 ): Promise<ToolResult> {
   return mutateStory(root, storyPath, (story) => {
-    const locationIndex = story.locations.findIndex((item) => item.id === input.locationId);
-    if (locationIndex < 0) throw new Error(`Unknown location: '${input.locationId}'.`);
-
-    const characters = input.characterIds.map((id) => {
-      const index = story.characters.findIndex((item) => item.id === id);
-      if (index < 0) throw new Error(`Unknown character: '${id}'.`);
-      return { id, index };
-    });
+    assertUniqueId(story, input.id);
+    if (!story.locations.some((item) => item.id === input.locationId)) {
+      throw new Error(`Unknown location: '${input.locationId}'.`);
+    }
+    const seen = new Set<string>();
+    for (const id of input.characterIds) {
+      if (!story.characters.some((item) => item.id === id)) {
+        throw new Error(`Unknown character: '${id}'.`);
+      }
+      if (seen.has(id)) throw new Error(`Character '${id}' is listed twice.`);
+      seen.add(id);
+    }
     if (input.narrationMode &&
         !story.narration_modes.some((item) => item.id === input.narrationMode)) {
       throw new Error(`Unknown narration mode: '${input.narrationMode}'.`);
     }
-    for (const factId of input.factIds ?? []) {
-      if (!story.facts.some((item) => item.id === factId)) {
-        throw new Error(`Unknown fact: '${factId}'.`);
-      }
-    }
 
-    const index = story.beats.length;
     story.beats.push({
-      index,
-      location: { id: input.locationId, index: locationIndex },
-      characters,
+      id: input.id,
+      location: input.locationId,
+      characters: [...input.characterIds],
+      time: input.time?.trim() || undefined,
       events: input.events.map((event) => event.trim()),
       narration_mode: input.narrationMode,
-      facts: input.factIds ?? [],
       keywords: input.keywords ?? [],
       narration_rules: input.narrationRules ?? [],
     });
-    return { index };
+    return { id: input.id, position: story.beats.length - 1 };
   });
 }
 

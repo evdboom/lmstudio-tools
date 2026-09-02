@@ -3,7 +3,7 @@ import { createReaderServer } from "../src/reader-server.js";
 import { makeSandbox } from "./helpers.js";
 
 const blueprint = {
-  schema: "story-v2" as const,
+  schema: "story-v3" as const,
   status: "draft" as const,
   title: "Harbor Lights",
   premise: "A keeper sees a second lighthouse offshore.",
@@ -11,10 +11,10 @@ const blueprint = {
   default_narration_mode: "close",
   beat_size: "500 words",
   characters: [],
-  locations: [{ index: 0, id: "tower", name: "Tower", description: "A salt-streaked lighthouse.", details: [] }],
-  narration_modes: [{ index: 0, id: "close", perspective: "third-person limited", tense: "past", rules: ["Stay close to the keeper."] }],
+  locations: [{ id: "tower", name: "Tower", description: "A salt-streaked lighthouse.", details: [], states: [] }],
+  narration_modes: [{ id: "close", perspective: "third-person limited", tense: "past", rules: ["Stay close to the keeper."] }],
   facts: [],
-  beats: [{ index: 0, location: { id: "tower", index: 0 }, characters: [], events: ["The second light answers her signal."], facts: [], keywords: [], narration_rules: [] }],
+  beats: [{ id: "b01", location: "tower", characters: [], events: ["The second light answers her signal."], keywords: [], narration_rules: [] }],
 };
 
 describe("story editor API", () => {
@@ -45,10 +45,10 @@ describe("story editor API", () => {
     const app = await createReaderServer({ root: sandbox.root, lmStudioUrl: "http://lmstudio.test/api/v1" });
     try {
       const invalid = structuredClone(blueprint);
-      invalid.beats[0].location.id = "missing";
+      invalid.beats[0].location = "missing";
       const response = await app.inject({ method: "PUT", url: "/api/editor/story", payload: { story_path: "stories/broken", story: invalid, create: true } });
       expect(response.statusCode).toBe(400);
-      expect(response.json().error).toContain("invalid_location_reference");
+      expect(response.json().error).toContain("unknown_location");
     } finally {
       await app.close();
       await sandbox.cleanup();

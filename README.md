@@ -168,7 +168,17 @@ npm run dev:story
 
 ## Story Reader App
 
-The reader uses the same finalized `story.json` blueprints, but it does not ask the model to call MCP tools. The app owns beat progression and uses LM Studio's native stateful chat API, sending only the current beat request after the first response.
+The reader uses the same finalized `story.json` blueprints, but it does not ask the model to call MCP tools. The app owns beat progression and builds each beat's prompt itself.
+
+Pick a context mode when a run starts. All three send the same beat block; they differ only in how earlier beats are remembered:
+
+| Mode | Earlier beats | Cost at beat 20 | Trade-off |
+| --- | --- | --- | --- |
+| `hybrid` | Derived history for the older beats, verbatim prose for the most recent (`prose_window`, default 1) | Flat, roughly 4k tokens | Keeps voice continuity without the context growing |
+| `full` | The whole transcript, via LM Studio's stateful chat API — only the current beat request goes on the wire | Roughly 33k tokens | Best continuity, but local models slow down and start making mistakes past about 32k |
+| `blueprint` | Derived history only, no prose | Roughly 2k tokens | Cheapest and fastest, but nothing to call back to |
+
+`hybrid` is the default choice for a long run: the derived history grows by about one line per accepted beat while the prose window stays fixed, so a sixty-beat story never reaches the size where a local model degrades.
 
 1. Start LM Studio's local server and load a model. The default API URL is `http://127.0.0.1:1234/api/v1`.
 2. Build and start the reader:
@@ -281,6 +291,7 @@ Authoring tools:
 - `story_add_location`
 - `story_add_narration_mode`
 - `story_add_fact`
+- `story_add_state`
 - `story_add_beat`
 - `story_validate`
 - `story_finalize`
@@ -293,17 +304,85 @@ Telling tools:
 
 Story blueprints are stored as `<story>/story.json`. Each telling stores only its next beat index and status under `<story>/runs/`. `next_beat` atomically advances progress and returns instructions for one beat. Narrated prose and emergent details remain in the model's chat context and are not persisted by the MCP.
 
+### Blueprint Shape (`story-v3`)
+
+Nothing in a blueprint is referenced by position. Characters, locations, narration modes, facts and beats all carry an `id`, and every cross-reference names one, so a beat can be inserted, moved or renamed without renumbering the file. Beat order is the order beats appear in the `beats` array.
+
+Three kinds of canon, each with one correct home:
+
+| Kind | Where it lives | Example |
+| --- | --- | --- |
+| True for the whole story | The subject's `description`, `appearance`, `attributes` or `details` | "Sixty, salt-cracked hands" |
+| Changes during the story | A `states` entry on that character or location | "Shoulder bandaged, arm in a sling" |
+| World or plot canon owned by nobody | A `facts` entry | "The light may never go dark" |
+
+States and facts are bounded by beat ids. `from` names the beat during which the entry begins and `until` the beat during which it ends:
+
+```json
+{
+  "id": "mara",
+  "name": "Mara Kest",
+  "description": "Smuggler washed off a foundering cutter.",
+  "states": [
+    { "id": "wounded",  "state": "Deep gash across the left shoulder.",   "from": "b02", "until": "b04" },
+    { "id": "bandaged", "state": "Shoulder bandaged, arm in a sling.",    "from": "b04", "until": "b06" },
+    { "id": "scarred",  "state": "A stiff white scar.",                   "from": "b06" }
+  ]
+}
+```
+
+A state that replaces another shares the earlier one's `until` with its own `from`, which is why a healing wound reads as a chain. A state is active *entering* beat N when `from` is before N and `until` is N or later, so a state does not apply to the beat it begins in — that beat is where it comes about.
+
+#### Where a fact applies
+
+A fact answers two independent questions, and conflating them loses information. `from` and `until` say **when the narrator may know it**, on the same beat-id basis as a state, except inclusive at `from` because a reveal is known from the beat that reveals it. A selector says **where it is worth repeating**. A fact carries at most one selector, and the first match wins:
+
+| Authored | Applies at | Use for |
+| --- | --- | --- |
+| `beats: ["b08", "b11"]` | exactly those beats | one-off canon, and parallel storylines — the only way to say "beats 8 and 11" without dragging the fact through 9 and 10 |
+| `subjects: ["elara", "burrow"]` | beats in the window where any of those characters or locations is on stage | following a storyline into beats that do not exist yet |
+| neither | every beat in the window | world rules, and reveals gated by `from` |
+
+A pinned fact **ignores** its window rather than intersecting it, so a pin the author chose can never be silently hidden; validation warns when both are set. Reaching for `beats` where a window would do is worth a second look: a standing arrangement or an ability is usually canon from a beat onwards, and only a genuine one-off — a birth, a single overheard remark — wants a pin.
+
+Canon about a single character or location does not belong here at all: permanent traits go in that subject's `description`, `appearance`, `attributes` or `details`, and anything that changes goes in a `states` entry.
+
+#### Beats
+
+`events` on a beat are postconditions, not a script: each must be true when the beat ends, and how they come about is left to the narrator. Set a beat's optional `time` whenever it does not open where the previous beat stopped.
+
+Everything else the prompts need is derived, never authored: which beats already established a character or location, the folded state entering a beat, which facts are in scope, and whether a beat continues the previous scene or opens a new one. Because the derivation is a pure function of the blueprint, every context mode sees the same context, and regenerating an earlier beat recomputes correctly.
+
+A beat's prompt carries state only for subjects on stage in it. State belonging to an absent character is context the narrator cannot act on, and a small local model absorbs it anyway — a wound on someone three locations away turns up in the prose. If an absent character's condition matters to a scene, it belongs to a subject that is present, or to a fact. A state change is still reported in the beat's postconditions and its history even when the beat never shows the subject.
+
 Each narration mode has a `kind` of `replace` (default) or `supplemental`. A `replace` mode's rules are used on their own whenever a beat selects it. A `supplemental` mode's rules are layered on top of the story's default mode's rules, so a beat only needs to describe what is different for that scene instead of repeating the whole rule set. The default narration mode itself always behaves as `replace`.
 
 ### Story Workflow
 
 1. `story_create` creates a draft blueprint beneath the story server root.
-2. Add narration modes, characters, locations, hard-canon facts, and ordered beats.
-3. Run `story_validate`, repair errors, then run `story_finalize`.
-4. `telling_start` creates an isolated telling run and returns its ID plus the story title, premise, type, default narration mode, beat-size guidance, and beat count.
-5. `next_beat` advances the run by one and returns one narration packet. Every packet repeats the title, premise, and story type so global canon does not depend on conversation memory.
-6. The model narrates that beat directly to the user, using the current chat as memory for prior prose.
-7. The model waits for the user to continue before calling `next_beat` again.
+2. Add narration modes, characters, locations, world facts, and ordered beats.
+3. Add `story_add_state` entries for anything that changes during the story. States and fact selectors reference beat ids, so add them after the beats they bound.
+4. Run `story_validate`, repair errors, then run `story_finalize`.
+5. `telling_start` creates an isolated telling run and returns its ID plus the story title, premise, type, default narration mode, beat-size guidance, and beat count.
+6. `next_beat` advances the run by one and returns one narration packet. Every packet repeats the title, premise, and story type so global canon does not depend on conversation memory.
+7. The model narrates that beat directly to the user, using the current chat as memory for prior prose.
+8. The model waits for the user to continue before calling `next_beat` again.
+
+### Migrating An Older Blueprint
+
+`story-v2` blueprints are converted in place, with the original kept beside each story as `story.v2.json`:
+
+```powershell
+npm run build
+npm run migrate:stories -- --root C:\tmp\stories --dry-run
+npm run migrate:stories -- --root C:\tmp\stories
+```
+
+Fact selection carries over exactly — a v2 `beat.facts` listing becomes the fact's own `beats` pins, and `fact.subjects` stays as it was. One case changes meaning and is reported per story: a fact that no beat listed and no subject scoped was never shown under v2, and v3 has no way to express "never", so it becomes canon in every beat. Review each id the migration names and either give it a selector or delete it.
+
+`story-v1` blueprints are reported and left untouched.
+
+**Commit or copy a story root before migrating.** The migration rewrites `story.json` in place, and `story.v2.json` is only a sibling file — it is not a substitute for version control if the pre-migration state matters.
 
 ## Troubleshooting
 

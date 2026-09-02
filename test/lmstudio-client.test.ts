@@ -63,13 +63,73 @@ describe("LM Studio streaming client", () => {
     expect(onReasoning).toHaveBeenCalledOnce();
     expect(onReasoningDelta).toHaveBeenCalledWith("Planning");
     expect(onDelta).toHaveBeenCalledWith("The carriage stirred.");
-    expect(result).toEqual({ narration: "The carriage stirred.", responseId: "resp_next" });
+    expect(result).toEqual({
+      narration: "The carriage stirred.",
+      reasoning: "Planning",
+      responseId: "resp_next",
+    });
     expect(fetchMock).toHaveBeenCalledWith(
       "http://127.0.0.1:1234/api/v1/chat",
       expect.objectContaining({
         body: expect.stringContaining('"previous_response_id":"resp_parent"'),
       })
     );
+  });
+
+  it("routes think tags from message chunks to narration reasoning", async () => {
+    const stream = [
+      'event: message.delta\ndata: {"type":"message.delta","content":"<thi"}\n\n',
+      'event: message.delta\ndata: {"type":"message.delta","content":"nk>Planning the beat.</thi"}\n\n',
+      'event: message.delta\ndata: {"type":"message.delta","content":"nk>The carriage stirred."}\n\n',
+      'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_tagged"}}\n\n',
+    ].join("");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(stream)));
+    const onReasoning = vi.fn();
+    const onReasoningDelta = vi.fn();
+    const onDelta = vi.fn();
+
+    const result = await streamLmStudioNarration({
+      baseUrl: "http://127.0.0.1:1234/api/v1",
+      model: "test-model",
+      input: "Narrate.",
+      signal: new AbortController().signal,
+      onReasoning,
+      onReasoningDelta,
+      onDelta,
+    });
+
+    expect(onReasoning).toHaveBeenCalledOnce();
+    expect(onReasoningDelta.mock.calls.flat().join("")).toBe("Planning the beat.");
+    expect(onDelta.mock.calls.flat().join("")).toBe("The carriage stirred.");
+    expect(result).toEqual({
+      narration: "The carriage stirred.",
+      reasoning: "Planning the beat.",
+      responseId: "resp_tagged",
+    });
+  });
+
+  it("routes thinking tags split after the think prefix", async () => {
+    const stream = [
+      'event: message.delta\ndata: {"type":"message.delta","content":"<think"}\n\n',
+      'event: message.delta\ndata: {"type":"message.delta","content":"ing>Checking causality.</think"}\n\n',
+      'event: message.delta\ndata: {"type":"message.delta","content":"ing>The bell rang."}\n\n',
+      'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_thinking"}}\n\n',
+    ].join("");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(stream)));
+
+    const result = await streamLmStudioNarration({
+      baseUrl: "http://127.0.0.1:1234/api/v1",
+      model: "test-model",
+      input: "Narrate.",
+      signal: new AbortController().signal,
+      onDelta: vi.fn(),
+    });
+
+    expect(result).toEqual({
+      narration: "The bell rang.",
+      reasoning: "Checking causality.",
+      responseId: "resp_thinking",
+    });
   });
 
   it("uses narration found only in the terminal chat result", async () => {
@@ -92,7 +152,11 @@ describe("LM Studio streaming client", () => {
     });
 
     expect(onDelta).toHaveBeenCalledWith("The terminal-only scene.");
-    expect(result).toEqual({ narration: "The terminal-only scene.", responseId: "resp_terminal" });
+    expect(result).toEqual({
+      narration: "The terminal-only scene.",
+      reasoning: "Drafting.",
+      responseId: "resp_terminal",
+    });
   });
 
   it("does not retain a response id when narration storage is disabled", async () => {
@@ -119,7 +183,7 @@ describe("LM Studio streaming client", () => {
     const request = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string);
     expect(request.store).toBe(false);
     expect(request).not.toHaveProperty("previous_response_id");
-    expect(result).toEqual({ narration: "A stateless scene." });
+    expect(result).toEqual({ narration: "A stateless scene.", reasoning: "" });
   });
 
   it("continues once when reasoning ends without narration", async () => {
@@ -156,7 +220,11 @@ describe("LM Studio streaming client", () => {
     expect(recoveryRequest.previous_response_id).toBe("resp_empty");
     expect(recoveryRequest.input).toContain("Output the complete story narration now");
     expect(recoveryRequest).not.toHaveProperty("system_prompt");
-    expect(result).toEqual({ narration: "The recovered scene.", responseId: "resp_recovered" });
+    expect(result).toEqual({
+      narration: "The recovered scene.",
+      reasoning: "A complete draft.",
+      responseId: "resp_recovered",
+    });
   });
 
   it("streams authoring chat with restricted configured MCP tools", async () => {
@@ -197,6 +265,30 @@ describe("LM Studio streaming client", () => {
     expect(onTool).toHaveBeenCalledWith("story_read");
     expect(onReasoningDelta).toHaveBeenCalledWith("Need to inspect the beats.");
     expect(result).toEqual({ message: "I expanded the midpoint.", responseId: "resp_author" });
+  });
+
+  it("routes think tags out of authoring messages", async () => {
+    const stream = [
+      'event: message.delta\ndata: {"type":"message.delta","content":"<think>Inspecting beats.</think>"}\n\n',
+      'event: message.delta\ndata: {"type":"message.delta","content":"I expanded the midpoint."}\n\n',
+      'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_tagged_author"}}\n\n',
+    ].join("");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(stream)));
+    const onReasoningDelta = vi.fn();
+    const onDelta = vi.fn();
+
+    const result = await streamLmStudioAuthoring({
+      baseUrl: "http://127.0.0.1:1234/api/v1",
+      model: "test-model",
+      input: "Expand the midpoint.",
+      signal: new AbortController().signal,
+      onDelta,
+      onReasoningDelta,
+    });
+
+    expect(onReasoningDelta.mock.calls.flat().join("")).toBe("Inspecting beats.");
+    expect(onDelta.mock.calls.flat().join("")).toBe("I expanded the midpoint.");
+    expect(result).toEqual({ message: "I expanded the midpoint.", responseId: "resp_tagged_author" });
   });
 
   it("does not repeat the system prompt in an authoring continuation", async () => {

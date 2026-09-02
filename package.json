@@ -23,7 +23,8 @@
     "start:reader": "node dist/reader-server.js",
     "dev:reader": "npm run build:reader && tsx src/reader-server.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "migrate:stories": "node dist/migrate-cli.js"
   },
   "dependencies": {
     "@fastify/static": "^7.0.4",

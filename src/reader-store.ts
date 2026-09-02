@@ -14,6 +14,7 @@ const narrationPromptSchema = z.object({
 const acceptedNarrationSchema = z.object({
   beat_index: z.number().int().nonnegative(),
   narration: z.string().min(1),
+  reasoning: z.string().optional(),
   prompt_instruction: z.string().optional(),
   response_id: z.string().startsWith("resp_").optional(),
   prompt: narrationPromptSchema.optional(),
@@ -21,6 +22,7 @@ const acceptedNarrationSchema = z.object({
 
 const draftNarrationSchema = z.object({
   narration: z.string().min(1),
+  reasoning: z.string().optional(),
   prompt_instruction: z.string().optional(),
   response_id: z.string().startsWith("resp_").optional(),
   prompt: narrationPromptSchema.optional(),
@@ -56,7 +58,10 @@ export const readerRunSchema = z.object({
   run_id: z.string().uuid(),
   story_path: z.string().min(1),
   model: z.string().trim().min(1).max(500).optional(),
-  context_mode: z.enum(["full", "blueprint"]).default("full"),
+  context_mode: z.enum(["full", "blueprint", "hybrid"]).default("full"),
+  reasoning_mode: z.enum(["native", "think", "thinking"]).default("native"),
+  /** Hybrid mode only: how many recent beats are carried as verbatim prose. */
+  prose_window: z.number().int().min(0).max(20).default(1),
   beat_index: z.number().int().nonnegative(),
   accepted: z.array(acceptedNarrationSchema),
   ongoing_instructions: z.array(z.string().min(1)),
@@ -111,7 +116,9 @@ export async function createReaderRun(
   root: string,
   storyPath: string,
   model?: string,
-  contextMode: ReaderRun["context_mode"] = "full"
+  contextMode: ReaderRun["context_mode"] = "full",
+  proseWindow = 1,
+  reasoningMode: ReaderRun["reasoning_mode"] = "native"
 ): Promise<ReaderRun> {
   const story = await readStoryFile(root, storyPath);
   if (story.status !== "final") throw new Error("Story must be finalized before reading.");
@@ -123,6 +130,8 @@ export async function createReaderRun(
     story_path: storyPath,
     model,
     context_mode: contextMode,
+    reasoning_mode: reasoningMode,
+    prose_window: proseWindow,
     beat_index: 0,
     accepted: [],
     ongoing_instructions: [],
@@ -180,6 +189,8 @@ export interface ReaderRunListItem {
   story_path: string;
   model?: string;
   context_mode: ReaderRun["context_mode"];
+  reasoning_mode: ReaderRun["reasoning_mode"];
+  prose_window: number;
   beat_index: number;
   accepted_beats: number;
   has_current_draft: boolean;
@@ -210,6 +221,8 @@ export async function listReaderRuns(
         story_path: run.story_path,
         model: run.model,
         context_mode: run.context_mode,
+        reasoning_mode: run.reasoning_mode,
+        prose_window: run.prose_window,
         beat_index: run.beat_index,
         accepted_beats: run.accepted.length,
         has_current_draft: Boolean(run.current_draft),

@@ -20,7 +20,7 @@ describe("beat block", () => {
   const { input } = buildBlueprintHistoryNarrationInput(tidewrack(), 5);
 
   it("frames events as postconditions rather than a script", () => {
-    expect(input).toContain("### Events to narrate");
+    expect(input).toContain("### Scene outcomes");
     expect(input).toContain("All of the following must be true when the beat ends");
     expect(input).toContain("- Mara has scrubbed the grating clean.");
     expect(input).toContain("You may invent transitions, action, and dialogue, but every event must occur and nothing beyond them may be resolved.");
@@ -88,7 +88,7 @@ describe("beat block", () => {
   });
 
   it("marks a state that becomes true during the beat as new", () => {
-    const scene = input.slice(input.indexOf("## Scene context"), input.indexOf("### Events to narrate"));
+    const scene = input.slice(input.indexOf("## Scene context"), input.indexOf("### Scene outcomes"));
     expect(scene).toContain("[New this beat]: A stiff white scar");
   });
 });
@@ -118,7 +118,7 @@ describe("fact windows in prompts", () => {
     const facts = (beatIndex: number): string => {
       const input = buildBlueprintHistoryNarrationInput(tidewrack(), beatIndex).input;
       const start = input.indexOf("## Established facts");
-      return start < 0 ? "" : input.slice(start, input.indexOf("Narrate the following beat"));
+      return start < 0 ? "" : input.slice(start, input.indexOf("Write the following scene"));
     };
     expect(facts(4)).toContain("The harbour believes the cutter went down with all hands.");
     expect(facts(5)).not.toContain("The harbour believes the cutter went down with all hands.");
@@ -134,7 +134,8 @@ describe("blueprint context mode", () => {
   );
 
   it("recaps every earlier beat without prose", () => {
-    expect(systemPrompt).toContain("You are the narrator of Tidewrack.");
+    expect(systemPrompt).toContain("You are an expert fiction writer.");
+    expect(systemPrompt).toContain("Write the next scene of Tidewrack as polished fictional prose.");
     expect(input).toContain("## Story so far");
     expect(input).toContain("### Beat 1 — The Drowned Mare · Joris Vandel");
     expect(input).toContain("### Beat 5 — The Lamp Room · Joris Vandel, Mara Kest, Bailiff Kest");

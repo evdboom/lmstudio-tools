@@ -271,7 +271,7 @@ describe("LM Studio streaming client", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const recoveryRequest = JSON.parse((fetchMock.mock.calls[1]?.[1] as RequestInit).body as string);
     expect(recoveryRequest.previous_response_id).toBe("resp_empty");
-    expect(recoveryRequest.input).toContain("Output the complete story narration now");
+    expect(recoveryRequest.input).toContain("Output the complete scene now");
     expect(recoveryRequest).not.toHaveProperty("system_prompt");
     expect(result).toEqual({
       narration: "The recovered scene.",

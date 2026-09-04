@@ -285,7 +285,7 @@ export async function streamLmStudioNarration(options: {
   }
 
   options.onRecovery?.();
-  const recoveryInstruction = "You completed the reasoning but did not provide the narrated scene as your final answer. Output the complete story narration now. Do not explain, plan, summarize, or mention this correction; return only the prose for the requested beat.";
+  const recoveryInstruction = "You completed the reasoning but did not provide the fictional scene as your final answer. Output the complete scene now. Do not explain, plan, summarize, or mention this correction; return only the requested fictional prose.";
   const recovered = store
     ? await attempt(recoveryInstruction, first.responseId)
     : await attempt(`${options.input}\n\n${recoveryInstruction}`, undefined, options.systemPrompt);

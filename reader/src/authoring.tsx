@@ -23,8 +23,42 @@ interface Story {
 type SubjectKind = "characters" | "locations";
 interface ChatMessage { role: "user" | "assistant"; text: string; reasoning?: string; stopped?: boolean; failed?: boolean; noFinal?: boolean }
 interface StoredChat { messages: ChatMessage[]; responseId?: string }
+type Keyword = Story["beats"][number]["keywords"][number];
 
 const AUTHOR_CHAT_KEY = "folio-author-chat";
+
+function formatKeywords(keywords: Keyword[]): string {
+  return keywords.map((keyword) => `${keyword.type}: ${keyword.word}`).join("\n");
+}
+
+function parseKeywords(value: string): Keyword[] {
+  return value.split("\n").map((line) => {
+    const separator = line.indexOf(":");
+    return separator < 0 ? undefined : {
+      type: line.slice(0, separator).trim(),
+      word: line.slice(separator + 1).trim(),
+    };
+  }).filter((keyword): keyword is Keyword => Boolean(keyword?.type && keyword.word));
+}
+
+function KeywordsEditor({ keywords, onChange }: Readonly<{ keywords: Keyword[]; onChange: (keywords: Keyword[]) => void }>) {
+  const formatted = formatKeywords(keywords);
+  const [draft, setDraft] = useState(formatted);
+  const lastStored = useRef(formatted);
+
+  useEffect(() => {
+    if (formatted !== lastStored.current) setDraft(formatted);
+    lastStored.current = formatted;
+  }, [formatted]);
+
+  return <textarea value={draft} placeholder={"One per line: type: word(s)\nmotif: broken mirror"} onChange={(event) => {
+    const value = event.target.value;
+    const parsed = parseKeywords(value);
+    setDraft(value);
+    lastStored.current = formatKeywords(parsed);
+    onChange(parsed);
+  }} />;
+}
 
 function storedChat(): StoredChat {
   try {
@@ -456,7 +490,7 @@ export function AuthoringApp() {
               <label>Narration mode<select value={beat.narration_mode ?? ""} onChange={(event) => changeBeat(index, { narration_mode: event.target.value || undefined })}><option value="">Story default</option>{story.narration_modes.map((mode) => <option key={mode.id} value={mode.id}>{mode.id}: {mode.perspective}, {mode.tense}</option>)}</select></label>
               <fieldset className="wide"><legend>Characters</legend><div className="reference-options">{story.characters.length === 0 ? <span>None defined</span> : story.characters.map((character) => <label key={character.id}><input type="checkbox" checked={beat.characters.includes(character.id)} onChange={(event) => toggleBeatCharacter(index, character.id, event.target.checked)} />{character.name || character.id}</label>)}</div></fieldset>
               <details className="beat-advanced"><summary>Advanced guidance <span>keywords and narration rules</span></summary>
-                <label>Keywords<textarea value={beat.keywords.map((keyword) => `${keyword.type}: ${keyword.word}`).join("\n")} placeholder={"motif: broken mirror\ntone: uneasy"} onChange={(event) => changeBeat(index, { keywords: event.target.value.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => { const separator = line.indexOf(":"); return separator < 0 ? { type: "keyword", word: line } : { type: line.slice(0, separator).trim(), word: line.slice(separator + 1).trim() }; }).filter((keyword) => keyword.type && keyword.word) })} /></label>
+                <label>Keywords<KeywordsEditor keywords={beat.keywords} onChange={(keywords) => changeBeat(index, { keywords })} /></label>
                 <label>Narration rules<textarea value={beat.narration_rules.join("\n")} placeholder="One rule per line" onChange={(event) => changeBeat(index, { narration_rules: event.target.value.split("\n") })} /></label>
               </details>
             </div>

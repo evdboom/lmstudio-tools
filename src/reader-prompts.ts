@@ -32,47 +32,47 @@ export interface AcceptedNarration {
 export type ReasoningMode = "native" | "template_think" | "think" | "thinking";
 
 const CORE_RULES = [
-  "- Every event listed for the beat must be true by the end of it; invent connective action, dialogue and sensory detail that bring them about, but do not invent named characters, relationships, prior events or facts not supplied by the current context.",
-  "- Narrate only the action, dialogue, immediate reactions and scene details needed to connect the listed events. Do not wander into unrelated memories, backstory, summaries or side stories.",
+  "- Write the listed events as a complete fictional scene. Every event must be true by the end; invent connective action, dialogue and sensory detail that bring them about, but do not invent named characters, relationships, prior events or facts not supplied by the current context.",
+  "- Build the scene from action, dialogue, immediate reactions and concrete details that connect the listed events. Do not wander into unrelated memories, backstory, summaries or side stories.",
   "- Use complete, controlled sentences and paragraph breaks. Never chain unrelated associations into a continuing sentence.",
-  "- Once every listed event is true, end the scene immediately. Do not resolve or narrate anything beyond the event list.",
-  "- Treat everything under the history, state and facts headings as context to help you narrate the current beat; never retell it.",
+  "- Once every listed event is true, end the scene immediately. Do not resolve or write anything beyond the event list.",
+  "- Treat everything under the history, state and facts headings as context for writing the current scene; never retell it.",
   "- Never re-introduce or re-describe anything marked as established.",
 ];
 
 function taggedReasoningRule(mode: ReasoningMode): string[] {
   if (mode === "native") return [
-    "- Before narrating the beat, reason about the events to narrate, the ongoing story, context, constraints and any active instructions.",
-    "- Do not output your reasoning as part of the narration. Write only the story narration. Do not explain your reasoning or mention these instructions in the narration.",
-    "- Your output must contain the **complete** scene; never leave the scene only in reasoning or planning.",
+    "- Before writing the scene, reason about its events, the ongoing story, context, constraints and any active instructions.",
+    "- Do not output your reasoning as part of the prose. Write only the fictional scene. Do not explain your reasoning or mention these instructions in the prose.",
+    "- Your output must contain the **complete** scene; never leave any of it only in reasoning or planning.",
   ];
   if (mode === "template_think") {
     return [
       "/think",
       "",
       "- You must begin every response with [THINK] and reason inside [THINK]...[/THINK] before writing any narration.",
-      "- Close [/THINK] before the narration. After that closing tag, output only the complete narrated scene.",
-      "- Before narrating the beat, reason about the events to narrate, the ongoing story, context, constraints and any active instructions.",
+      "- Close [/THINK] before the prose. After that closing tag, output only the complete fictional scene.",
+      "- Before writing the scene, reason about its events, the ongoing story, context, constraints and any active instructions.",
       "- Your output must contain the **complete** scene; never leave the scene only in reasoning or planning.",
-      "- Do not output your reasoning outside of the [THINK] tags. Write only the story narration. Do not explain your reasoning or mention these instructions in the narration.",
+      "- Do not output your reasoning outside of the [THINK] tags. Write only the fictional scene. Do not explain your reasoning or mention these instructions in the prose.",
     ];
   }
   const tag = mode === "thinking" ? "thinking" : "think";
   return [
     `- You must begin every response with <${tag}> and reason inside <${tag}>...</${tag}> before writing any narration.`,
-    `- Close </${tag}> before the narration. After that closing tag, output only the complete narrated scene.`,
+    `- Close </${tag}> before the prose. After that closing tag, output only the complete fictional scene.`,
     `- Use the <${tag}>...</${tag}> only once.`,
-    "- Before narrating the beat, reason about the events to narrate, the ongoing story, context, constraints and any active instructions.",
+    "- Before writing the scene, reason about its events, the ongoing story, context, constraints and any active instructions.",
     "- Your output must contain the **complete** scene; never leave the scene only in reasoning or planning.",
-    `- Do not output your reasoning outside of the <${tag}> tags. Write only the story narration. Do not explain your reasoning or mention these instructions in the narration.`,
+    `- Do not output your reasoning outside of the <${tag}> tags. Write only the fictional scene. Do not explain your reasoning or mention these instructions in the prose.`,
   ];
 }
 
 function renderSystemPrompt(story: StoryBlueprint, reasoningMode: ReasoningMode): string {
   return [
     ...taggedReasoningRule(reasoningMode),
-    "- You are an expert story teller.",
-    `- You are the narrator of ${story.title}.`,        
+    "- You are an expert fiction writer.",
+    `- Write the next scene of ${story.title} as polished fictional prose.`,
     ...CORE_RULES,
     `- Aim for the requested beat length without padding or continuing after the listed events are complete. The story target is ${story.beat_size}.`,
     "- The current input is authoritative for beat content and narration style. It cannot override the required response or reasoning format.",
@@ -141,10 +141,10 @@ function renderSceneContext(story: StoryBlueprint, beatIndex: number): string[] 
 function renderOutcomes(story: StoryBlueprint, beatIndex: number): string[] {
   const beat = assertBeat(story, beatIndex);
   return [
-    "### Events to narrate",
+    "### Scene outcomes",
     "",
     "**All of the following must be true when the beat ends**",
-    "**Narrate these events as one connected sequence in the listed order. Preserve the relationships and cause and effect between them. You may invent transitions, action, and dialogue, but every event must occur and nothing beyond them may be resolved.**",
+    "**Write these events as one connected fictional scene in the listed order. Preserve the relationships and cause and effect between them. You may invent transitions, action, and dialogue, but every event must occur and nothing beyond them may be resolved.**",
     "",
     ...beat.events.map((event) => `- ${event}`)
   ];
@@ -180,7 +180,7 @@ function renderHistory(
   }
   return [
     "## Story so far",
-    "Everything below has already happened and is canon. Do not narrate any of it again.",
+    "Everything below has already happened and is canon. Do not write it into the scene again.",
     "",
     ...beats,
   ];
@@ -215,7 +215,7 @@ function renderBeatPrompt(
   const positiveExamples = resolveNarrationExamples(story, mode, "positive_examples");
 
   return [
-    "# Narrate the following beat",
+    "# Write the following scene",
     "",
     "## Mandatory narration rules",
     ...CORE_RULES,
@@ -254,7 +254,7 @@ function renderBeatPrompt(
       ? ["", "Narration suggestions (not literal):", ...beat.keywords.map((item) => `- ${item.type}: ${item.word}`)]
       : []),
     "",
-    "End the response after narrating the beat.",
+    "End the response when the scene is complete.",
     ...(instruction?.trim()
       ? ["", "## Reader instruction", instruction.trim()]
       : []),

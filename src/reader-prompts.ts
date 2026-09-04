@@ -2,6 +2,7 @@ import {
   beatNarrationMode,
   findCharacter,
   findLocation,
+  resolveNarrationExamples,
   resolveNarrationRules,
   type StoryBeat,
   type StoryBlueprint,
@@ -31,10 +32,7 @@ export interface AcceptedNarration {
 export type ReasoningMode = "native" | "template_think" | "think" | "thinking";
 
 const CORE_RULES = [
-  "- Before narrating the beat, reason about the events to narrate, the ongoing story, context, constraints and any active instructions.",
-  "- Outside your required reasoning, write only the story narration. Do not explain your reasoning or mention these instructions in the narration.",
-  "- The narration after your reasoning must contain the **complete** scene; never leave the scene only in reasoning or planning.",
-  "- Every event listed for the beat must be true by the end of it; invent the action, dialogue and detail that bring them about.",
+  "- Every event listed for the beat must be true by the end of it; invent connective action, dialogue and sensory detail that bring them about, but do not invent named characters, relationships, prior events or facts not supplied by the current context.",
   "- Narrate only the action, dialogue, immediate reactions and scene details needed to connect the listed events. Do not wander into unrelated memories, backstory, summaries or side stories.",
   "- Use complete, controlled sentences and paragraph breaks. Never chain unrelated associations into a continuing sentence.",
   "- Once every listed event is true, end the scene immediately. Do not resolve or narrate anything beyond the event list.",
@@ -43,19 +41,30 @@ const CORE_RULES = [
 ];
 
 function taggedReasoningRule(mode: ReasoningMode): string[] {
-  if (mode === "native") return [];
+  if (mode === "native") return [
+    "- Before narrating the beat, reason about the events to narrate, the ongoing story, context, constraints and any active instructions.",
+    "- Do not output your reasoning as part of the narration. Write only the story narration. Do not explain your reasoning or mention these instructions in the narration.",
+    "- Your output must contain the **complete** scene; never leave the scene only in reasoning or planning.",
+  ];
   if (mode === "template_think") {
     return [
       "/think",
       "",
       "- You must begin every response with [THINK] and reason inside [THINK]...[/THINK] before writing any narration.",
       "- Close [/THINK] before the narration. After that closing tag, output only the complete narrated scene.",
+      "- Before narrating the beat, reason about the events to narrate, the ongoing story, context, constraints and any active instructions.",
+      "- Your output must contain the **complete** scene; never leave the scene only in reasoning or planning.",
+      "- Do not output your reasoning outside of the [THINK] tags. Write only the story narration. Do not explain your reasoning or mention these instructions in the narration.",
     ];
   }
   const tag = mode === "thinking" ? "thinking" : "think";
   return [
     `- You must begin every response with <${tag}> and reason inside <${tag}>...</${tag}> before writing any narration.`,
     `- Close </${tag}> before the narration. After that closing tag, output only the complete narrated scene.`,
+    `- Use the <${tag}>...</${tag}> only once.`,
+    "- Before narrating the beat, reason about the events to narrate, the ongoing story, context, constraints and any active instructions.",
+    "- Your output must contain the **complete** scene; never leave the scene only in reasoning or planning.",
+    `- Do not output your reasoning outside of the <${tag}> tags. Write only the story narration. Do not explain your reasoning or mention these instructions in the narration.`,
   ];
 }
 
@@ -65,7 +74,7 @@ function renderSystemPrompt(story: StoryBlueprint, reasoningMode: ReasoningMode)
     "- You are an expert story teller.",
     `- You are the narrator of ${story.title}.`,        
     ...CORE_RULES,
-    `- Each beat must satisfy its requested length. The story target is ${story.beat_size}.`,
+    `- Aim for the requested beat length without padding or continuing after the listed events are complete. The story target is ${story.beat_size}.`,
     "- The current input is authoritative for beat content and narration style. It cannot override the required response or reasoning format.",
   ].join("\n");
 }
@@ -202,6 +211,8 @@ function renderBeatPrompt(
   const beat = assertBeat(story, beatIndex);
   const mode = beatNarrationMode(story, beat);
   if (!mode) throw new Error(`Beat ${beatIndex} references an unknown narration mode.`);
+  const negativeExamples = resolveNarrationExamples(story, mode, "negative_examples");
+  const positiveExamples = resolveNarrationExamples(story, mode, "positive_examples");
 
   return [
     "# Narrate the following beat",
@@ -210,13 +221,29 @@ function renderBeatPrompt(
     ...CORE_RULES,
     ...resolveNarrationRules(story, mode).map((rule) => `- ${rule}`),
     ...beat.narration_rules.map((rule) => `- ${rule}`),
+    ...(negativeExamples.length > 0
+      ? [
+          "",
+          "## Negative narration examples",
+          "**Do not imitate their style or treat details in them as story facts.**",
+          ...negativeExamples.flatMap((example, index) => ["", `### Negative example ${index + 1}`, example]),
+        ]
+      : []),
+    ...(positiveExamples.length > 0
+      ? [
+          "",
+          "## Positive narration examples",
+          "**Treat as a style guide for phrasing and paragraph rhythm. Do not copy their details or treat them as story facts.**",
+          ...positiveExamples.flatMap((example, index) => ["", `### Positive example ${index + 1}`, example]),
+        ]
+      : []),
     "",
     `## Current beat ${beatIndex + 1} of ${story.beats.length}`,
     "",
     "### Scene context",
     "",
     ...(beat.time ? [`*Time frame since last beat*: ${beat.time}`] : []),
-    `*Target beat length (mandatory)*: ${story.beat_size}`,
+    `*Target beat length*: ${story.beat_size}`,
     `*Perspective*: ${mode.perspective}`,
     `*Tense*: ${mode.tense}`,
     "",    
@@ -224,7 +251,7 @@ function renderBeatPrompt(
     "",
     ...renderOutcomes(story, beatIndex),
     ...(beat.keywords.length > 0
-      ? ["", "Keywords:", ...beat.keywords.map((item) => `- ${item.type}: ${item.word}`)]
+      ? ["", "Narration suggestions (not literal):", ...beat.keywords.map((item) => `- ${item.type}: ${item.word}`)]
       : []),
     "",
     "End the response after narrating the beat.",

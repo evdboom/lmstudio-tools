@@ -461,14 +461,18 @@ function App() {
                   ? state.beat_index + 1
                   : previousBeatIndex === undefined ? currentBeatIndex + 1 : previousBeatIndex + 1}
               </button>
-              <input
+              <textarea
                 aria-label="Additional direction"
                 placeholder="Add a direction..."
+                rows={2}
                 value={instruction}
                 disabled={busy}
                 onChange={(event) => setInstruction(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter" && state.current_draft && !busy) act("next");
+                  if (event.key === "Enter" && !event.shiftKey && state.current_draft && !busy) {
+                    event.preventDefault();
+                    act("next");
+                  }
                 }}
               />
               <label className="auto-continue">

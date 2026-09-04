@@ -76,6 +76,35 @@ describe("LM Studio streaming client", () => {
     );
   });
 
+  it("finishes on chat.end without waiting for the HTTP stream to close", async () => {
+    const cancel = vi.fn();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode([
+          'event: message.delta\ndata: {"type":"message.delta","content":"The scene ended."}\n\n',
+          'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_done"}}\n\n',
+        ].join("")));
+      },
+      cancel,
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(stream)));
+
+    const result = await streamLmStudioNarration({
+      baseUrl: "http://127.0.0.1:1234/api/v1",
+      model: "test-model",
+      input: "Narrate.",
+      signal: new AbortController().signal,
+      onDelta: vi.fn(),
+    });
+
+    expect(result).toEqual({
+      narration: "The scene ended.",
+      reasoning: "",
+      responseId: "resp_done",
+    });
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
   it("routes think tags from message chunks to narration reasoning", async () => {
     const stream = [
       'event: message.delta\ndata: {"type":"message.delta","content":"<thi"}\n\n',
@@ -289,6 +318,31 @@ describe("LM Studio streaming client", () => {
     expect(onTool).toHaveBeenCalledWith("story_read");
     expect(onReasoningDelta).toHaveBeenCalledWith("Need to inspect the beats.");
     expect(result).toEqual({ message: "I expanded the midpoint.", responseId: "resp_author" });
+  });
+
+  it("finishes authoring on chat.end without waiting for the HTTP stream to close", async () => {
+    const cancel = vi.fn();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode([
+          'event: message.delta\ndata: {"type":"message.delta","content":"Saved."}\n\n',
+          'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_author_done"}}\n\n',
+        ].join("")));
+      },
+      cancel,
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(stream)));
+
+    const result = await streamLmStudioAuthoring({
+      baseUrl: "http://127.0.0.1:1234/api/v1",
+      model: "test-model",
+      input: "Save it.",
+      signal: new AbortController().signal,
+      onDelta: vi.fn(),
+    });
+
+    expect(result).toEqual({ message: "Saved.", responseId: "resp_author_done" });
+    expect(cancel).toHaveBeenCalledOnce();
   });
 
   it("routes think tags out of authoring messages", async () => {

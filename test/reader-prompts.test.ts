@@ -32,6 +32,19 @@ describe("beat block", () => {
     expect(input).toContain("Once every listed event is true, end the scene immediately.");
   });
 
+  it("renders positive and negative mode examples as non-canon style guidance", () => {
+    const story = tidewrack();
+    story.narration_modes[0].negative_examples = ["One dense paragraph.\nStill the same block."];
+    story.narration_modes[0].positive_examples = ["A short action.\n\nA separate reaction."];
+    const prompt = buildBlueprintHistoryNarrationInput(story, 0).input;
+
+    expect(prompt).toContain("## Negative narration examples");
+    expect(prompt).toContain("Do not imitate their style or treat details in them as story facts.");
+    expect(prompt).toContain("One dense paragraph.\nStill the same block.");
+    expect(prompt).toContain("## Positive narration examples");
+    expect(prompt).toContain("A short action.\n\nA separate reaction.");
+  });
+
   it("lists a state change as an outcome of the beat", () => {
     expect(input).toContain("- [New this beat]: A stiff white scar.");
     expect(input).toContain("- [Leaving this beat]: Blood dried into the floor grating.");

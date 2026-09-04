@@ -191,6 +191,7 @@ export async function streamLmStudioNarration(options: {
     let narration = "";
     let reasoning = "";
     let responseId: string | undefined;
+    let streamEnded = false;
     const taggedContent = createThinkTagSplitter({
       onMessage: (content) => {
         narration += content;
@@ -238,6 +239,7 @@ export async function streamLmStudioNarration(options: {
         taggedContent.push(event.content);
       }
       if (event.type === "chat.end") {
+        streamEnded = true;
         taggedContent.flush();
         if (typeof event.result?.response_id === "string") responseId = event.result.response_id;
         if (!narration.trim()) {
@@ -258,10 +260,14 @@ export async function streamLmStudioNarration(options: {
       buffer += decoder.decode(value, { stream: !done });
       const events = buffer.split(/\r?\n\r?\n/);
       buffer = events.pop() ?? "";
-      for (const event of events) processEvent(event);
-      if (done) break;
+      for (const event of events) {
+        processEvent(event);
+        if (streamEnded) break;
+      }
+      if (done || streamEnded) break;
     }
-    if (buffer.trim()) processEvent(buffer);
+    if (!streamEnded && buffer.trim()) processEvent(buffer);
+    if (streamEnded) await reader.cancel();
     return { narration: narration.trim(), reasoning: reasoning.trim(), responseId };
   }
 
@@ -333,6 +339,7 @@ export async function streamLmStudioAuthoring(options: {
   let buffer = "";
   let message = "";
   let responseId: string | undefined;
+  let streamEnded = false;
   const taggedContent = createThinkTagSplitter({
     onMessage: (content) => {
       message += content;
@@ -363,6 +370,7 @@ export async function streamLmStudioAuthoring(options: {
     }
     if (event.type === "tool_call.start" && event.tool) options.onTool?.(event.tool);
     if (event.type === "chat.end") {
+      streamEnded = true;
       taggedContent.flush();
       responseId = event.result?.response_id;
       if (!message.trim()) {
@@ -382,10 +390,14 @@ export async function streamLmStudioAuthoring(options: {
     buffer += decoder.decode(value, { stream: !done });
     const events = buffer.split(/\r?\n\r?\n/);
     buffer = events.pop() ?? "";
-    for (const event of events) processEvent(event);
-    if (done) break;
+    for (const event of events) {
+      processEvent(event);
+      if (streamEnded) break;
+    }
+    if (done || streamEnded) break;
   }
-  if (buffer.trim()) processEvent(buffer);
+  if (!streamEnded && buffer.trim()) processEvent(buffer);
+  if (streamEnded) await reader.cancel();
   if (!responseId) throw new Error("LM Studio did not return a stateful response_id.");
   return { message: message.trim(), responseId };
 }

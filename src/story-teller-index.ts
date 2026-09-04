@@ -131,6 +131,10 @@ export function registerStoryTools(
     perspective: text,
     tense: text,
     rules: z.array(text).min(1).max(32),
+    positive_examples: z.array(text).max(16).default([])
+      .describe("Multiline prose examples whose style and paragraph rhythm should be followed, without copying their story details."),
+    negative_examples: z.array(text).max(16).default([])
+      .describe("Multiline prose examples whose style should be avoided; their details are not story facts."),
     kind: z.enum(["replace", "supplemental"]).default("replace")
       .describe("'replace' uses only these rules; 'supplemental' layers them onto the default mode's rules."),
   }, wrap(names.addNarrationMode, ({ story_path, ...mode }) =>

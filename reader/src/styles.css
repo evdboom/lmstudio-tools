@@ -229,7 +229,12 @@ button:disabled { cursor: default; opacity: 0.45; }
   background: var(--bar);
   backdrop-filter: blur(16px);
 }
-.controls input { width: min(620px, 48vw); }
+.controls > textarea {
+  width: min(620px, 48vw);
+  min-height: 42px;
+  max-height: 140px;
+  field-sizing: content;
+}
 .auto-continue { display: flex; align-items: center; gap: 7px; white-space: nowrap; color: var(--muted); font-size: 13px; }
 .auto-continue input { width: 16px; min-height: 16px; accent-color: var(--green); }
 .error { margin: 24px 0; padding: 12px 14px; border-left: 3px solid var(--red); background: var(--red-pale); color: var(--red-dark); }
@@ -270,6 +275,8 @@ summary span { color: var(--muted); font-size: 12px; font-weight: 400; }
 .world-fields > label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 700; }
 .world-fields .wide { grid-column: 1 / -1; }
 .world-fields textarea { width: 100%; min-height: 76px; }
+.example-row { display: grid; grid-template-columns: 1fr auto; align-items: start; gap: 8px; margin-bottom: 8px; }
+.example-row textarea { min-height: 130px; white-space: pre-wrap; }
 .world-fields fieldset { min-width: 0; margin: 0; padding: 10px 12px; border: 1px solid var(--line); }
 .world-fields legend { padding: 0 5px; color: var(--muted); font-size: 12px; font-weight: 700; }
 .relation-row { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) auto; gap: 8px; margin-bottom: 8px; }
@@ -329,7 +336,7 @@ summary span { color: var(--muted); font-size: 12px; font-weight: 400; }
   .controls { grid-template-columns: auto 1fr auto; }
   .auto-continue { grid-column: 2; grid-row: 2; }
   .controls button { padding: 0 12px; }
-  .controls input { width: 100%; min-width: 0; }
+  .controls > textarea { width: 100%; min-width: 0; }
 }
 
 @media (max-width: 900px) {

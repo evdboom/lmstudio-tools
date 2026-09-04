@@ -46,6 +46,8 @@ export const narrationModeSchema = z.object({
   perspective: nonEmpty,
   tense: nonEmpty,
   rules: z.array(nonEmpty).min(1),
+  positive_examples: z.array(nonEmpty).optional(),
+  negative_examples: z.array(nonEmpty).optional(),
   // "supplemental" layers these rules on top of the default mode's rules; "replace" (default) uses only its own.
   kind: z.enum(["replace", "supplemental"]).optional(),
 });
@@ -153,6 +155,18 @@ export function resolveNarrationRules(story: StoryBlueprint, mode: StoryNarratio
   if (mode.kind !== "supplemental" || mode.id === story.default_narration_mode) return mode.rules;
   const base = story.narration_modes.find((item) => item.id === story.default_narration_mode);
   return base ? [...base.rules, ...mode.rules] : mode.rules;
+}
+
+/** Style examples for `mode`, layered in the same way as narration rules. */
+export function resolveNarrationExamples(
+  story: StoryBlueprint,
+  mode: StoryNarrationMode,
+  kind: "positive_examples" | "negative_examples"
+): string[] {
+  const examples = mode[kind] ?? [];
+  if (mode.kind !== "supplemental" || mode.id === story.default_narration_mode) return examples;
+  const base = story.narration_modes.find((item) => item.id === story.default_narration_mode);
+  return base ? [...(base[kind] ?? []), ...examples] : examples;
 }
 
 export function findCharacter(story: StoryBlueprint, id: string): StoryCharacter | undefined {

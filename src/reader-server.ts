@@ -17,12 +17,15 @@ import {
   streamLmStudioNarration,
 } from "./lmstudio-client.js";
 import {
+  applyReaderRegeneration,
   applyReaderReview,
+  dismissReaderReview,
   getReaderState,
   prepareReaderBeatRegeneration,
   prepareReaderImagePlan,
   prepareReaderGeneration,
   prepareReaderReview,
+  resolveReviewNarration,
   saveReaderDraft,
   saveReaderImagePlan,
   saveReaderReview,
@@ -350,17 +353,35 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       return reply.code(409).send({ error: "A generation is already active for this run." });
     }
 
-    activeGenerations.add(key);
-    await acquireWakeLock();
-    const abort = new AbortController();
-    request.raw.on("aborted", () => abort.abort());
+    let review: Awaited<ReturnType<typeof prepareReaderReview>>;
     try {
-      const review = await prepareReaderReview(
+      review = await prepareReaderReview(
         options.root,
         body.data.story_path,
         params.data.runId,
         body.data.beat_index
       );
+    } catch (error) {
+      return reply.code(400).send({ error: message(error) });
+    }
+
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+    });
+
+    activeGenerations.add(key);
+    await acquireWakeLock();
+    const abort = new AbortController();
+    request.raw.on("aborted", () => abort.abort());
+    reply.raw.on("close", () => {
+      if (!reply.raw.writableEnded) abort.abort();
+    });
+    try {
+      const beatNumber = body.data.beat_index + 1;
+      reply.raw.write(`event: status\ndata: ${JSON.stringify(`Reviewing beat ${beatNumber}...`)}\n\n`);
       const generated = await streamLmStudioNarration({
         baseUrl: options.lmStudioUrl,
         model: body.data.model,
@@ -370,25 +391,40 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         previousResponseId: review.previousResponseId,
         store: review.store,
         signal: abort.signal,
-        onDelta: () => {},
+        onDelta: (delta) => {
+          reply.raw.write(`event: delta\ndata: ${JSON.stringify(delta)}\n\n`);
+        },
+        onReasoning: () => {
+          reply.raw.write(`event: status\ndata: ${JSON.stringify(`The model is reasoning about beat ${beatNumber}...`)}\n\n`);
+        },
+        onReasoningDelta: (delta) => {
+          reply.raw.write(`event: reasoning\ndata: ${JSON.stringify(delta)}\n\n`);
+        },
+        onRecovery: () => {
+          reply.raw.write(`event: status\ndata: ${JSON.stringify("Reasoning finished without a verdict. Asking the model to output the beat...")}\n\n`);
+        },
       });
-      return await saveReaderReview(
+      const state = await saveReaderReview(
         options.root,
         body.data.story_path,
         params.data.runId,
         body.data.beat_index,
         {
           model: body.data.model,
-          narration: generated.narration,
+          narration: resolveReviewNarration(review.narration, generated.narration),
           reasoning: generated.reasoning || undefined,
           responseId: review.store ? generated.responseId : undefined,
         }
       );
+      reply.raw.write(`event: done\ndata: ${JSON.stringify(state)}\n\n`);
     } catch (error) {
-      return reply.code(400).send({ error: message(error) });
+      if (!abort.signal.aborted) {
+        reply.raw.write(`event: error\ndata: ${JSON.stringify(message(error))}\n\n`);
+      }
     } finally {
       releaseWakeLock();
       activeGenerations.delete(key);
+      reply.raw.end();
     }
   });
 
@@ -408,17 +444,35 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       return reply.code(409).send({ error: "A generation is already active for this run." });
     }
 
-    activeGenerations.add(key);
-    await acquireWakeLock();
-    const abort = new AbortController();
-    request.raw.on("aborted", () => abort.abort());
+    let regeneration: Awaited<ReturnType<typeof prepareReaderBeatRegeneration>>;
     try {
-      const regeneration = await prepareReaderBeatRegeneration(
+      regeneration = await prepareReaderBeatRegeneration(
         options.root,
         body.data.story_path,
         params.data.runId,
         body.data.beat_index
       );
+    } catch (error) {
+      return reply.code(400).send({ error: message(error) });
+    }
+
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+    });
+
+    activeGenerations.add(key);
+    await acquireWakeLock();
+    const abort = new AbortController();
+    request.raw.on("aborted", () => abort.abort());
+    reply.raw.on("close", () => {
+      if (!reply.raw.writableEnded) abort.abort();
+    });
+    try {
+      const beatNumber = body.data.beat_index + 1;
+      reply.raw.write(`event: status\ndata: ${JSON.stringify(`Regenerating beat ${beatNumber}...`)}\n\n`);
       const generated = await streamLmStudioNarration({
         baseUrl: options.lmStudioUrl,
         model: body.data.model,
@@ -428,15 +482,25 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         previousResponseId: regeneration.previousResponseId,
         store: regeneration.store,
         signal: abort.signal,
-        onDelta: () => {},
+        onDelta: (delta) => {
+          reply.raw.write(`event: delta\ndata: ${JSON.stringify(delta)}\n\n`);
+        },
+        onReasoning: () => {
+          reply.raw.write(`event: status\ndata: ${JSON.stringify(`The model is reasoning about beat ${beatNumber}...`)}\n\n`);
+        },
+        onReasoningDelta: (delta) => {
+          reply.raw.write(`event: reasoning\ndata: ${JSON.stringify(delta)}\n\n`);
+        },
+        onRecovery: () => {
+          reply.raw.write(`event: status\ndata: ${JSON.stringify("Reasoning finished without narration. Asking the model to output the beat...")}\n\n`);
+        },
       });
-      await saveReaderReview(
+      const state = await applyReaderRegeneration(
         options.root,
         body.data.story_path,
         params.data.runId,
         body.data.beat_index,
         {
-          model: body.data.model,
           narration: generated.narration,
           reasoning: generated.reasoning || undefined,
           responseId: regeneration.store ? generated.responseId : undefined,
@@ -447,17 +511,15 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
           },
         }
       );
-      return await applyReaderReview(
-        options.root,
-        body.data.story_path,
-        params.data.runId,
-        body.data.beat_index
-      );
+      reply.raw.write(`event: done\ndata: ${JSON.stringify(state)}\n\n`);
     } catch (error) {
-      return reply.code(400).send({ error: message(error) });
+      if (!abort.signal.aborted) {
+        reply.raw.write(`event: error\ndata: ${JSON.stringify(message(error))}\n\n`);
+      }
     } finally {
       releaseWakeLock();
       activeGenerations.delete(key);
+      reply.raw.end();
     }
   });
 
@@ -472,6 +534,27 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
     }
     try {
       return await applyReaderReview(
+        options.root,
+        body.data.story_path,
+        params.data.runId,
+        body.data.beat_index
+      );
+    } catch (error) {
+      return reply.code(400).send({ error: message(error) });
+    }
+  });
+
+  app.post("/api/runs/:runId/dismiss-review", async (request, reply) => {
+    const params = z.object({ runId: runIdSchema }).safeParse(request.params);
+    const body = z.object({
+      story_path: storyPathSchema,
+      beat_index: z.number().int().nonnegative(),
+    }).safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: "Invalid review dismissal request." });
+    }
+    try {
+      return await dismissReaderReview(
         options.root,
         body.data.story_path,
         params.data.runId,

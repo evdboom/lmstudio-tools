@@ -180,6 +180,8 @@ button:disabled { cursor: default; opacity: 0.45; }
 .beat-review > strong { display: block; margin-bottom: 10px; font-size: 13px; }
 .review-prose { margin-bottom: 14px; white-space: pre-wrap; color: var(--prose); font: 16px/1.65 "Palatino Linotype", "Book Antiqua", Georgia, serif; }
 .beat-review button { min-height: 34px; }
+.beat-action-status { display: flex; align-items: center; gap: 10px; margin-top: 18px; color: var(--muted); font-size: 13px; }
+.beat-action-status i { width: 14px; height: 14px; border: 2px solid var(--line); border-top-color: var(--red); border-radius: 50%; animation: spin 800ms linear infinite; }
 .beat.writing::after {
   content: "";
   display: inline-block;

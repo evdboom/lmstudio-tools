@@ -95,6 +95,11 @@ function App() {
   >();
   const [generationStatus, setGenerationStatus] = useState("");
   const [reasoning, setReasoning] = useState("");
+  const [actionBeatIndex, setActionBeatIndex] = useState<number>();
+  const [actionStatus, setActionStatus] = useState("");
+  const [actionReasoning, setActionReasoning] = useState("");
+  const [actionStreamed, setActionStreamed] = useState("");
+  const [visibleReviews, setVisibleReviews] = useState<Set<number>>(new Set());
   const [error, setError] = useState("");
   const [autoContinue, setAutoContinue] = useState(
     () => localStorage.getItem("story-reader-auto-continue") === "true"
@@ -148,16 +153,60 @@ function App() {
     return run.accepted.find((item) => item.beat_index === beatIndex);
   }
 
+  async function readEventStream(response: Response, handlers: {
+    onStatus?: (value: string) => void;
+    onReasoning?: (value: string) => void;
+    onDelta?: (value: string) => void;
+    onState?: (value: ReaderState) => void;
+  }): Promise<ReaderState> {
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let result: ReaderState | undefined;
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const events = buffer.split("\n\n");
+      buffer = events.pop() ?? "";
+      for (const event of events) {
+        const type = event.match(/^event: (.+)$/m)?.[1];
+        const data = event.match(/^data: (.+)$/m)?.[1];
+        if (!data) continue;
+        if (type === "state") handlers.onState?.(JSON.parse(data));
+        if (type === "status") handlers.onStatus?.(JSON.parse(data));
+        if (type === "reasoning") handlers.onReasoning?.(JSON.parse(data));
+        if (type === "delta") handlers.onDelta?.(JSON.parse(data));
+        if (type === "done") result = JSON.parse(data);
+        if (type === "error") throw new Error(JSON.parse(data));
+      }
+      if (done) break;
+    }
+    if (!result) throw new Error("The stream ended without a result.");
+    return result;
+  }
+
   async function runReview(run: ReaderState, beatIndex: number, signal?: AbortSignal) {
-    setBusy(true);
-    setGenerationStatus(`Reviewing beat ${beatIndex + 1}...`);
-    const reviewed = await json<ReaderState>(`/api/runs/${run.run_id}/review`, {
+    setActionBeatIndex(beatIndex);
+    setActionStreamed("");
+    setActionReasoning("");
+    setActionStatus(`Reviewing beat ${beatIndex + 1}...`);
+    const response = await fetch(`/api/runs/${run.run_id}/review`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ story_path: run.story_path, model, beat_index: beatIndex }),
       signal,
     });
+    if (!response.ok || !response.body) {
+      const body = await response.json().catch(() => undefined);
+      throw new Error(body?.error ?? `Review failed (${response.status}).`);
+    }
+    const reviewed = await readEventStream(response, {
+      onStatus: setActionStatus,
+      onReasoning: (value) => setActionReasoning((current) => current + value),
+      onDelta: (value) => setActionStreamed((current) => current + value),
+    });
     setState(reviewed);
+    setVisibleReviews((current) => new Set(current).add(beatIndex));
     const original = narrationAt(run, beatIndex)?.narration;
     const result = narrationAt(reviewed, beatIndex)?.review?.narration;
     return { state: reviewed, changed: original !== result };
@@ -165,8 +214,42 @@ function App() {
 
   async function reviewBeat(run: ReaderState, beatIndex: number) {
     setError("");
+    setBusy(true);
     try {
       await runReview(run, beatIndex);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+      setActionBeatIndex(undefined);
+      setActionStatus("");
+      setActionStreamed("");
+      setActionReasoning("");
+    }
+  }
+
+  async function applyReviewRequest(run: ReaderState, beatIndex: number): Promise<ReaderState> {
+    const applied = await json<ReaderState>(`/api/runs/${run.run_id}/apply-review`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ story_path: run.story_path, beat_index: beatIndex }),
+    });
+    setState(applied);
+    setVisibleReviews((current) => {
+      if (!current.has(beatIndex)) return current;
+      const next = new Set(current);
+      next.delete(beatIndex);
+      return next;
+    });
+    return applied;
+  }
+
+  async function applyReview(run: ReaderState, beatIndex: number) {
+    setBusy(true);
+    setGenerationStatus(`Applying review to beat ${beatIndex + 1}...`);
+    setError("");
+    try {
+      await applyReviewRequest(run, beatIndex);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -175,17 +258,23 @@ function App() {
     }
   }
 
-  async function applyReview(run: ReaderState, beatIndex: number) {
+  async function dismissReview(run: ReaderState, beatIndex: number) {
     setBusy(true);
-    setGenerationStatus(`Applying review to beat ${beatIndex + 1}...`);
+    setGenerationStatus(`Keeping the original beat ${beatIndex + 1}...`);
     setError("");
     try {
-      const applied = await json<ReaderState>(`/api/runs/${run.run_id}/apply-review`, {
+      const dismissed = await json<ReaderState>(`/api/runs/${run.run_id}/dismiss-review`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ story_path: run.story_path, beat_index: beatIndex }),
       });
-      setState(applied);
+      setState(dismissed);
+      setVisibleReviews((current) => {
+        if (!current.has(beatIndex)) return current;
+        const next = new Set(current);
+        next.delete(beatIndex);
+        return next;
+      });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -205,14 +294,32 @@ function App() {
     const abort = new AbortController();
     generationAbort.current = abort;
     setBusy(true);
-    setGenerationStatus(`Regenerating beat ${beatIndex + 1}...`);
+    setActionBeatIndex(beatIndex);
+    setActionStreamed("");
+    setActionReasoning("");
+    setActionStatus(`Regenerating beat ${beatIndex + 1}...`);
     setError("");
+    setVisibleReviews((current) => {
+      if (!current.has(beatIndex)) return current;
+      const next = new Set(current);
+      next.delete(beatIndex);
+      return next;
+    });
     try {
-      let regenerated = await json<ReaderState>(`/api/runs/${run.run_id}/regenerate-beat`, {
+      const response = await fetch(`/api/runs/${run.run_id}/regenerate-beat`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ story_path: run.story_path, model, beat_index: beatIndex }),
         signal: abort.signal,
+      });
+      if (!response.ok || !response.body) {
+        const body = await response.json().catch(() => undefined);
+        throw new Error(body?.error ?? `Regeneration failed (${response.status}).`);
+      }
+      let regenerated = await readEventStream(response, {
+        onStatus: setActionStatus,
+        onReasoning: (value) => setActionReasoning((current) => current + value),
+        onDelta: (value) => setActionStreamed((current) => current + value),
       });
       setState(regenerated);
       if (reviewAfterGenerationRef.current) {
@@ -226,7 +333,10 @@ function App() {
     } finally {
       if (generationAbort.current === abort) generationAbort.current = undefined;
       setBusy(false);
-      setGenerationStatus("");
+      setActionBeatIndex(undefined);
+      setActionStatus("");
+      setActionStreamed("");
+      setActionReasoning("");
     }
   }
 
@@ -261,41 +371,26 @@ function App() {
         throw new Error(body.error ?? `Generation failed (${response.status}).`);
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        buffer += decoder.decode(value, { stream: !done });
-        const events = buffer.split("\n\n");
-        buffer = events.pop() ?? "";
-        for (const event of events) {
-          const type = event.match(/^event: (.+)$/m)?.[1];
-          const data = event.match(/^data: (.+)$/m)?.[1];
-          if (!data) continue;
-          if (type === "state") setState(JSON.parse(data));
-          if (type === "status") setGenerationStatus(JSON.parse(data));
-          if (type === "reasoning") {
-            setReasoning((current) => current + JSON.parse(data));
-          }
-          if (type === "delta") {
-            setGenerationStatus("Writing the beat...");
-            setStreamed((current) => current + JSON.parse(data));
-          }
-          if (type === "done") {
-            completedState = JSON.parse(data);
-            setState(completedState);
-            setStreamed("");
-          }
-          if (type === "error") throw new Error(JSON.parse(data));
-        }
-        if (done) break;
-      }
+      completedState = await readEventStream(response, {
+        onState: setState,
+        onStatus: setGenerationStatus,
+        onReasoning: (value) => setReasoning((current) => current + value),
+        onDelta: (value) => {
+          setGenerationStatus("Writing the beat...");
+          setStreamed((current) => current + value);
+        },
+      });
+      setState(completedState);
+      setStreamed("");
       let reviewChanged = false;
       if (reviewAfterGenerationRef.current && completedState?.current_draft) {
         const reviewed = await runReview(completedState, completedState.beat_index, abort.signal);
         completedState = reviewed.state;
         reviewChanged = reviewed.changed;
+        if (reviewChanged && autoContinueRef.current) {
+          completedState = await applyReviewRequest(completedState, completedState.beat_index);
+          reviewChanged = false;
+        }
       }
       if (!reviewChanged && autoContinueRef.current && completedState?.current_draft &&
           completedState.beat_index + 1 < completedState.total_beats) {
@@ -338,6 +433,7 @@ function App() {
     setInstruction("");
     setGenerationStatus("");
     setReasoning("");
+    setVisibleReviews(new Set());
     setError("");
     try {
       await refreshShelf();
@@ -366,6 +462,7 @@ function App() {
     if (!storyPath || !model) return;
     setBusy(true);
     setError("");
+    setVisibleReviews(new Set());
     try {
       const run = await json<ReaderState>("/api/runs", {
         method: "POST",
@@ -388,6 +485,7 @@ function App() {
   async function resume(run: RunItem) {
     setBusy(true);
     setError("");
+    setVisibleReviews(new Set());
     try {
       const resumed = await json<ReaderState>(
         `/api/runs/${run.run_id}?story_path=${encodeURIComponent(run.story_path)}`
@@ -432,6 +530,8 @@ function App() {
 
   const currentNarration = streamed
     || (busy && generationAction !== "next" ? undefined : state?.current_draft?.narration);
+  const isActingCurrent = actionBeatIndex !== undefined && actionBeatIndex === state?.beat_index;
+  const currentDisplayNarration = isActingCurrent && actionStreamed ? actionStreamed : currentNarration;
   const currentBeatIndex = state
     ? state.current_draft
       ? state.beat_index
@@ -521,53 +621,87 @@ function App() {
               <p className="eyebrow">{state.premise}</p>
               <h1>{state.title}</h1>
             </header>
-            {state.accepted.map((beat) => (
-              <section className="beat" key={beat.beat_index}>
-                <span className="beat-number">{String(beat.beat_index + 1).padStart(2, "0")}</span>
-                {beat.narration.split(/\n{2,}/).map((paragraph, index) => <p key={index}>{paragraph}</p>)}
-                <div className="beat-review-actions">
-                  <button className="secondary" disabled={busy} onClick={() => void regenerateBeat(state, beat.beat_index)}>Regenerate</button>
-                  <button className="secondary" disabled={busy} onClick={() => void reviewBeat(state, beat.beat_index)}>Review</button>
-                </div>
-                {beat.review && <section className={`beat-review ${beat.review.narration === beat.narration ? "keep" : "replace"}`}>
-                  <strong>{beat.review.narration === beat.narration ? "Review passed" : "Revision suggested"}</strong>
-                  {beat.review.narration !== beat.narration && <>
-                    <div className="review-prose">{beat.review.narration}</div>
-                    <button className="primary" disabled={busy} onClick={() => void applyReview(state, beat.beat_index)}>Apply revision</button>
-                  </>}
-                </section>}
-              </section>
-            ))}
-            {currentNarration && state.status === "active" && (
+            {state.accepted.map((beat) => {
+              const isActing = actionBeatIndex === beat.beat_index;
+              const displayNarration = isActing && actionStreamed ? actionStreamed : beat.narration;
+              return (
+                <section className={`beat ${isActing ? "writing" : ""}`} key={beat.beat_index}>
+                  <span className="beat-number">{String(beat.beat_index + 1).padStart(2, "0")}</span>
+                  {displayNarration.split(/\n{2,}/).map((paragraph, index) => <p key={index}>{paragraph}</p>)}
+                  {isActing && (
+                    <div className="beat-action-status" role="status" aria-live="polite">
+                      <i />
+                      <span>{actionStatus}</span>
+                    </div>
+                  )}
+                  {isActing && actionReasoning && (
+                    <details className="reasoning-trace" open>
+                      <summary>Reasoning <span>live</span></summary>
+                      <pre>{actionReasoning}</pre>
+                    </details>
+                  )}
+                  <div className="beat-review-actions">
+                    <button className="secondary" disabled={busy} onClick={() => void regenerateBeat(state, beat.beat_index)}>Regenerate</button>
+                    <button className="secondary" disabled={busy} onClick={() => void reviewBeat(state, beat.beat_index)}>Review</button>
+                  </div>
+                  {visibleReviews.has(beat.beat_index) && beat.review && <section className={`beat-review ${beat.review.narration === beat.narration ? "keep" : "replace"}`}>
+                    <strong>{beat.review.narration === beat.narration ? "Review passed" : "Revision suggested"}</strong>
+                    {beat.review.narration !== beat.narration && <>
+                      <div className="review-prose">{beat.review.narration}</div>
+                      <div className="beat-review-actions">
+                        <button className="secondary" disabled={busy} onClick={() => void dismissReview(state, beat.beat_index)}>Keep original</button>
+                        <button className="primary" disabled={busy} onClick={() => void applyReview(state, beat.beat_index)}>Apply revision</button>
+                      </div>
+                    </>}
+                  </section>}
+                </section>
+              );
+            })}
+            {currentDisplayNarration && state.status === "active" && (
               <section className={`beat current ${busy ? "writing" : ""}`}>
                 <span className="beat-number current-number">
                   {String(state.beat_index + 1).padStart(2, "0")}
                   <small>Current</small>
                 </span>
-                {currentNarration.split(/\n{2,}/).map((paragraph, index) => <p key={index}>{paragraph}</p>)}
+                {currentDisplayNarration.split(/\n{2,}/).map((paragraph, index) => <p key={index}>{paragraph}</p>)}
+                {isActingCurrent && (
+                  <div className="beat-action-status" role="status" aria-live="polite">
+                    <i />
+                    <span>{actionStatus}</span>
+                  </div>
+                )}
+                {isActingCurrent && actionReasoning && (
+                  <details className="reasoning-trace" open>
+                    <summary>Reasoning <span>live</span></summary>
+                    <pre>{actionReasoning}</pre>
+                  </details>
+                )}
                 {!busy && state.current_draft && <div className="beat-review-actions">
                   <button className="secondary" onClick={() => void regenerateBeat(state, state.beat_index)}>Regenerate</button>
                   <button className="secondary" onClick={() => void reviewBeat(state, state.beat_index)}>Review</button>
                 </div>}
-                {state.current_draft?.review && <section className={`beat-review ${state.current_draft.review.narration === state.current_draft.narration ? "keep" : "replace"}`}>
+                {visibleReviews.has(state.beat_index) && state.current_draft?.review && <section className={`beat-review ${state.current_draft.review.narration === state.current_draft.narration ? "keep" : "replace"}`}>
                   <strong>{state.current_draft.review.narration === state.current_draft.narration ? "Review passed" : "Revision suggested"}</strong>
                   {state.current_draft.review.narration !== state.current_draft.narration && <>
                     <div className="review-prose">{state.current_draft.review.narration}</div>
-                    <button className="primary" disabled={busy} onClick={() => void applyReview(state, state.beat_index)}>Apply revision</button>
+                    <div className="beat-review-actions">
+                      <button className="secondary" disabled={busy} onClick={() => void dismissReview(state, state.beat_index)}>Keep original</button>
+                      <button className="primary" disabled={busy} onClick={() => void applyReview(state, state.beat_index)}>Apply revision</button>
+                    </div>
                   </>}
                 </section>}
               </section>
             )}
-            {busy && !streamed && (
+            {busy && !streamed && (generationStatus || actionStatus) && (
               <div className="generation-status" role="status" aria-live="polite">
                 <i />
-                <span>{generationStatus}</span>
+                <span>{generationStatus || actionStatus}</span>
               </div>
             )}
-            {busy && reasoning && (
+            {busy && (reasoning || actionReasoning) && (
               <details className="reasoning-trace">
                 <summary>Reasoning <span>live</span></summary>
-                <pre>{reasoning}</pre>
+                <pre>{reasoning || actionReasoning}</pre>
               </details>
             )}
             {state.status === "completed" && <div className="fin">End</div>}

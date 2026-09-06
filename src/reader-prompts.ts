@@ -32,10 +32,7 @@ export interface AcceptedNarration {
 export type ReasoningMode = "native" | "template_think" | "think" | "thinking";
 
 export function taggedReasoningRule(mode: ReasoningMode): string[] {
-  if (mode === "native") return [
-    "- Before writing the scene, reason about its events, the ongoing story, context, constraints and any active instructions.",
-    "- Do not output your reasoning as part of the prose. Write only the fictional scene. Do not explain your reasoning or mention these instructions in the prose.",    
-  ];
+  if (mode === "native") return [];
 
   let start_tag = "<thinking>";
   let end_tag = "</thinking>";
@@ -52,8 +49,8 @@ export function taggedReasoningRule(mode: ReasoningMode): string[] {
   }
 
   return [
-    `- You must begin every response with ${start_tag} and reason inside ${start_tag}...${end_tag} before writing any prose.`,
-    `- Close ${end_tag} before the prose. After that closing tag, output only the complete fictional scene.`,
+    `- You must begin every response with ${start_tag} and reason inside ${start_tag}...${end_tag}.`,
+    `- Close with ${end_tag} before your response.`,
     "- Do not output the tags other then to start and end your reasoning."
   ];
 }
@@ -65,12 +62,14 @@ function renderSystemPrompt(story: StoryBlueprint, reasoningMode: ReasoningMode,
   if (!mode) throw new Error(`Beat ${beatIndex} references an unknown narration mode.`);
 
   return [
+    ...(reasoningMode === "template_think" ? ["/think",""] : []),
     "# Primary task",
     "- You are an expert fiction writer.",
     `- You are to write the ${runMode === "full" ? "story" : "next scene"} of ${story.title} as polished fictional prose`,
     "",
-    "# Response format and reasoning",
+    "# Response format and reasoning",    
     ...taggedReasoningRule(reasoningMode),
+    "- Before writing the scene, reason about its events, the ongoing story, context, constraints and active instructions.",    
     "- Format your reasoning block as a structured plan: include an event checklist, pacing breakdown, and transition notes. Move forward linearly through the \"Scene outcomes\" list; never revisit completed events unless required for direct cause-and-effect.",
     "- Inside the checklist, mark completed events with [x] and leave undone as [ ]. Validate progress against context before writing.",
     "- Your output must contain the **complete** scene; never leave the scene only in reasoning or planning.",

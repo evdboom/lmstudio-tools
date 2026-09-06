@@ -92,6 +92,15 @@ beforeEach(async () => {
 
 afterEach(async () => cleanup());
 
+function parseDoneEvent<T>(payload: string): T {
+  const marker = "event: done\ndata: ";
+  const start = payload.lastIndexOf(marker);
+  if (start < 0) throw new Error("No done event found in SSE payload.");
+  const rest = payload.slice(start + marker.length);
+  const end = rest.indexOf("\n\n");
+  return JSON.parse(end >= 0 ? rest.slice(0, end) : rest) as T;
+}
+
 describe("reader generation stream", () => {
   it("regenerates an older blueprint beat without discarding later prose", async () => {
     const app = await createReaderServer({ root, lmStudioUrl: "http://lmstudio.test/api/v1" });
@@ -118,7 +127,9 @@ describe("reader generation stream", () => {
     await app.close();
 
     expect(regenerated.statusCode).toBe(200);
-    expect(regenerated.json().accepted).toEqual([
+    const state = parseDoneEvent<{ accepted: Array<{ review?: unknown }> }>(regenerated.payload);
+    expect(state.accepted[0]?.review).toBeUndefined();
+    expect(state.accepted).toEqual([
       expect.objectContaining({
         narration: "The carriage stirred.",
         prompt: expect.objectContaining({ input: expect.stringContaining("Mara enters.") }),
@@ -153,7 +164,8 @@ describe("reader generation stream", () => {
     await app.close();
 
     expect(reviewed.statusCode).toBe(200);
-    expect(reviewed.json().current_draft.review).toMatchObject({
+    const state = parseDoneEvent<{ current_draft: { review: unknown } }>(reviewed.payload);
+    expect(state.current_draft.review).toMatchObject({
       narration: "The carriage stirred.",
       model: "test-model",
     });

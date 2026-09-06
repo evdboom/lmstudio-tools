@@ -34,9 +34,62 @@ export interface ReaderState {
 
 type ReviewableNarration = ReaderRun["accepted"][number] | NonNullable<ReaderRun["current_draft"]>;
 
+// Matches control/tracking tags like [VALID], [REPLACE], [APPEND], or a future [EVENT 3] so they never reach stored prose.
+const NARRATION_TAG_PATTERN = /\[[A-Z][A-Z0-9 _-]*\]/g;
+const REVIEW_TAG_PATTERN = /^\s*\[(VALID|REPLACE|APPEND)\]/i;
+
 function narrationAt(run: ReaderRun, beatIndex: number): ReviewableNarration | undefined {
   if (run.beat_index === beatIndex && run.current_draft) return run.current_draft;
   return run.accepted.find((item) => item.beat_index === beatIndex);
+}
+
+export function stripNarrationTags(text: string): string {
+  const withoutTags = text.replace(NARRATION_TAG_PATTERN, "");
+  const withoutTrailingSpaces = withoutTags.split("\n").map((line) => line.trimEnd()).join("\n");
+  return withoutTrailingSpaces.replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function appendNarration(original: string, continuation: string): string {
+  const addition = stripNarrationTags(continuation);
+  return addition ? `${original.trimEnd()}\n\n${addition}` : original;
+}
+
+export function resolveReviewNarration(original: string, generated: string): string {
+  const match = REVIEW_TAG_PATTERN.exec(generated);
+  if (!match) return stripNarrationTags(generated);
+  const rest = generated.slice(match[0].length);
+  switch (match[1].toUpperCase()) {
+    case "VALID": return original;
+    case "APPEND": return appendNarration(original, rest);
+    default: return stripNarrationTags(rest);
+  }
+}
+
+function archiveCurrentVersion(target: ReviewableNarration) {
+  return {
+    narration: target.narration,
+    reasoning: target.reasoning,
+    response_id: target.response_id,
+    prompt: target.prompt,
+    prompt_instruction: target.prompt_instruction,
+    replaced_at: new Date().toISOString(),
+  };
+}
+
+function branchFullContext(
+  current: ReaderRun,
+  target: ReviewableNarration,
+  beatIndex: number,
+  totalBeats: number,
+  responseId: string | undefined
+): void {
+  target.response_id = responseId;
+  if (current.current_draft !== target) {
+    current.accepted = current.accepted.filter((item) => item.beat_index <= beatIndex);
+    current.current_draft = undefined;
+    current.beat_index = beatIndex + 1;
+    current.status = current.beat_index >= totalBeats ? "completed" : "active";
+  }
 }
 
 export async function prepareReaderReview(
@@ -58,14 +111,19 @@ export async function prepareReaderReview(
 
   return {
     systemPrompt: [
+      "# Primary task",
       "You are a strict fiction editor reviewing one generated story beat.",
+      "",
       "# Response format and reasoning",
-      ...taggedReasoningRule(run.reasoning_mode),
-      "Reason through the original instructions sentence by sentence before deciding whether to preserve or revise the result.",
-      "Return only the complete final prose for this beat, with no verdict, explanation, heading, or code fence.",
-      "If the result already satisfies every instruction, reproduce it exactly, byte for byte.",
-      "Otherwise make the smallest revision needed. Preserve correct prose and do not add new story material.",
-      "Verify every required event occurs in order, no future beat begins, the maximum word budget is not exceeded, viewpoint and tense hold, canon is not invented, and every sentence is grammatical and relevant.",
+      ...taggedReasoningRule(run.reasoning_mode),      
+      "",
+      "# Review instructions",      
+      "Verify the generated beat against the original instructions: every required event occurs in order, no future beat begins, the maximum word budget is not exceeded, viewpoint and tense hold, canon is not invented, and every sentence is grammatical and relevant.",
+      "Begin your final answer with exactly one of these tags on its own, then nothing else on that line:",
+      "[VALID] if the result satisfies every instruction. Output nothing else after the tag.",
+      "[REPLACE] if the result needs a correction. Follow it with the **complete** corrected prose for the entire beat.",
+      "[APPEND] if the prose so far is correct but stopped before covering every required event. Follow it with only the **missing** continuation, picking up exactly where the prose stopped, including any paragraph break needed before it.",
+      "Never repeat prose that is already correct. Do not add other tags, headings, verdicts, or code fences.",
     ].join("\n"),
     input: [
       "# Original system instructions",
@@ -184,6 +242,21 @@ export async function saveReaderReview(
   return toState(root, run);
 }
 
+export async function dismissReaderReview(
+  root: string,
+  storyPath: string,
+  runId: string,
+  beatIndex: number
+): Promise<ReaderState> {
+  const run = await mutateReaderRun(root, storyPath, runId, (current) => {
+    const target = narrationAt(current, beatIndex);
+    if (!target) throw new Error(`Beat ${beatIndex + 1} has no review to dismiss.`);
+    target.review = undefined;
+    return current;
+  });
+  return toState(root, run);
+}
+
 export async function applyReaderReview(
   root: string,
   storyPath: string,
@@ -196,28 +269,43 @@ export async function applyReaderReview(
     if (!target?.review) throw new Error(`Beat ${beatIndex + 1} has no review to apply.`);
     if (target.review.narration === target.narration) return current;
 
-    target.revisions = [
-      ...(target.revisions ?? []),
-      {
-        narration: target.narration,
-        reasoning: target.reasoning,
-        response_id: target.response_id,
-        prompt: target.prompt,
-        prompt_instruction: target.prompt_instruction,
-        replaced_at: new Date().toISOString(),
-      },
-    ];
+    target.revisions = [...(target.revisions ?? []), archiveCurrentVersion(target)];
     target.narration = target.review.narration;
     target.reasoning = target.review.reasoning;
     if (target.review.prompt) target.prompt = target.review.prompt;
     if (current.context_mode === "full") {
-      target.response_id = target.review.response_id;
-      if (current.current_draft !== target) {
-        current.accepted = current.accepted.filter((item) => item.beat_index <= beatIndex);
-        current.current_draft = undefined;
-        current.beat_index = beatIndex + 1;
-        current.status = current.beat_index >= story.beats.length ? "completed" : "active";
-      }
+      branchFullContext(current, target, beatIndex, story.beats.length, target.review.response_id);
+    }
+    return current;
+  });
+  return toState(root, run);
+}
+
+// A direct replacement, unlike a review: there is no candidate to accept, so no review record is kept.
+export async function applyReaderRegeneration(
+  root: string,
+  storyPath: string,
+  runId: string,
+  beatIndex: number,
+  regenerated: {
+    narration: string;
+    reasoning?: string;
+    responseId?: string;
+    prompt?: NarrationPrompt;
+  }
+): Promise<ReaderState> {
+  const story = await readStoryFile(root, storyPath);
+  const run = await mutateReaderRun(root, storyPath, runId, (current) => {
+    const target = narrationAt(current, beatIndex);
+    if (!target) throw new Error(`Beat ${beatIndex + 1} has no narration to regenerate.`);
+
+    target.revisions = [...(target.revisions ?? []), archiveCurrentVersion(target)];
+    target.narration = stripNarrationTags(regenerated.narration);
+    target.reasoning = regenerated.reasoning;
+    target.prompt = regenerated.prompt;
+    target.review = undefined;
+    if (current.context_mode === "full") {
+      branchFullContext(current, target, beatIndex, story.beats.length, regenerated.responseId);
     }
     return current;
   });
@@ -419,7 +507,7 @@ export async function saveReaderDraft(
   const { reasoning, ...requestPrompt } = prompt ?? {};
   const run = await mutateReaderRun(root, storyPath, runId, (current) => {
     current.current_draft = {
-      narration,
+      narration: stripNarrationTags(narration),
       reasoning,
       prompt_instruction: instruction,
       response_id: responseId,

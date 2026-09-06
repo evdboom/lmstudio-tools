@@ -31,62 +31,77 @@ export interface AcceptedNarration {
 
 export type ReasoningMode = "native" | "template_think" | "think" | "thinking";
 
-const CORE_RULES = [
-  "- Write the listed events as a complete fictional scene. Every event must be true by the end; invent connective action, dialogue and sensory detail that bring them about, but do not invent named characters, relationships, prior events or facts not supplied by the current context.",
-  "- Build the scene from action, dialogue, immediate reactions and concrete details that connect the listed events. Do not wander into unrelated memories, backstory, summaries or side stories.",
-  "- Use complete, controlled sentences and paragraph breaks. Never chain unrelated associations into a continuing sentence.",
-  "- Once every listed event is true, end the scene immediately. Do not resolve or write anything beyond the event list.",
-  "- Treat everything under the history, state and facts headings as context for writing the current scene; never retell it.",
-  "- Never re-introduce or re-describe anything marked as established.",
-];
-
-function taggedReasoningRule(mode: ReasoningMode): string[] {
+export function taggedReasoningRule(mode: ReasoningMode): string[] {
   if (mode === "native") return [
     "- Before writing the scene, reason about its events, the ongoing story, context, constraints and any active instructions.",
-    "- Do not output your reasoning as part of the prose. Write only the fictional scene. Do not explain your reasoning or mention these instructions in the prose.",
-    "- Your output must contain the **complete** scene; never leave any of it only in reasoning or planning.",
+    "- Do not output your reasoning as part of the prose. Write only the fictional scene. Do not explain your reasoning or mention these instructions in the prose.",    
   ];
-  if (mode === "template_think") {
-    return [
-      "/think",
-      "",
-      "- You must begin every response with [THINK] and reason inside [THINK]...[/THINK] before writing any narration.",
-      "- Close [/THINK] before the prose. After that closing tag, output only the complete fictional scene.",
-      "- Before writing the scene, reason about its events, the ongoing story, context, constraints and any active instructions.",
-      "- Your output must contain the **complete** scene; never leave the scene only in reasoning or planning.",
-      "- Do not output your reasoning outside of the [THINK] tags. Write only the fictional scene. Do not explain your reasoning or mention these instructions in the prose.",
-    ];
+
+  let start_tag = "<thinking>";
+  let end_tag = "</thinking>";
+
+  if (mode === "think")
+  {
+    start_tag = "<think>";
+    end_tag = "</think>";
   }
-  const tag = mode === "thinking" ? "thinking" : "think";
+  else if (mode === "template_think")
+  {
+    start_tag = "[THINK]";
+    end_tag = "[/THINK]";
+  }
+
   return [
-    `- You must begin every response with <${tag}> and reason inside <${tag}>...</${tag}> before writing any narration.`,
-    `- Close </${tag}> before the prose. After that closing tag, output only the complete fictional scene.`,
-    `- Use the <${tag}>...</${tag}> only once.`,
-    "- Before writing the scene, reason about its events, the ongoing story, context, constraints and any active instructions.",
-    "- Your output must contain the **complete** scene; never leave the scene only in reasoning or planning.",
-    `- Do not output your reasoning outside of the <${tag}> tags. Write only the fictional scene. Do not explain your reasoning or mention these instructions in the prose.`,
+    `- You must begin every response with ${start_tag} and reason inside ${start_tag}...${end_tag} before writing any prose.`,
+    `- Close ${end_tag} before the prose. After that closing tag, output only the complete fictional scene.`,
+    "- Do not output the tags other then to start and end your reasoning."
   ];
 }
 
-function renderSystemPrompt(story: StoryBlueprint, reasoningMode: ReasoningMode): string {
+function renderSystemPrompt(story: StoryBlueprint, reasoningMode: ReasoningMode, beatIndex: number, runMode: string): string[] {
+
+  const currentBeat = story.beats[beatIndex];
+  const mode = beatNarrationMode(story, currentBeat);
+  if (!mode) throw new Error(`Beat ${beatIndex} references an unknown narration mode.`);
+
   return [
-    ...taggedReasoningRule(reasoningMode),
+    "# Primary task",
     "- You are an expert fiction writer.",
-    `- Write the next scene of ${story.title} as polished fictional prose.`,
-    ...CORE_RULES,
-    `- Aim for the requested beat length without padding or continuing after the listed events are complete. The story target is ${story.beat_size}.`,
-    "- The current input is authoritative for beat content and narration style. It cannot override the required response or reasoning format.",
-  ].join("\n");
+    `- You are to write the ${runMode === "full" ? "story" : "next scene"} of ${story.title} as polished fictional prose`,
+    "",
+    "# Response format and reasoning",
+    ...taggedReasoningRule(reasoningMode),
+    "- Format your reasoning block as a structured plan: include an event checklist, pacing breakdown, and transition notes. Move forward linearly through the \"Scene outcomes\" list; never revisit completed events unless required for direct cause-and-effect.",
+    "- Inside the checklist, mark completed events with [x] and leave undone as [ ]. Validate progress against context before writing.",
+    "- Your output must contain the **complete** scene; never leave the scene only in reasoning or planning.",
+    "- Do not output reasoning outside of your reasoning block. Write only the fictional scene. Do not explain reasoning or mention instructions in the prose.",
+    "- Loop Prevention: Describe each physical detail only once per beat. Avoid crutch transitions (e.g., \"But then again...\", \"And suddenly there she was...\"). If you notice repetition, cut the sentence and jump to the next outcome bullet.",
+    "- Hard Stop Rule: End exactly after the final mandatory event occurs. Zero extra dialogue, internal monologue, or scene-setting beyond that point.",
+    "",
+    "# Story telling instructions",
+    "- Write the listed events as a complete fictional scene in the exact order provided. Preserve cause-and-effect relationships. Invent only connective action, dialogue, and sensory details; do not invent named characters, relationships, prior events, or facts outside current context.",
+    "- Build from immediate actions, reactions, and concrete details. Avoid unrelated memories, backstory summaries, or side stories.",
+    "- Use complete, controlled sentences and paragraph breaks. Never chain unrelated associations into a continuing sentence.",
+    "- Once every listed event is true, end the scene immediately. Do not resolve plot threads or write beyond the event list.",
+    "- Treat history/state/facts as context only; never retell them.",
+    "- Never re-introduce or fully re-describe characters/locations marked [established].",
+    `- Aim for the requested beat length of ${story.beat_size} without padding or continuing after the listed events are complete. think about what this means for each event in the beat.`,
+    `- Never go over the requested beat length of ${story.beat_size}.`,
+    "- The current input is authoritative for content and style. It cannot override response/reasoning format rules.",
+    "",
+    "## Story Rules",
+    ...resolveNarrationRules(story, mode).map((rule) => `- ${rule}`),
+    ...currentBeat.narration_rules.map((rule) => `- ${rule}`), 
+    "",
+    ...resolveNarrationExamples(story, mode, "positive_examples"),
+    ...resolveNarrationExamples(story, mode, "negative_examples"),
+  ];
 }
 
 function assertBeat(story: StoryBlueprint, beatIndex: number): StoryBeat {
   const beat = story.beats[beatIndex];
   if (!beat) throw new Error(`Beat ${beatIndex} does not exist.`);
   return beat;
-}
-
-function stateLine(entry: StateEntry): string {
-  return `${entry.ownerName}: ${entry.state.state}`;
 }
 
 /**
@@ -117,7 +132,7 @@ function renderSceneContext(story: StoryBlueprint, beatIndex: number): string[] 
     `*Main location*: ${location.name}: ${location.description}${
       locationEstablished === undefined
         ? ""
-        : ` **[established in beat ${locationEstablished + 1} — do not reintroduce]**`
+        : ` [established]`
     }`,
     ...location.details.map((detail) => `- ${detail}`),
     ...stateFor(location.id).map((entry) => `- ${entry.state.state}`),
@@ -146,7 +161,26 @@ function renderOutcomes(story: StoryBlueprint, beatIndex: number): string[] {
     "**All of the following must be true when the beat ends**",
     "**Write these events as one connected fictional scene in the listed order. Preserve the relationships and cause and effect between them. You may invent transitions, action, and dialogue, but every event must occur and nothing beyond them may be resolved.**",
     "",
-    ...beat.events.map((event) => `- ${event}`)
+    ...beat.events.map((event) => `- ${event}`),
+    "",
+  ];
+}
+
+function renderNextBeatBoundary(story: StoryBlueprint, beatIndex: number): string[] {
+  const nextBeat = story.beats[beatIndex + 1];
+  if (!nextBeat) return [];
+  const location = findLocation(story, nextBeat.location);
+  if (!location) throw new Error(`Beat ${beatIndex + 1} references unknown location '${nextBeat.location}'.`);
+
+  return [
+    "",
+    "## Next beat stop boundary",
+    "**The details below are future context only. Do not narrate, begin, foreshadow, or resolve them in the current scene. End before this next beat starts.**",
+    ...(nextBeat.time ? [`*Next beat time frame from current*: ${nextBeat.time}`] : []),
+    `*Next beat location*: ${location.name}`,
+    "*Start of next beat — do not include in this scene*:",
+    ...nextBeat.events.slice(0, 2).map((event) => `- ${event}`),
+    ""
   ];
 }
 
@@ -180,9 +214,10 @@ function renderHistory(
   }
   return [
     "## Story so far",
-    "Everything below has already happened and is canon. Do not write it into the scene again.",
+    "**Everything below has already happened and is canon. Do not write it into the scene again.**",
     "",
     ...beats,
+    "",
   ];
 }
 
@@ -192,7 +227,7 @@ function renderFacts(story: StoryBlueprint, beatIndex: number): string[] {
   return [
     "## Established facts",
     ...facts.map((fact) => `- ${fact.fact}`),
-    "",
+    ""
   ];
 }
 
@@ -207,37 +242,11 @@ function renderBeatPrompt(
   story: StoryBlueprint,
   beatIndex: number,
   instruction?: string
-): string {
+): string[] {
   const beat = assertBeat(story, beatIndex);
   const mode = beatNarrationMode(story, beat);
   if (!mode) throw new Error(`Beat ${beatIndex} references an unknown narration mode.`);
-  const negativeExamples = resolveNarrationExamples(story, mode, "negative_examples");
-  const positiveExamples = resolveNarrationExamples(story, mode, "positive_examples");
-
   return [
-    "# Write the following scene",
-    "",
-    "## Mandatory narration rules",
-    ...CORE_RULES,
-    ...resolveNarrationRules(story, mode).map((rule) => `- ${rule}`),
-    ...beat.narration_rules.map((rule) => `- ${rule}`),
-    ...(negativeExamples.length > 0
-      ? [
-          "",
-          "## Negative narration examples",
-          "**Do not imitate their style or treat details in them as story facts.**",
-          ...negativeExamples.flatMap((example, index) => ["", `### Negative example ${index + 1}`, example]),
-        ]
-      : []),
-    ...(positiveExamples.length > 0
-      ? [
-          "",
-          "## Positive narration examples",
-          "**Treat as a style guide for phrasing and paragraph rhythm. Do not copy their details or treat them as story facts.**",
-          ...positiveExamples.flatMap((example, index) => ["", `### Positive example ${index + 1}`, example]),
-        ]
-      : []),
-    "",
     `## Current beat ${beatIndex + 1} of ${story.beats.length}`,
     "",
     "### Scene context",
@@ -248,46 +257,22 @@ function renderBeatPrompt(
     `*Tense*: ${mode.tense}`,
     "",    
     ...renderSceneContext(story, beatIndex),
-    "",
     ...renderOutcomes(story, beatIndex),
     ...(beat.keywords.length > 0
-      ? ["", "Narration suggestions (not literal):", ...beat.keywords.map((item) => `- ${item.type}: ${item.word}`)]
+      ? ["Narration suggestions (not literal):", ...beat.keywords.map((item) => `- ${item.type}: ${item.word}`), ""]
       : []),
-    "",
-    "End the response when the scene is complete.",
+    ...renderNextBeatBoundary(story, beatIndex),
     ...(instruction?.trim()
       ? ["", "## Reader instruction", instruction.trim()]
       : []),
-  ].join("\n");
+    ""
+  ];
 }
 
 function assertAcceptedHistory(accepted: AcceptedNarration[], beatIndex: number): void {
   if (accepted.length !== beatIndex || accepted.some((item, index) => item.beatIndex !== index)) {
     throw new Error("Accepted narration history must contain every preceding beat in order.");
   }
-}
-
-export function buildNarrationMessages(
-  story: StoryBlueprint,
-  beatIndex: number,
-  accepted: AcceptedNarration[],
-  instruction?: string,
-  reasoningMode: ReasoningMode = "native"
-): ReaderChatMessage[] {
-  assertBeat(story, beatIndex);
-  assertAcceptedHistory(accepted, beatIndex);
-
-  return [
-    {
-      role: "system",
-      content: renderSystemPrompt(story, reasoningMode),
-    },
-    ...accepted.flatMap<ReaderChatMessage>((item) => [
-      { role: "user", content: renderBeatPrompt(story, item.beatIndex, item.instruction) },
-      { role: "assistant", content: item.narration },
-    ]),
-    { role: "user", content: renderBeatPrompt(story, beatIndex, instruction) },
-  ];
 }
 
 /**
@@ -297,32 +282,30 @@ export function buildNarrationMessages(
 export function buildStatefulNarrationInput(
   story: StoryBlueprint,
   beatIndex: number,
-  accepted: AcceptedNarration[],
   instruction?: string,
-  bootstrapAcceptedHistory = false,
+  isFirstPrompt = false,
   reasoningMode: ReasoningMode = "native"
 ): { systemPrompt?: string; input: string } {
   assertBeat(story, beatIndex);
-  assertAcceptedHistory(accepted, beatIndex);
 
-  const bootstrap = bootstrapAcceptedHistory && accepted.length > 0
+  const storyPremise = isFirstPrompt 
     ? [
-        "",
-        "## Accepted story transcript",
-        "This prose is already established canon. Continue from it; do not rewrite it.",
-        ...accepted.flatMap((item) => [
-          "",
-          `### Accepted beat ${item.beatIndex + 1}`,
-          item.narration,
-        ]),
-      ]
+      "# Write the story",
+      ...renderAssignment(story),
+      "",
+    ]
     : [];
 
   return {
-    systemPrompt: bootstrapAcceptedHistory || accepted.length === 0
-      ? [renderSystemPrompt(story, reasoningMode), ...bootstrap].join("\n")
-      : undefined,
-    input: renderBeatPrompt(story, beatIndex, instruction),
+    systemPrompt: isFirstPrompt
+      ? renderSystemPrompt(story, reasoningMode, beatIndex, "full").join("\n")
+      : undefined, 
+    input: [      
+      ...storyPremise,
+      ...renderBeatPrompt(story, beatIndex, instruction),      
+      ...renderFacts(story, beatIndex),
+      `End the response when you told the events of **beat ${beatIndex + 1}**`
+    ].join("\n"),
   };
 }
 
@@ -338,14 +321,7 @@ export function buildBlueprintHistoryNarrationInput(
 ): { systemPrompt: string; input: string } {
   assertBeat(story, beatIndex);
 
-  return {
-    systemPrompt: renderSystemPrompt(story, reasoningMode),
-    input: [
-      ...renderHistory(story, 0, beatIndex),
-      ...renderFacts(story, beatIndex),
-      renderBeatPrompt(story, beatIndex, instruction),
-    ].join("\n"),
-  };
+  return buildHybridNarrationInput(story, beatIndex, [], instruction, 0, reasoningMode);
 }
 
 /**
@@ -371,34 +347,29 @@ export function buildHybridNarrationInput(
   reasoningMode: ReasoningMode = "native"
 ): { systemPrompt: string; input: string } {
   assertBeat(story, beatIndex);
-  assertAcceptedHistory(accepted, beatIndex);
+  if (proseBeats > 0) assertAcceptedHistory(accepted, beatIndex);
 
   const windowSize = Math.max(0, Math.min(proseBeats, accepted.length));
   const windowStart = beatIndex - windowSize;
   const prose = accepted.slice(windowStart);
 
   return {
-    systemPrompt: renderSystemPrompt(story, reasoningMode),
+    systemPrompt: renderSystemPrompt(story, reasoningMode, beatIndex, "blueprint").join("\n"),
     input: [
-      ...renderAssignment(story),
+      "# Write the following scene",
+      ...renderAssignment(story),             
+      ...renderBeatPrompt(story, beatIndex, instruction),      
+      ...renderFacts(story, beatIndex),      
       ...renderHistory(story, 0, beatIndex),
-      ...(prose.length > 0
-        ? [
-            "## Recent narration",
-            "Verbatim prose of the most recent narrated beats. Match its voice and diction.",
-            ...prose.flatMap((item) => ["", `### Beat ${item.beatIndex + 1}`, item.narration]),
-            "",
-          ]
-        : []),
-      ...renderFacts(story, beatIndex),
-      renderBeatPrompt(story, beatIndex, instruction),
+      ...renderNarratedBeats(prose),
+      `End the response when you told the events of **beat ${beatIndex + 1}**`
     ].join("\n"),
   };
 }
 
 function renderAssignment(story: StoryBlueprint): string[] {
-  return[
-    "# Story",
+  return [
+    "## Story",
     `**Title**: ${story.title}`,
     `**Premise**: ${story.premise}`,
     `**Type**: ${story.story_type}`,
@@ -417,7 +388,7 @@ function characterCard(story: StoryBlueprint, characterId: string, established: 
     `**${character.name}**${
       established === undefined
         ? ""
-        :` **[introduced in beat ${established + 1} — do not re-introduce or re-describe]**`
+        :` [established]`
       }`,
       character.description,
       `${character.appearance ? `*Appearance*: ${character.appearance}` : ""}`,
@@ -431,3 +402,17 @@ function characterCard(story: StoryBlueprint, characterId: string, established: 
       .map((entry) => `  - [Leaving this beat]: ${entry.state.state}`),
   ];
 };
+
+function renderNarratedBeats(prose: AcceptedNarration[]) {
+  if (prose.length === 0) {
+    return [];
+  }
+
+  return [
+    "## Recent narration",
+    "**Verbatim prose of the most recent narrated beats. Match its voice and diction.**",
+    "**Use only for context and writing style.**",
+    ...prose.flatMap((item) => ["", `### Beat ${item.beatIndex + 1}`, item.narration]),
+    "",
+  ];
+}

@@ -17,14 +17,18 @@ import {
   streamLmStudioNarration,
 } from "./lmstudio-client.js";
 import {
+  applyReaderReview,
   getReaderState,
+  prepareReaderBeatRegeneration,
   prepareReaderImagePlan,
   prepareReaderGeneration,
+  prepareReaderReview,
   saveReaderDraft,
   saveReaderImagePlan,
+  saveReaderReview,
   startReaderRun,
 } from "./reader-service.js";
-import { listFinalStories, listReaderRuns } from "./reader-store.js";
+import { deleteReaderRun, listFinalStories, listReaderRuns } from "./reader-store.js";
 import {
   listEditableStories,
   readEditableStory,
@@ -129,6 +133,19 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       return { runs: await listReaderRuns(options.root, query.data.story_path) };
     } catch (error) {
       return reply.code(400).send({ error: message(error) });
+    }
+  });
+  app.delete("/api/runs/:runId", async (request, reply) => {
+    const params = z.object({ runId: runIdSchema }).safeParse(request.params);
+    const query = z.object({ story_path: storyPathSchema }).safeParse(request.query);
+    if (!params.success || !query.success) {
+      return reply.code(400).send({ error: "A valid story_path and run id are required." });
+    }
+    try {
+      await deleteReaderRun(options.root, query.data.story_path, params.data.runId);
+      return reply.code(204).send();
+    } catch (error) {
+      return reply.code(404).send({ error: message(error) });
     }
   });
   app.get("/api/models", async (_request, reply) => {
@@ -314,6 +331,154 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       releaseWakeLock();
       activeGenerations.delete(key);
       reply.raw.end();
+    }
+  });
+
+  app.post("/api/runs/:runId/review", async (request, reply) => {
+    const params = z.object({ runId: runIdSchema }).safeParse(request.params);
+    const body = z.object({
+      story_path: storyPathSchema,
+      model: z.string().trim().min(1).max(500),
+      beat_index: z.number().int().nonnegative(),
+    }).safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: "Invalid review request." });
+    }
+
+    const key = `${body.data.story_path}\0${params.data.runId}`;
+    if (activeGenerations.has(key)) {
+      return reply.code(409).send({ error: "A generation is already active for this run." });
+    }
+
+    activeGenerations.add(key);
+    await acquireWakeLock();
+    const abort = new AbortController();
+    request.raw.on("aborted", () => abort.abort());
+    try {
+      const review = await prepareReaderReview(
+        options.root,
+        body.data.story_path,
+        params.data.runId,
+        body.data.beat_index
+      );
+      const generated = await streamLmStudioNarration({
+        baseUrl: options.lmStudioUrl,
+        model: body.data.model,
+        input: review.input,
+        apiToken: options.lmStudioApiToken,
+        systemPrompt: review.systemPrompt,
+        previousResponseId: review.previousResponseId,
+        store: review.store,
+        signal: abort.signal,
+        onDelta: () => {},
+      });
+      return await saveReaderReview(
+        options.root,
+        body.data.story_path,
+        params.data.runId,
+        body.data.beat_index,
+        {
+          model: body.data.model,
+          narration: generated.narration,
+          reasoning: generated.reasoning || undefined,
+          responseId: review.store ? generated.responseId : undefined,
+        }
+      );
+    } catch (error) {
+      return reply.code(400).send({ error: message(error) });
+    } finally {
+      releaseWakeLock();
+      activeGenerations.delete(key);
+    }
+  });
+
+  app.post("/api/runs/:runId/regenerate-beat", async (request, reply) => {
+    const params = z.object({ runId: runIdSchema }).safeParse(request.params);
+    const body = z.object({
+      story_path: storyPathSchema,
+      model: z.string().trim().min(1).max(500),
+      beat_index: z.number().int().nonnegative(),
+    }).safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: "Invalid beat regeneration request." });
+    }
+
+    const key = `${body.data.story_path}\0${params.data.runId}`;
+    if (activeGenerations.has(key)) {
+      return reply.code(409).send({ error: "A generation is already active for this run." });
+    }
+
+    activeGenerations.add(key);
+    await acquireWakeLock();
+    const abort = new AbortController();
+    request.raw.on("aborted", () => abort.abort());
+    try {
+      const regeneration = await prepareReaderBeatRegeneration(
+        options.root,
+        body.data.story_path,
+        params.data.runId,
+        body.data.beat_index
+      );
+      const generated = await streamLmStudioNarration({
+        baseUrl: options.lmStudioUrl,
+        model: body.data.model,
+        input: regeneration.input,
+        apiToken: options.lmStudioApiToken,
+        systemPrompt: regeneration.systemPrompt,
+        previousResponseId: regeneration.previousResponseId,
+        store: regeneration.store,
+        signal: abort.signal,
+        onDelta: () => {},
+      });
+      await saveReaderReview(
+        options.root,
+        body.data.story_path,
+        params.data.runId,
+        body.data.beat_index,
+        {
+          model: body.data.model,
+          narration: generated.narration,
+          reasoning: generated.reasoning || undefined,
+          responseId: regeneration.store ? generated.responseId : undefined,
+          prompt: {
+            input: regeneration.input,
+            system_prompt: regeneration.recordedSystemPrompt,
+            previous_response_id: regeneration.previousResponseId,
+          },
+        }
+      );
+      return await applyReaderReview(
+        options.root,
+        body.data.story_path,
+        params.data.runId,
+        body.data.beat_index
+      );
+    } catch (error) {
+      return reply.code(400).send({ error: message(error) });
+    } finally {
+      releaseWakeLock();
+      activeGenerations.delete(key);
+    }
+  });
+
+  app.post("/api/runs/:runId/apply-review", async (request, reply) => {
+    const params = z.object({ runId: runIdSchema }).safeParse(request.params);
+    const body = z.object({
+      story_path: storyPathSchema,
+      beat_index: z.number().int().nonnegative(),
+    }).safeParse(request.body);
+    if (!params.success || !body.success) {
+      return reply.code(400).send({ error: "Invalid review application request." });
+    }
+    try {
+      return await applyReaderReview(
+        options.root,
+        body.data.story_path,
+        params.data.runId,
+        body.data.beat_index
+      );
+    } catch (error) {
+      return reply.code(400).send({ error: message(error) });
     }
   });
 

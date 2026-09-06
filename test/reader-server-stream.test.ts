@@ -93,6 +93,95 @@ beforeEach(async () => {
 afterEach(async () => cleanup());
 
 describe("reader generation stream", () => {
+  it("regenerates an older blueprint beat without discarding later prose", async () => {
+    const app = await createReaderServer({ root, lmStudioUrl: "http://lmstudio.test/api/v1" });
+    const started = await app.inject({
+      method: "POST",
+      url: "/api/runs",
+      payload: { story_path: storyPath, model: "test-model", context_mode: "blueprint" },
+    });
+    const run = started.json<{ run_id: string }>();
+    await mutateReaderRun(root, storyPath, run.run_id, (current) => {
+      current.accepted = [
+        { beat_index: 0, narration: "Old first beat.", prompt: { input: "Beat 1 request" } },
+        { beat_index: 1, narration: "Keep this later beat.", prompt: { input: "Beat 2 request" } },
+      ];
+      current.beat_index = 2;
+      current.status = "completed";
+    });
+
+    const regenerated = await app.inject({
+      method: "POST",
+      url: `/api/runs/${run.run_id}/regenerate-beat`,
+      payload: { story_path: storyPath, model: "test-model", beat_index: 0 },
+    });
+    await app.close();
+
+    expect(regenerated.statusCode).toBe(200);
+    expect(regenerated.json().accepted).toEqual([
+      expect.objectContaining({
+        narration: "The carriage stirred.",
+        prompt: expect.objectContaining({ input: expect.stringContaining("Mara enters.") }),
+        revisions: [expect.objectContaining({
+          narration: "Old first beat.",
+          prompt: { input: "Beat 1 request" },
+        })],
+      }),
+      expect.objectContaining({ narration: "Keep this later beat." }),
+    ]);
+  });
+
+  it("reviews a generated beat immediately", async () => {
+    const app = await createReaderServer({ root, lmStudioUrl: "http://lmstudio.test/api/v1" });
+    const started = await app.inject({
+      method: "POST",
+      url: "/api/runs",
+      payload: { story_path: storyPath, model: "test-model", context_mode: "blueprint" },
+    });
+    const run = started.json<{ run_id: string }>();
+    await app.inject({
+      method: "POST",
+      url: `/api/runs/${run.run_id}/generate`,
+      payload: { story_path: storyPath, model: "test-model", action: "regenerate" },
+    });
+
+    const reviewed = await app.inject({
+      method: "POST",
+      url: `/api/runs/${run.run_id}/review`,
+      payload: { story_path: storyPath, model: "test-model", beat_index: 0 },
+    });
+    await app.close();
+
+    expect(reviewed.statusCode).toBe(200);
+    expect(reviewed.json().current_draft.review).toMatchObject({
+      narration: "The carriage stirred.",
+      model: "test-model",
+    });
+  });
+
+  it("deletes a saved told story", async () => {
+    const app = await createReaderServer({ root, lmStudioUrl: "http://lmstudio.test/api/v1" });
+    const started = await app.inject({
+      method: "POST",
+      url: "/api/runs",
+      payload: { story_path: storyPath, model: "test-model" },
+    });
+    const run = started.json<{ run_id: string }>();
+
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: `/api/runs/${run.run_id}?story_path=${encodeURIComponent(storyPath)}`,
+    });
+    const listed = await app.inject({
+      method: "GET",
+      url: `/api/runs?story_path=${encodeURIComponent(storyPath)}`,
+    });
+    await app.close();
+
+    expect(deleted.statusCode).toBe(204);
+    expect(listed.json()).toEqual({ runs: [] });
+  });
+
   it("reports usable LAN URLs when bound to all IPv4 interfaces", () => {
     const urls = readerUrls("0.0.0.0", 4317, {
       Ethernet: [{ address: "192.168.1.42", family: "IPv4", internal: false, mac: "", netmask: "", cidr: null }],
@@ -201,7 +290,7 @@ describe("reader generation stream", () => {
     expect(savedRun.current_draft?.response_id).toBe("resp_test");
     expect(savedRun.current_draft?.reasoning).toBe("Checking continuity.");
     expect(savedRun.current_draft?.prompt?.input).toContain("## Current beat 2 of 2");
-    expect(savedRun.current_draft?.prompt?.system_prompt).toContain("You are the narrator");
+    expect(savedRun.current_draft?.prompt?.system_prompt).toContain("You are an expert fiction writer");
     expect(savedRun.model).toBe("test-model");
   });
 

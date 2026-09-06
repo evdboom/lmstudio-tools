@@ -218,6 +218,10 @@ The reader provides:
 - **Next:** accepts the current narration, advances exactly one beat, and treats entered text as an ongoing direction.
 - **Regenerate:** discards the current draft and generates the same beat again; entered text applies to that revision.
 - **Auto continue:** after a draft finishes, accepts it and generates the next beat until the final beat is reached. The preference is stored in the browser.
+- **Review:** sends the exact saved system prompt, beat request, and resulting prose to a stateless editor pass. Correct prose is returned byte-for-byte; otherwise Folio shows the complete suggested replacement for approval.
+- **Review after generation:** immediately starts that review when generation finishes. Auto continue proceeds after an unchanged result and pauses when the reviewer suggests a revision.
+- Applying an older review in `blueprint` or `hybrid` mode replaces only that beat. Applying one in `full` mode uses LM Studio's reviewed response as a new branch point and discards later beats so narration can continue from the revised history.
+- Applied replacements retain every displaced version in the beat's `revisions` array inside its `<story>/reader-runs/<run-id>.json` session file. Generated prose is not written into the authored `story.json` blueprint.
 - A context selector when starting a narration: **Full narration context** retains LM Studio response IDs and the complete accepted prose, while **Previous beat events only** starts a stateless request for every beat and supplies compact prior `story.json` events instead.
 - Story beats store an `events` array. Narration prompts list the current beat's events alongside story context and reader instructions.
 

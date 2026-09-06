@@ -6,6 +6,7 @@ interface StoryItem { path: string; title: string; status: "draft" | "final"; be
 interface State { id: string; state: string; from: string; until?: string }
 interface Character { id: string; name: string; description: string; appearance: string; relations: Array<{ to: string; kind: string }>; attributes: string[]; states: State[] }
 interface Location { id: string; name: string; description: string; details: string[]; states: State[] }
+interface NarrationExample { description: string; text: string }
 interface Story {
   schema: "story-v3";
   status: "draft" | "final";
@@ -16,7 +17,7 @@ interface Story {
   beat_size: string;
   characters: Character[];
   locations: Location[];
-  narration_modes: Array<{ id: string; perspective: string; tense: string; rules: string[]; positive_examples?: string[]; negative_examples?: string[]; kind?: "replace" | "supplemental" }>;
+  narration_modes: Array<{ id: string; perspective: string; tense: string; rules: string[]; positive_examples?: NarrationExample[]; negative_examples?: NarrationExample[]; kind?: "replace" | "supplemental" }>;
   facts: Array<{ id: string; fact: string; from?: string; until?: string; beats: string[]; subjects: string[] }>;
   beats: Array<{ id: string; location: string; characters: string[]; time?: string; events: string[]; narration_mode?: string; keywords: Array<{ type: string; word: string }>; narration_rules: string[] }>;
 }
@@ -115,8 +116,11 @@ function normalize(story: Story): Story {
   copy.locations.forEach((item) => { item.details = cleanLines(item.details); });
   copy.narration_modes.forEach((item) => {
     item.rules = cleanLines(item.rules);
-    item.positive_examples = cleanLines(item.positive_examples ?? []);
-    item.negative_examples = cleanLines(item.negative_examples ?? []);
+    const cleanExamples = (examples: NarrationExample[]) => examples
+      .map((example) => ({ description: example.description.trim(), text: example.text.trim() }))
+      .filter((example) => example.description && example.text);
+    item.positive_examples = cleanExamples(item.positive_examples ?? []);
+    item.negative_examples = cleanExamples(item.negative_examples ?? []);
   });
   // Nothing is renumbered on save: beat order is the array order, and every
   // reference is an id.
@@ -267,10 +271,10 @@ export function AuthoringApp() {
     if (!story || story.narration_modes.length === 1) return; const id = story.narration_modes[index].id; const modes = story.narration_modes.filter((_, itemIndex) => itemIndex !== index); const fallback = modes[0].id;
     update({ narration_modes: modes, default_narration_mode: story.default_narration_mode === id ? fallback : story.default_narration_mode, beats: story.beats.map((beat) => beat.narration_mode === id ? { ...beat, narration_mode: undefined } : beat) });
   }
-  function changeModeExample(index: number, kind: "positive_examples" | "negative_examples", exampleIndex: number, value: string) {
+  function changeModeExample(index: number, kind: "positive_examples" | "negative_examples", exampleIndex: number, patch: Partial<NarrationExample>) {
     if (!story) return;
     const examples = [...(story.narration_modes[index][kind] ?? [])];
-    examples[exampleIndex] = value;
+    examples[exampleIndex] = { ...examples[exampleIndex], ...patch };
     changeMode(index, { [kind]: examples });
   }
   function examplesEditor(index: number, kind: "positive_examples" | "negative_examples", label: string) {
@@ -278,10 +282,10 @@ export function AuthoringApp() {
     const examples = story.narration_modes[index][kind] ?? [];
     return <fieldset className="wide narration-examples"><legend>{label}</legend>
       {examples.map((example, exampleIndex) => <div className="example-row" key={exampleIndex}>
-        <textarea aria-label={`${label} ${exampleIndex + 1}`} value={example} placeholder="Paste a multiline prose example" onChange={(event) => changeModeExample(index, kind, exampleIndex, event.target.value)} />
+        <div className="example-fields"><input aria-label={`${label} ${exampleIndex + 1} description`} value={example.description} placeholder="Dialogue pacing" onChange={(event) => changeModeExample(index, kind, exampleIndex, { description: event.target.value })} /><textarea aria-label={`${label} ${exampleIndex + 1} text`} value={example.text} placeholder="Paste a multiline prose example" onChange={(event) => changeModeExample(index, kind, exampleIndex, { text: event.target.value })} /></div>
         <button className="icon-button danger" title={`Delete ${label.toLowerCase()} ${exampleIndex + 1}`} onClick={() => changeMode(index, { [kind]: examples.filter((_, itemIndex) => itemIndex !== exampleIndex) })}>×</button>
       </div>)}
-      <button className="compact-button" onClick={() => changeMode(index, { [kind]: [...examples, ""] })}>Add example</button>
+      <button className="compact-button" onClick={() => changeMode(index, { [kind]: [...examples, { description: "", text: "" }] })}>Add example</button>
     </fieldset>;
   }
   function changeFact(index: number, patch: Partial<Story["facts"][number]>) {

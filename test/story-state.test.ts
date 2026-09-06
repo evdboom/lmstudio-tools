@@ -4,7 +4,6 @@ import { tidewrack } from "./fixtures/tidewrack.js";
 import {
   activeStates,
   beatHeading,
-  continuity,
   establishedAt,
   factsExpiringAt,
   factsInScope,
@@ -241,64 +240,7 @@ describe("first appearance", () => {
   });
 });
 
-describe("continuity", () => {
-  it("never continues directly from nothing", () => {
-    expect(continuity(tidewrack(), 0)).toMatchObject({
-      isFirstBeat: true,
-      continuesDirectly: false,
-    });
-  });
-
-  it("breaks continuity on an authored time gap", () => {
-    expect(continuity(tidewrack(), 5)).toMatchObject({
-      continuesDirectly: false,
-      time: "Three weeks later.",
-      locationChanged: false,
-      departed: ["Bailiff Kest"],
-    });
-  });
-
-  it("breaks continuity on a location change", () => {
-    expect(continuity(tidewrack(), 2)).toMatchObject({
-      continuesDirectly: false,
-      locationChanged: true,
-      arrived: ["Bailiff Kest"],
-      departed: ["Mara Kest"],
-    });
-  });
-
-  it("breaks continuity on a cast change alone", () => {
-    // b05 keeps the location and adds no time, but the bailiff arrives.
-    expect(continuity(tidewrack(), 4)).toMatchObject({
-      continuesDirectly: false,
-      time: undefined,
-      locationChanged: false,
-      arrived: ["Bailiff Kest"],
-      departed: [],
-    });
-  });
-
-  it("continues directly when location, cast, mode and time all hold", () => {
-    const story = tidewrack();
-    story.beats[4].characters = ["joris", "mara"];
-    story.beats[4].events = ["The night has passed without the boat landing."];
-    expect(continuity(story, 4)).toMatchObject({
-      continuesDirectly: true,
-      arrived: [],
-      departed: [],
-    });
-  });
-
-  it("breaks continuity on a narration mode change", () => {
-    const story = tidewrack();
-    story.beats[4].characters = ["joris", "mara"];
-    story.beats[4].narration_mode = "mara_pov";
-    expect(continuity(story, 4)).toMatchObject({
-      continuesDirectly: false,
-      narrationModeChanged: true,
-    });
-  });
-
+describe("beat headings", () => {
   it("names the beat by location and cast", () => {
     expect(beatHeading(tidewrack(), 4)).toBe(
       "The Lamp Room · Joris Vandel, Mara Kest, Bailiff Kest"

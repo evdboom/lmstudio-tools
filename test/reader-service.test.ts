@@ -8,12 +8,16 @@ import {
   finalizeStory,
 } from "../src/story-authoring.js";
 import {
+  applyReaderReview,
   getReaderState,
+  prepareReaderBeatRegeneration,
   prepareReaderGeneration,
+  prepareReaderReview,
   saveReaderDraft,
+  saveReaderReview,
   startReaderRun,
 } from "../src/reader-service.js";
-import { listReaderRuns, mutateReaderRun } from "../src/reader-store.js";
+import { deleteReaderRun, listReaderRuns, mutateReaderRun, readReaderRun } from "../src/reader-store.js";
 import { makeSandbox } from "./helpers.js";
 
 let root: string;
@@ -135,7 +139,6 @@ describe("reader run service", () => {
     );
 
     expect(started.reasoning_mode).toBe("template_think");
-    expect(request.systemPrompt?.split("\n")).toContain("/think");
     expect(request.systemPrompt).toContain("must begin every response with [THINK]");
     expect(request.systemPrompt).not.toContain("must begin every response with <think>");
   });
@@ -162,7 +165,7 @@ describe("reader run service", () => {
     );
     expect(firstRequest.input).toContain("Revision direction for this beat");
     expect(firstRequest.input).toContain("Make the lamps flicker.");
-    expect(firstRequest.systemPrompt).toContain("You are the narrator");
+    expect(firstRequest.systemPrompt).toContain("You are an expert fiction writer");
     expect(firstRequest.previousResponseId).toBeUndefined();
 
     await saveReaderDraft(
@@ -216,6 +219,196 @@ describe("reader run service", () => {
     expect(state.status).toBe("completed");
   });
 
+  it("deletes one saved reader run", async () => {
+    const started = await startReaderRun(root, storyPath, "test-model");
+
+    await deleteReaderRun(root, storyPath, started.run_id);
+
+    expect(await listReaderRuns(root, storyPath)).toEqual([]);
+    await expect(readReaderRun(root, storyPath, started.run_id)).rejects.toThrow("was not found");
+  });
+
+  it("reviews against the exact saved prompt and result", async () => {
+    const started = await startReaderRun(root, storyPath, "review-model", "blueprint");
+    await saveReaderDraft(root, storyPath, started.run_id, "Original prose.", undefined, undefined, {
+      input: "Original beat input",
+      system_prompt: "Original system prompt",
+    });
+
+    const review = await prepareReaderReview(root, storyPath, started.run_id, 0);
+
+    expect(review.input).toContain("Original system prompt");
+    expect(review.input).toContain("Original beat input");
+    expect(review.input).toContain("Original prose.");
+    expect(review.systemPrompt).toContain("reproduce it exactly, byte for byte");
+    expect(review.store).toBe(false);
+  });
+
+  it("rebuilds regeneration from the current blueprint instead of the saved prompt", async () => {
+    const started = await startReaderRun(root, storyPath, "review-model", "blueprint");
+    await mutateReaderRun(root, storyPath, started.run_id, (run) => {
+      run.accepted = [{
+        beat_index: 0,
+        narration: "Old prose.",
+        prompt: { input: "STALE EVENT LIST" },
+      }];
+      run.beat_index = 1;
+    });
+
+    const regeneration = await prepareReaderBeatRegeneration(root, storyPath, started.run_id, 0);
+
+    expect(regeneration.input).toContain("Mara enters.");
+    expect(regeneration.input).toContain("She finds a passenger, who looks up.");
+    expect(regeneration.input).not.toContain("STALE EVENT LIST");
+  });
+
+  it.each([
+    ["think", "<think>", "</think>"],
+    ["thinking", "<thinking>", "</thinking>"],
+    ["template_think", "[THINK]", "[/THINK]"],
+  ] as const)("uses %s reasoning format during review", async (reasoningMode, startTag, endTag) => {
+    const started = await startReaderRun(
+      root,
+      storyPath,
+      "review-model",
+      "blueprint",
+      1,
+      reasoningMode
+    );
+    await saveReaderDraft(root, storyPath, started.run_id, "Original prose.", undefined, undefined, {
+      input: "Original beat input",
+    });
+
+    const review = await prepareReaderReview(root, storyPath, started.run_id, 0);
+
+    expect(review.systemPrompt).toContain(`reason inside ${startTag}...${endTag}`);
+    expect(review.systemPrompt).toContain(`Close ${endTag} before the prose`);
+  });
+
+  it("replaces a reviewed blueprint beat without discarding later beats", async () => {
+    const started = await startReaderRun(root, storyPath, "review-model", "blueprint");
+    await mutateReaderRun(root, storyPath, started.run_id, (run) => {
+      run.accepted = [0, 1].map((beatIndex) => ({
+        beat_index: beatIndex,
+        narration: `Original beat ${beatIndex + 1}.`,
+        prompt: { input: `Beat ${beatIndex + 1} input` },
+      }));
+      run.beat_index = 2;
+      run.status = "completed";
+    });
+    await saveReaderReview(root, storyPath, started.run_id, 0, {
+      model: "review-model",
+      narration: "Revised beat 1.",
+    });
+
+    const state = await applyReaderReview(root, storyPath, started.run_id, 0);
+
+    expect(state.accepted.map((item) => item.narration)).toEqual([
+      "Revised beat 1.",
+      "Original beat 2.",
+    ]);
+    expect(state.accepted[0].revisions).toEqual([
+      expect.objectContaining({ narration: "Original beat 1." }),
+    ]);
+    expect(state.status).toBe("completed");
+  });
+
+  it("keeps every prior revision in application order", async () => {
+    const started = await startReaderRun(root, storyPath, "review-model", "blueprint");
+    await saveReaderDraft(root, storyPath, started.run_id, "Version one.", undefined, undefined, {
+      input: "Beat input",
+    });
+    await saveReaderReview(root, storyPath, started.run_id, 0, {
+      model: "review-model",
+      narration: "Version two.",
+    });
+    await applyReaderReview(root, storyPath, started.run_id, 0);
+    await saveReaderReview(root, storyPath, started.run_id, 0, {
+      model: "review-model",
+      narration: "Version three.",
+    });
+
+    const state = await applyReaderReview(root, storyPath, started.run_id, 0);
+
+    expect(state.current_draft?.narration).toBe("Version three.");
+    expect(state.current_draft?.revisions?.map((item) => item.narration)).toEqual([
+      "Version one.",
+      "Version two.",
+    ]);
+
+    await prepareReaderGeneration(root, storyPath, started.run_id, "next");
+    const advanced = await getReaderState(root, storyPath, started.run_id);
+    expect(advanced.accepted[0].revisions?.map((item) => item.narration)).toEqual([
+      "Version one.",
+      "Version two.",
+    ]);
+  });
+
+  it("branches a reviewed full-context beat and discards later beats", async () => {
+    const started = await startReaderRun(root, storyPath, "review-model", "full");
+    await mutateReaderRun(root, storyPath, started.run_id, (run) => {
+      run.accepted = [0, 1].map((beatIndex) => ({
+        beat_index: beatIndex,
+        narration: `Original beat ${beatIndex + 1}.`,
+        response_id: `resp_original_${beatIndex}`,
+        prompt: { input: `Beat ${beatIndex + 1} input` },
+      }));
+      run.beat_index = 2;
+      run.status = "completed";
+    });
+    await saveReaderReview(root, storyPath, started.run_id, 0, {
+      model: "review-model",
+      narration: "Revised beat 1.",
+      reasoning: "Removed the digression.",
+      responseId: "resp_reviewed",
+    });
+
+    const state = await applyReaderReview(root, storyPath, started.run_id, 0);
+
+    expect(state.accepted).toHaveLength(1);
+    expect(state.accepted[0]).toMatchObject({
+      narration: "Revised beat 1.",
+      response_id: "resp_reviewed",
+    });
+    expect(state.beat_index).toBe(1);
+    expect(state.status).toBe("active");
+  });
+
+  it("leaves an unchanged reviewed beat byte-identical", async () => {
+    const started = await startReaderRun(root, storyPath, "review-model", "blueprint");
+    await saveReaderDraft(root, storyPath, started.run_id, "Already correct.", undefined, undefined, {
+      input: "Beat input",
+    });
+    await saveReaderReview(root, storyPath, started.run_id, 0, {
+      model: "review-model",
+      narration: "Already correct.",
+    });
+
+    const state = await applyReaderReview(root, storyPath, started.run_id, 0);
+
+    expect(state.current_draft?.narration).toBe("Already correct.");
+    expect(state.beat_index).toBe(0);
+  });
+
+  it("uses a reviewed current draft as the full-context branch point", async () => {
+    const started = await startReaderRun(root, storyPath, "review-model", "full");
+    await saveReaderDraft(root, storyPath, started.run_id, "Original draft.", undefined, "resp_original", {
+      input: "Beat input",
+    });
+    await saveReaderReview(root, storyPath, started.run_id, 0, {
+      model: "review-model",
+      narration: "Revised draft.",
+      responseId: "resp_reviewed",
+    });
+
+    const state = await applyReaderReview(root, storyPath, started.run_id, 0);
+
+    expect(state.current_draft).toMatchObject({
+      narration: "Revised draft.",
+      response_id: "resp_reviewed",
+    });
+  });
+
   it("carries recent prose and derived history in hybrid mode", async () => {
     const started = await startReaderRun(root, storyPath, "test-model", "hybrid", 1);
     expect(started.context_mode).toBe("hybrid");
@@ -233,7 +426,7 @@ describe("reader run service", () => {
 
     // Hybrid rebuilds the prompt each beat rather than chaining responses.
     expect(second.previousResponseId).toBeUndefined();
-    expect(second.systemPrompt).toContain("You are the narrator");
+    expect(second.systemPrompt).toContain("You are an expert fiction writer");
     expect(second.input).toContain("## Recent narration");
     expect(second.input).toContain("Mara stepped between the brass lamps.");
     expect(second.input).toContain("## Current beat 2 of 2");
@@ -247,7 +440,7 @@ describe("reader run service", () => {
     const secondRequest = await prepareReaderGeneration(root, storyPath, started.run_id, "next");
 
     expect(secondRequest.previousResponseId).toBeUndefined();
-    expect(secondRequest.systemPrompt).toContain("You are the narrator");
+    expect(secondRequest.systemPrompt).toContain("You are an expert fiction writer");
     expect(secondRequest.input).toContain("## Story so far");
     expect(secondRequest.input).toContain("### Beat 1 — Dining Car · Mara");
     expect(secondRequest.input).toContain("Mara enters.");
@@ -276,7 +469,7 @@ describe("reader run service", () => {
       current_draft: undefined,
     });
     expect(replacement.input).toContain("Use a quieter opening.");
-    expect(replacement.systemPrompt).toContain("You are the narrator");
+    expect(replacement.systemPrompt).toContain("You are an expert fiction writer");
   });
 
   it("adopts a model for a legacy run and prevents later model switching", async () => {

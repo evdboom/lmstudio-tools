@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   buildBlueprintHistoryNarrationInput,
   buildHybridNarrationInput,
-  buildNarrationMessages,
   buildStatefulNarrationInput,
   type AcceptedNarration,
 } from "../src/reader-prompts.js";
@@ -17,7 +16,7 @@ function accepted(count: number): AcceptedNarration[] {
 }
 
 describe("beat block", () => {
-  const { input } = buildBlueprintHistoryNarrationInput(tidewrack(), 5);
+  const { systemPrompt, input } = buildBlueprintHistoryNarrationInput(tidewrack(), 5);
 
   it("frames events as postconditions rather than a script", () => {
     expect(input).toContain("### Scene outcomes");
@@ -27,21 +26,42 @@ describe("beat block", () => {
   });
 
   it("sets explicit boundaries against runaway narration", () => {
-    expect(input).toContain("Do not wander into unrelated memories, backstory, summaries or side stories.");
-    expect(input).toContain("Never chain unrelated associations into a continuing sentence.");
-    expect(input).toContain("Once every listed event is true, end the scene immediately.");
+    expect(systemPrompt).toContain("Avoid unrelated memories, backstory summaries, or side stories.");
+    expect(systemPrompt).toContain("Never chain unrelated associations into a continuing sentence.");
+    expect(systemPrompt).toContain("Once every listed event is true, end the scene immediately.");
+  });
+
+  it("uses the next beat as a future-only stop boundary", () => {
+    const story = tidewrack();
+    story.beats[1].events = ["First future outcome.", "Second future outcome.", "Hidden later outcome."];
+    const opening = buildBlueprintHistoryNarrationInput(story, 0).input;
+
+    expect(opening).toContain("## Next beat stop boundary");
+    expect(opening).toContain("future context only");
+    expect(opening).toContain("*Next beat time frame from current*: That night.");
+    expect(opening).toContain("*Next beat location*: The Lamp Room");
+    expect(opening).toContain("- First future outcome.");
+    expect(opening).toContain("- Second future outcome.");
+    expect(opening).not.toContain("Hidden later outcome.");
+    expect(opening.indexOf("## Next beat stop boundary")).toBeGreaterThan(opening.indexOf("### Scene outcomes"));
+  });
+
+  it("omits the next beat boundary on the final beat", () => {
+    expect(input).not.toContain("## Next beat stop boundary");
   });
 
   it("renders positive and negative mode examples as non-canon style guidance", () => {
     const story = tidewrack();
-    story.narration_modes[0].negative_examples = ["One dense paragraph.\nStill the same block."];
-    story.narration_modes[0].positive_examples = ["A short action.\n\nA separate reaction."];
-    const prompt = buildBlueprintHistoryNarrationInput(story, 0).input;
+    story.narration_modes[0].negative_examples = [{ description: "Too long dialogue", text: "One dense paragraph.\nStill the same block." }];
+    story.narration_modes[0].positive_examples = [{ description: "Dialogue pacing", text: "A short action.\n\nA separate reaction." }];
+    const prompt = buildBlueprintHistoryNarrationInput(story, 0).systemPrompt;
 
-    expect(prompt).toContain("## Negative narration examples");
-    expect(prompt).toContain("Do not imitate their style or treat details in them as story facts.");
+    expect(prompt).toContain("## Negative narration style examples");
+    expect(prompt).toContain("Treat them only as a style guide of what not to do.");
+    expect(prompt).toContain("### Negative example of Too long dialogue");
     expect(prompt).toContain("One dense paragraph.\nStill the same block.");
-    expect(prompt).toContain("## Positive narration examples");
+    expect(prompt).toContain("## Positive narration style examples");
+    expect(prompt).toContain("### Positive example of Dialogue pacing");
     expect(prompt).toContain("A short action.\n\nA separate reaction.");
   });
 
@@ -51,8 +71,8 @@ describe("beat block", () => {
   });
 
   it("marks an established location and character", () => {
-    expect(input).toContain("[established in beat 2 — do not reintroduce]");
-    expect(input).toContain("**Mara Kest** **[introduced in beat 2 — do not re-introduce or re-describe]**");
+    expect(input).toContain("[established]");
+    expect(input).toContain("**Mara Kest** [established]");
   });
 
   it("keeps identity and relevant appearance after establishment", () => {
@@ -81,7 +101,7 @@ describe("beat block", () => {
     const withoutBailiff = buildBlueprintHistoryNarrationInput(story, 5).input;
     const scene = withoutBailiff.slice(
       withoutBailiff.indexOf("## Scene context"),
-      withoutBailiff.indexOf("### All of")
+      withoutBailiff.indexOf("### Scene outcomes")
     );
     expect(scene).not.toContain("Rowing out to the rock");
     expect(scene).not.toContain("Off-stage");
@@ -118,7 +138,8 @@ describe("fact windows in prompts", () => {
     const facts = (beatIndex: number): string => {
       const input = buildBlueprintHistoryNarrationInput(tidewrack(), beatIndex).input;
       const start = input.indexOf("## Established facts");
-      return start < 0 ? "" : input.slice(start, input.indexOf("Write the following scene"));
+      const end = input.indexOf("## Story so far", start);
+      return start < 0 ? "" : input.slice(start, end < 0 ? undefined : end);
     };
     expect(facts(4)).toContain("The harbour believes the cutter went down with all hands.");
     expect(facts(5)).not.toContain("The harbour believes the cutter went down with all hands.");
@@ -135,7 +156,7 @@ describe("blueprint context mode", () => {
 
   it("recaps every earlier beat without prose", () => {
     expect(systemPrompt).toContain("You are an expert fiction writer.");
-    expect(systemPrompt).toContain("Write the next scene of Tidewrack as polished fictional prose.");
+    expect(systemPrompt).toContain("You are to write the next scene of Tidewrack as polished fictional prose");
     expect(input).toContain("## Story so far");
     expect(input).toContain("### Beat 1 — The Drowned Mare · Joris Vandel");
     expect(input).toContain("### Beat 5 — The Lamp Room · Joris Vandel, Mara Kest, Bailiff Kest");
@@ -153,7 +174,7 @@ describe("blueprint context mode", () => {
   });
 
   it("records an ending and an expiry in the history", () => {
-    const beatFive = input.slice(input.indexOf("### Beat 5"), input.indexOf("## Established facts"));
+    const beatFive = input.slice(input.indexOf("### Beat 5"));
     expect(beatFive).toContain("- Joris Vandel is no longer: The bailiff no longer believes him.");
     expect(beatFive).toContain("- No longer true: The harbour believes the cutter went down with all hands.");
   });
@@ -207,30 +228,31 @@ describe("hybrid context mode", () => {
 
 describe("full context mode", () => {
   it("sends only the beat block once the response chain is established", () => {
-    const prompt = buildStatefulNarrationInput(tidewrack(), 5, accepted(5));
+    const prompt = buildStatefulNarrationInput(tidewrack(), 5);
     expect(prompt.systemPrompt).toBeUndefined();
     expect(prompt.input).toContain("## Current beat 6 of 6");
     expect(prompt.input).not.toContain("## Story so far");
     expect(prompt.input).not.toContain("Prose of beat 5.");
   });
 
-  it("bootstraps accepted prose once when there is no chain to resume", () => {
-    const prompt = buildStatefulNarrationInput(tidewrack(), 5, accepted(5), undefined, true);
-    expect(prompt.systemPrompt).toContain("## Accepted story transcript");
-    expect(prompt.systemPrompt).toContain("Prose of beat 1.");
+  it("bootstraps the story assignment when there is no chain to resume", () => {
+    const prompt = buildStatefulNarrationInput(tidewrack(), 5, undefined, true);
+    expect(prompt.systemPrompt).toContain("# Primary task");
+    expect(prompt.input).toContain("# Write the story");
+    expect(prompt.input).toContain("**Title**: Tidewrack");
     expect(prompt.input).toContain("## Current beat 6 of 6");
   });
 
   it("still gets the derived state and established markers", () => {
-    const prompt = buildStatefulNarrationInput(tidewrack(), 5, accepted(5));
+    const prompt = buildStatefulNarrationInput(tidewrack(), 5);
     expect(prompt.input).toContain("- Shoulder bandaged, arm in a sling.");
-    expect(prompt.input).toContain("do not re-introduce or re-describe");
+    expect(prompt.input).toContain("[established]");
   });
 
   it("only adds explicit tags for tagged reasoning modes", () => {
-    const native = buildStatefulNarrationInput(tidewrack(), 0, []);
-    const think = buildStatefulNarrationInput(tidewrack(), 0, [], undefined, false, "think");
-    const thinking = buildStatefulNarrationInput(tidewrack(), 0, [], undefined, false, "thinking");
+    const native = buildStatefulNarrationInput(tidewrack(), 0, undefined, true);
+    const think = buildStatefulNarrationInput(tidewrack(), 0, undefined, true, "think");
+    const thinking = buildStatefulNarrationInput(tidewrack(), 0, undefined, true, "thinking");
 
     expect(native.systemPrompt).not.toContain("<think");
     expect(think.systemPrompt).toContain("must begin every response with <think>");
@@ -241,30 +263,14 @@ describe("full context mode", () => {
     const prompt = buildStatefulNarrationInput(
       tidewrack(),
       0,
-      [],
       undefined,
-      false,
+      true,
       "template_think"
     );
 
-    expect(prompt.systemPrompt?.split("\n")).toContain("/think");
     expect(prompt.systemPrompt).toContain("must begin every response with [THINK]");
     expect(prompt.systemPrompt).toContain("reason inside [THINK]...[/THINK]");
     expect(prompt.systemPrompt).not.toContain("must begin every response with <think>");
     expect(prompt.systemPrompt).not.toContain("must begin every response with <thinking>");
-  });
-
-  it("replays the accepted beats as chat turns when messages are needed", () => {
-    const messages = buildNarrationMessages(tidewrack(), 1, accepted(1), "Keep Joris terse.");
-    expect(messages.map((message) => message.role)).toEqual([
-      "system",
-      "user",
-      "assistant",
-      "user",
-    ]);
-    expect(messages[2].content).toBe("Prose of beat 1.");
-    expect(messages[3].content).toContain("## Current beat 2 of 6");
-    expect(messages[3].content).toContain("Keep Joris terse.");
-    expect(messages[3].content).not.toContain("Joris has heard that a cutter broke");
   });
 });

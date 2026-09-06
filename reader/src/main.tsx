@@ -26,7 +26,13 @@ interface RunItem {
   updated_at: string;
   status: "active" | "completed";
 }
-interface Narration { beat_index: number; narration: string }
+interface NarrationReview {
+  narration: string;
+  reasoning?: string;
+  model: string;
+  reviewed_at: string;
+}
+interface Narration { beat_index: number; narration: string; review?: NarrationReview }
 interface ImagePlan {
   generated_at: string;
   planner_model: string;
@@ -53,7 +59,7 @@ interface ReaderState {
   beat_index: number;
   total_beats: number;
   accepted: Narration[];
-  current_draft?: { narration: string };
+  current_draft?: { narration: string; review?: NarrationReview };
   ongoing_instructions: string[];
   status: "active" | "completed";
   image_plan?: ImagePlan;
@@ -61,8 +67,8 @@ interface ReaderState {
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
-  const body = await response.json();
-  if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status}).`);
+  const body = response.status === 204 ? undefined : await response.json();
+  if (!response.ok) throw new Error(body?.error ?? `Request failed (${response.status}).`);
   return body as T;
 }
 
@@ -93,7 +99,11 @@ function App() {
   const [autoContinue, setAutoContinue] = useState(
     () => localStorage.getItem("story-reader-auto-continue") === "true"
   );
+  const [reviewAfterGeneration, setReviewAfterGeneration] = useState(
+    () => localStorage.getItem("story-reader-review-after-generation") === "true"
+  );
   const autoContinueRef = useRef(autoContinue);
+  const reviewAfterGenerationRef = useRef(reviewAfterGeneration);
   const generationAbort = useRef<AbortController>();
 
   useEffect(() => {
@@ -105,6 +115,11 @@ function App() {
     autoContinueRef.current = autoContinue;
     localStorage.setItem("story-reader-auto-continue", String(autoContinue));
   }, [autoContinue]);
+
+  useEffect(() => {
+    reviewAfterGenerationRef.current = reviewAfterGeneration;
+    localStorage.setItem("story-reader-review-after-generation", String(reviewAfterGeneration));
+  }, [reviewAfterGeneration]);
 
   useEffect(() => {
     Promise.all([
@@ -127,6 +142,93 @@ function App() {
       .then((result) => setRuns(result.runs))
       .catch((reason) => setError(reason.message));
   }, [storyPath]);
+
+  function narrationAt(run: ReaderState, beatIndex: number) {
+    if (run.beat_index === beatIndex && run.current_draft) return run.current_draft;
+    return run.accepted.find((item) => item.beat_index === beatIndex);
+  }
+
+  async function runReview(run: ReaderState, beatIndex: number, signal?: AbortSignal) {
+    setBusy(true);
+    setGenerationStatus(`Reviewing beat ${beatIndex + 1}...`);
+    const reviewed = await json<ReaderState>(`/api/runs/${run.run_id}/review`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ story_path: run.story_path, model, beat_index: beatIndex }),
+      signal,
+    });
+    setState(reviewed);
+    const original = narrationAt(run, beatIndex)?.narration;
+    const result = narrationAt(reviewed, beatIndex)?.review?.narration;
+    return { state: reviewed, changed: original !== result };
+  }
+
+  async function reviewBeat(run: ReaderState, beatIndex: number) {
+    setError("");
+    try {
+      await runReview(run, beatIndex);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+      setGenerationStatus("");
+    }
+  }
+
+  async function applyReview(run: ReaderState, beatIndex: number) {
+    setBusy(true);
+    setGenerationStatus(`Applying review to beat ${beatIndex + 1}...`);
+    setError("");
+    try {
+      const applied = await json<ReaderState>(`/api/runs/${run.run_id}/apply-review`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ story_path: run.story_path, beat_index: beatIndex }),
+      });
+      setState(applied);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+      setGenerationStatus("");
+    }
+  }
+
+  async function regenerateBeat(run: ReaderState, beatIndex: number) {
+    const hasLaterNarration = run.accepted.some((item) => item.beat_index > beatIndex)
+      || Boolean(run.current_draft && run.beat_index > beatIndex);
+    if (run.context_mode === "full" && hasLaterNarration &&
+        !confirm("Regenerating this beat will discard every later beat so the story can continue from the new LM Studio branch. Continue?")) {
+      return;
+    }
+
+    const abort = new AbortController();
+    generationAbort.current = abort;
+    setBusy(true);
+    setGenerationStatus(`Regenerating beat ${beatIndex + 1}...`);
+    setError("");
+    try {
+      let regenerated = await json<ReaderState>(`/api/runs/${run.run_id}/regenerate-beat`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ story_path: run.story_path, model, beat_index: beatIndex }),
+        signal: abort.signal,
+      });
+      setState(regenerated);
+      if (reviewAfterGenerationRef.current) {
+        regenerated = (await runReview(regenerated, beatIndex, abort.signal)).state;
+        setState(regenerated);
+      }
+    } catch (reason) {
+      if (!abort.signal.aborted) {
+        setError(reason instanceof Error ? reason.message : String(reason));
+      }
+    } finally {
+      if (generationAbort.current === abort) generationAbort.current = undefined;
+      setBusy(false);
+      setGenerationStatus("");
+    }
+  }
 
   async function generate(
     run: ReaderState,
@@ -189,7 +291,13 @@ function App() {
         }
         if (done) break;
       }
-      if (autoContinueRef.current && completedState?.current_draft &&
+      let reviewChanged = false;
+      if (reviewAfterGenerationRef.current && completedState?.current_draft) {
+        const reviewed = await runReview(completedState, completedState.beat_index, abort.signal);
+        completedState = reviewed.state;
+        reviewChanged = reviewed.changed;
+      }
+      if (!reviewChanged && autoContinueRef.current && completedState?.current_draft &&
           completedState.beat_index + 1 < completedState.total_beats) {
         await generate(completedState, "next");
       }
@@ -211,13 +319,47 @@ function App() {
     generationAbort.current?.abort();
   }
 
-  function returnToStories() {
+  async function refreshShelf() {
+    const storyResult = await json<{ stories: StoryItem[] }>("/api/stories");
+    const nextStoryPath = storyResult.stories.some((story) => story.path === storyPath)
+      ? storyPath
+      : storyResult.stories[0]?.path ?? "";
+    const runResult = nextStoryPath
+      ? await json<{ runs: RunItem[] }>(`/api/runs?story_path=${encodeURIComponent(nextStoryPath)}`)
+      : { runs: [] };
+    setStories(storyResult.stories);
+    setStoryPath(nextStoryPath);
+    setRuns(runResult.runs);
+  }
+
+  async function returnToStories() {
     setState(undefined);
     setStreamed("");
     setInstruction("");
     setGenerationStatus("");
     setReasoning("");
     setError("");
+    try {
+      await refreshShelf();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  async function removeRun(run: RunItem) {
+    if (!confirm("Delete this told story? This cannot be undone.")) return;
+    setBusy(true);
+    setError("");
+    try {
+      await json<void>(`/api/runs/${run.run_id}?story_path=${encodeURIComponent(run.story_path)}`, {
+        method: "DELETE",
+      });
+      setRuns((current) => current.filter((item) => item.run_id !== run.run_id));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function begin() {
@@ -295,7 +437,6 @@ function App() {
       ? state.beat_index
       : Math.max(state.beat_index, state.accepted.length)
     : 0;
-  const previousBeatIndex = state?.accepted.at(-1)?.beat_index;
   let imagePlanActionLabel = "Plan images";
   if (busy) imagePlanActionLabel = "Planning...";
   else if (state?.image_plan) imagePlanActionLabel = "Regenerate plan";
@@ -329,7 +470,7 @@ function App() {
             </div>
           ) : (
             <>
-              <button className="secondary" disabled={busy} onClick={returnToStories}>Stories</button>
+              <button className="secondary" disabled={busy} onClick={() => void returnToStories()}>Stories</button>
               <div className="progress" aria-label={`Beat ${Math.min(currentBeatIndex + 1, state.total_beats)} of ${state.total_beats}`}>
                 <span title={state.model}>{state.model ?? "Unknown model"} · {Math.min(currentBeatIndex + 1, state.total_beats)} / {state.total_beats}</span>
                 <i style={{ width: `${(state.accepted.length / state.total_beats) * 100}%` }} />
@@ -357,13 +498,16 @@ function App() {
               <h2>Continue reading</h2>
               {runs.map((run) => (
                 <div className="saved-run" key={run.run_id}>
-                  <div>
+                  <div className="saved-run-summary">
                     <strong>{run.status === "completed" ? "Completed" : `Beat ${run.beat_index + 1}`}</strong>
                     <span title={run.model}>{run.model ?? "Unknown model"} · {CONTEXT_MODE_LABELS[run.context_mode]} · {run.accepted_beats} accepted · {new Date(run.updated_at).toLocaleString()}</span>
                   </div>
-                  <button className="secondary" disabled={busy} onClick={() => void resume(run)}>
-                    {run.status === "completed" ? "Read" : "Continue"}
-                  </button>
+                  <div className="saved-run-actions">
+                    <button className="secondary" disabled={busy} onClick={() => void resume(run)}>
+                      {run.status === "completed" ? "Read" : "Continue"}
+                    </button>
+                    <button className="icon-button danger" disabled={busy} title="Delete told story" aria-label="Delete told story" onClick={() => void removeRun(run)}>×</button>
+                  </div>
                 </div>
               ))}
             </section>
@@ -381,6 +525,17 @@ function App() {
               <section className="beat" key={beat.beat_index}>
                 <span className="beat-number">{String(beat.beat_index + 1).padStart(2, "0")}</span>
                 {beat.narration.split(/\n{2,}/).map((paragraph, index) => <p key={index}>{paragraph}</p>)}
+                <div className="beat-review-actions">
+                  <button className="secondary" disabled={busy} onClick={() => void regenerateBeat(state, beat.beat_index)}>Regenerate</button>
+                  <button className="secondary" disabled={busy} onClick={() => void reviewBeat(state, beat.beat_index)}>Review</button>
+                </div>
+                {beat.review && <section className={`beat-review ${beat.review.narration === beat.narration ? "keep" : "replace"}`}>
+                  <strong>{beat.review.narration === beat.narration ? "Review passed" : "Revision suggested"}</strong>
+                  {beat.review.narration !== beat.narration && <>
+                    <div className="review-prose">{beat.review.narration}</div>
+                    <button className="primary" disabled={busy} onClick={() => void applyReview(state, beat.beat_index)}>Apply revision</button>
+                  </>}
+                </section>}
               </section>
             ))}
             {currentNarration && state.status === "active" && (
@@ -390,6 +545,17 @@ function App() {
                   <small>Current</small>
                 </span>
                 {currentNarration.split(/\n{2,}/).map((paragraph, index) => <p key={index}>{paragraph}</p>)}
+                {!busy && state.current_draft && <div className="beat-review-actions">
+                  <button className="secondary" onClick={() => void regenerateBeat(state, state.beat_index)}>Regenerate</button>
+                  <button className="secondary" onClick={() => void reviewBeat(state, state.beat_index)}>Review</button>
+                </div>}
+                {state.current_draft?.review && <section className={`beat-review ${state.current_draft.review.narration === state.current_draft.narration ? "keep" : "replace"}`}>
+                  <strong>{state.current_draft.review.narration === state.current_draft.narration ? "Review passed" : "Revision suggested"}</strong>
+                  {state.current_draft.review.narration !== state.current_draft.narration && <>
+                    <div className="review-prose">{state.current_draft.review.narration}</div>
+                    <button className="primary" disabled={busy} onClick={() => void applyReview(state, state.beat_index)}>Apply revision</button>
+                  </>}
+                </section>}
               </section>
             )}
             {busy && !streamed && (
@@ -449,52 +615,52 @@ function App() {
 
           {state.status === "active" && (
             <footer className="controls">
-              <button
-                className="secondary"
-                disabled={busy || (!state.current_draft && previousBeatIndex === undefined)}
-                title={!state.current_draft && previousBeatIndex === undefined
-                  ? `Generate beat ${currentBeatIndex + 1} first`
-                  : undefined}
-                onClick={() => act(state.current_draft ? "regenerate" : "regenerate_previous")}
-              >
-                Regenerate beat {state.current_draft
-                  ? state.beat_index + 1
-                  : previousBeatIndex === undefined ? currentBeatIndex + 1 : previousBeatIndex + 1}
-              </button>
-              <textarea
-                aria-label="Additional direction"
-                placeholder="Add a direction..."
-                rows={2}
-                value={instruction}
-                disabled={busy}
-                onChange={(event) => setInstruction(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey && state.current_draft && !busy) {
-                    event.preventDefault();
-                    act("next");
-                  }
-                }}
-              />
-              <label className="auto-continue">
-                <input
-                  type="checkbox"
-                  checked={autoContinue}
-                  onChange={(event) => setAutoContinue(event.target.checked)}
+              <div className="control-primary-row">
+                <textarea
+                  aria-label="Additional direction"
+                  placeholder="Add a direction..."
+                  rows={2}
+                  value={instruction}
+                  disabled={busy}
+                  onChange={(event) => setInstruction(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.shiftKey && state.current_draft && !busy) {
+                      event.preventDefault();
+                      act("next");
+                    }
+                  }}
                 />
-                Auto continue
-              </label>
-              <button
-                className={busy ? "danger" : "primary"}
-                onClick={() => busy
-                  ? cancelGeneration()
-                  : act(state.current_draft ? "next" : "regenerate")}
-              >
-                {busy
-                  ? "Stop"
-                  : !state.current_draft
-                    ? `Generate beat ${currentBeatIndex + 1}`
-                    : state.beat_index + 1 === state.total_beats ? "Finish" : "Next"}
-              </button>
+                <button
+                  className={busy ? "danger" : "primary"}
+                  onClick={() => busy
+                    ? cancelGeneration()
+                    : act(state.current_draft ? "next" : "regenerate")}
+                >
+                  {busy
+                    ? "Stop"
+                    : !state.current_draft
+                      ? `Generate beat ${currentBeatIndex + 1}`
+                      : state.beat_index + 1 === state.total_beats ? "Finish" : "Next"}
+                </button>
+              </div>
+              <div className="control-options">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={reviewAfterGeneration}
+                    onChange={(event) => setReviewAfterGeneration(event.target.checked)}
+                  />
+                  <span>Auto review</span>
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={autoContinue}
+                    onChange={(event) => setAutoContinue(event.target.checked)}
+                  />
+                  <span>Auto continue</span>
+                </label>
+              </div>
             </footer>
           )}
         </>

@@ -11,6 +11,24 @@ const narrationPromptSchema = z.object({
   previous_response_id: z.string().startsWith("resp_").optional(),
 });
 
+const narrationReviewSchema = z.object({
+  narration: z.string().min(1),
+  reasoning: z.string().optional(),
+  response_id: z.string().startsWith("resp_").optional(),
+  prompt: narrationPromptSchema.optional(),
+  model: z.string().trim().min(1).max(500),
+  reviewed_at: z.string().datetime(),
+});
+
+const narrationRevisionSchema = z.object({
+  narration: z.string().min(1),
+  reasoning: z.string().optional(),
+  response_id: z.string().startsWith("resp_").optional(),
+  prompt: narrationPromptSchema.optional(),
+  prompt_instruction: z.string().optional(),
+  replaced_at: z.string().datetime(),
+});
+
 const acceptedNarrationSchema = z.object({
   beat_index: z.number().int().nonnegative(),
   narration: z.string().min(1),
@@ -18,6 +36,8 @@ const acceptedNarrationSchema = z.object({
   prompt_instruction: z.string().optional(),
   response_id: z.string().startsWith("resp_").optional(),
   prompt: narrationPromptSchema.optional(),
+  review: narrationReviewSchema.optional(),
+  revisions: z.array(narrationRevisionSchema).optional(),
 });
 
 const draftNarrationSchema = z.object({
@@ -26,6 +46,8 @@ const draftNarrationSchema = z.object({
   prompt_instruction: z.string().optional(),
   response_id: z.string().startsWith("resp_").optional(),
   prompt: narrationPromptSchema.optional(),
+  review: narrationReviewSchema.optional(),
+  revisions: z.array(narrationRevisionSchema).optional(),
 });
 
 export const readerImagePlanSchema = z.object({
@@ -159,6 +181,24 @@ export async function readReaderRun(
     if (error instanceof z.ZodError) throw new Error("Reader run data is invalid.");
     throw error;
   }
+}
+
+export async function deleteReaderRun(
+  root: string,
+  storyPath: string,
+  runId: string
+): Promise<void> {
+  const file = await runFile(root, storyPath, runId);
+  await withMutationLock(file, async () => {
+    try {
+      await fs.unlink(file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new Error(`Reader run '${runId}' was not found.`);
+      }
+      throw error;
+    }
+  });
 }
 
 export async function mutateReaderRun<T>(

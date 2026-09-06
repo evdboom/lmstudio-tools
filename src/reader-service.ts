@@ -2,6 +2,7 @@ import {
   buildBlueprintHistoryNarrationInput,
   buildHybridNarrationInput,
   buildStatefulNarrationInput,
+  taggedReasoningRule,
 } from "./reader-prompts.js";
 import { buildImagePlanPrompt, parseImagePlan } from "./reader-image-prompts.js";
 import {
@@ -29,6 +30,198 @@ export interface ReaderState {
   ongoing_instructions: string[];
   status: ReaderRun["status"];
   image_plan: ReaderRun["image_plan"];
+}
+
+type ReviewableNarration = ReaderRun["accepted"][number] | NonNullable<ReaderRun["current_draft"]>;
+
+function narrationAt(run: ReaderRun, beatIndex: number): ReviewableNarration | undefined {
+  if (run.beat_index === beatIndex && run.current_draft) return run.current_draft;
+  return run.accepted.find((item) => item.beat_index === beatIndex);
+}
+
+export async function prepareReaderReview(
+  root: string,
+  storyPath: string,
+  runId: string,
+  beatIndex: number
+): Promise<{
+  systemPrompt: string;
+  input: string;
+  previousResponseId?: string;
+  store: boolean;
+  narration: string;
+}> {
+  const run = await readReaderRun(root, storyPath, runId);
+  const narration = narrationAt(run, beatIndex);
+  if (!narration) throw new Error(`Beat ${beatIndex + 1} has no narration to review.`);
+  if (!narration.prompt) throw new Error(`Beat ${beatIndex + 1} has no saved prompt to review.`);
+
+  return {
+    systemPrompt: [
+      "You are a strict fiction editor reviewing one generated story beat.",
+      "# Response format and reasoning",
+      ...taggedReasoningRule(run.reasoning_mode),
+      "Reason through the original instructions sentence by sentence before deciding whether to preserve or revise the result.",
+      "Return only the complete final prose for this beat, with no verdict, explanation, heading, or code fence.",
+      "If the result already satisfies every instruction, reproduce it exactly, byte for byte.",
+      "Otherwise make the smallest revision needed. Preserve correct prose and do not add new story material.",
+      "Verify every required event occurs in order, no future beat begins, the maximum word budget is not exceeded, viewpoint and tense hold, canon is not invented, and every sentence is grammatical and relevant.",
+    ].join("\n"),
+    input: [
+      "# Original system instructions",
+      narration.prompt.system_prompt ?? "(none)",
+      "",
+      "# Original beat request",
+      narration.prompt.input,
+      "",
+      "# Result to review",
+      narration.narration,
+    ].join("\n"),
+    previousResponseId: run.context_mode === "full"
+      ? narration.prompt.previous_response_id
+      : undefined,
+    store: run.context_mode === "full",
+    narration: narration.narration,
+  };
+}
+
+export async function prepareReaderBeatRegeneration(
+  root: string,
+  storyPath: string,
+  runId: string,
+  beatIndex: number
+): Promise<{
+  systemPrompt?: string;
+  input: string;
+  recordedSystemPrompt?: string;
+  previousResponseId?: string;
+  promptInstruction?: string;
+  store: boolean;
+}> {
+  const [story, run] = await Promise.all([
+    readStoryFile(root, storyPath),
+    readReaderRun(root, storyPath, runId),
+  ]);
+  const narration = narrationAt(run, beatIndex);
+  if (!narration) throw new Error(`Beat ${beatIndex + 1} has no narration to regenerate.`);
+  const acceptedBefore = run.accepted.filter((item) => item.beat_index < beatIndex);
+  const acceptedHistory = acceptedBefore.map((item) => ({
+    beatIndex: item.beat_index,
+    narration: item.narration,
+    instruction: item.prompt_instruction,
+  }));
+  const previousResponseId = run.context_mode === "full"
+    ? acceptedBefore.at(-1)?.response_id
+    : undefined;
+  const instruction = narration.prompt_instruction;
+  let prompt: { systemPrompt?: string; input: string };
+  switch (run.context_mode) {
+    case "full":
+      prompt = buildStatefulNarrationInput(
+        story,
+        beatIndex,
+        instruction,
+        !previousResponseId,
+        run.reasoning_mode
+      );
+      break;
+    case "hybrid":
+      prompt = buildHybridNarrationInput(
+        story,
+        beatIndex,
+        acceptedHistory,
+        instruction,
+        run.prose_window,
+        run.reasoning_mode
+      );
+      break;
+    case "blueprint":
+      prompt = buildBlueprintHistoryNarrationInput(
+        story,
+        beatIndex,
+        instruction,
+        run.reasoning_mode
+      );
+      break;
+  }
+
+  return {
+    systemPrompt: prompt.systemPrompt,
+    input: prompt.input,
+    recordedSystemPrompt: prompt.systemPrompt ?? acceptedBefore.at(-1)?.prompt?.system_prompt,
+    previousResponseId,
+    promptInstruction: instruction,
+    store: run.context_mode === "full",
+  };
+}
+
+export async function saveReaderReview(
+  root: string,
+  storyPath: string,
+  runId: string,
+  beatIndex: number,
+  review: {
+    model: string;
+    narration: string;
+    reasoning?: string;
+    responseId?: string;
+    prompt?: NarrationPrompt;
+  }
+): Promise<ReaderState> {
+  const run = await mutateReaderRun(root, storyPath, runId, (current) => {
+    const target = narrationAt(current, beatIndex);
+    if (!target) throw new Error(`Beat ${beatIndex + 1} has no narration to review.`);
+    target.review = {
+      narration: review.narration,
+      reasoning: review.reasoning,
+      response_id: review.responseId,
+      prompt: review.prompt,
+      model: review.model,
+      reviewed_at: new Date().toISOString(),
+    };
+    return current;
+  });
+  return toState(root, run);
+}
+
+export async function applyReaderReview(
+  root: string,
+  storyPath: string,
+  runId: string,
+  beatIndex: number
+): Promise<ReaderState> {
+  const story = await readStoryFile(root, storyPath);
+  const run = await mutateReaderRun(root, storyPath, runId, (current) => {
+    const target = narrationAt(current, beatIndex);
+    if (!target?.review) throw new Error(`Beat ${beatIndex + 1} has no review to apply.`);
+    if (target.review.narration === target.narration) return current;
+
+    target.revisions = [
+      ...(target.revisions ?? []),
+      {
+        narration: target.narration,
+        reasoning: target.reasoning,
+        response_id: target.response_id,
+        prompt: target.prompt,
+        prompt_instruction: target.prompt_instruction,
+        replaced_at: new Date().toISOString(),
+      },
+    ];
+    target.narration = target.review.narration;
+    target.reasoning = target.review.reasoning;
+    if (target.review.prompt) target.prompt = target.review.prompt;
+    if (current.context_mode === "full") {
+      target.response_id = target.review.response_id;
+      if (current.current_draft !== target) {
+        current.accepted = current.accepted.filter((item) => item.beat_index <= beatIndex);
+        current.current_draft = undefined;
+        current.beat_index = beatIndex + 1;
+        current.status = current.beat_index >= story.beats.length ? "completed" : "active";
+      }
+    }
+    return current;
+  });
+  return toState(root, run);
 }
 
 async function toState(root: string, run: ReaderRun): Promise<ReaderState> {
@@ -133,6 +326,8 @@ export async function prepareReaderGeneration(
           prompt_instruction: run.current_draft.prompt_instruction,
           response_id: run.current_draft.response_id,
           prompt: run.current_draft.prompt,
+          review: run.current_draft.review,
+          revisions: run.current_draft.revisions,
         });
         run.current_draft = undefined;
         run.beat_index += 1;
@@ -151,6 +346,7 @@ export async function prepareReaderGeneration(
     const previousResponseId = run.context_mode === "full"
       ? run.accepted.at(-1)?.response_id
       : undefined;
+
     const acceptedHistory = run.accepted.map((item) => ({
       beatIndex: item.beat_index,
       narration: item.narration,
@@ -162,7 +358,6 @@ export async function prepareReaderGeneration(
         prompt = buildStatefulNarrationInput(
           story,
           run.beat_index,
-          acceptedHistory,
           activeInstruction,
           !previousResponseId,
           run.reasoning_mode

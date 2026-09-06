@@ -49,8 +49,8 @@ export interface AddNarrationModeInput {
   perspective: string;
   tense: string;
   rules: string[];
-  positive_examples?: string[];
-  negative_examples?: string[];
+  positive_examples?: Array<{ description: string; text: string }>;
+  negative_examples?: Array<{ description: string; text: string }>;
   kind?: "replace" | "supplemental";
 }
 

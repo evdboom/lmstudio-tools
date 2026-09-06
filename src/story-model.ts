@@ -4,6 +4,10 @@ export const STORY_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 const storyId = z.string().regex(STORY_ID_RE);
 const nonEmpty = z.string().trim().min(1);
+const narrationExampleSchema = z.object({
+  description: nonEmpty,
+  text: nonEmpty,
+});
 
 /**
  * A transient property of a character or location.
@@ -46,8 +50,8 @@ export const narrationModeSchema = z.object({
   perspective: nonEmpty,
   tense: nonEmpty,
   rules: z.array(nonEmpty).min(1),
-  positive_examples: z.array(nonEmpty).optional(),
-  negative_examples: z.array(nonEmpty).optional(),
+  positive_examples: z.array(narrationExampleSchema).optional(),
+  negative_examples: z.array(narrationExampleSchema).optional(),
   // "supplemental" layers these rules on top of the default mode's rules; "replace" (default) uses only its own.
   kind: z.enum(["replace", "supplemental"]).optional(),
 });
@@ -164,9 +168,19 @@ export function resolveNarrationExamples(
   kind: "positive_examples" | "negative_examples"
 ): string[] {
   const examples = mode[kind] ?? [];
-  if (mode.kind !== "supplemental" || mode.id === story.default_narration_mode) return examples;
   const base = story.narration_modes.find((item) => item.id === story.default_narration_mode);
-  return base ? [...(base[kind] ?? []), ...examples] : examples;
+
+  const total =  mode.kind !== "supplemental" || mode.id === story.default_narration_mode ? examples : [...(base?.[kind] ?? []), ...examples];
+
+  if (!total.length) return [];
+
+  const title = kind === "positive_examples" ? "### Positive example of" : "### Negative example of";
+  return [
+    kind === "positive_examples" ? "## Positive narration style examples" : "## Negative narration style examples",
+    kind === "positive_examples" ? "**Treat them only as a style guide. Do not copy their details or treat them as story facts.**" : "**Treat them only as a style guide of what not to do. Do not copy their details or treat them as story facts.**",
+    "",
+    ...total.flatMap((example) => [`${title} ${example.description}`, example.text, ""]),    
+  ];
 }
 
 export function findCharacter(story: StoryBlueprint, id: string): StoryCharacter | undefined {

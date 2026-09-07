@@ -65,6 +65,7 @@ export interface AddFactInput {
 
 export interface AddBeatInput {
   id: string;
+  title?: string;
   locationId: string;
   characterIds: string[];
   events: string[];
@@ -300,6 +301,7 @@ export async function addBeat(
 
     story.beats.push({
       id: input.id,
+      title: input.title?.trim() || undefined,
       location: input.locationId,
       characters: [...input.characterIds],
       time: input.time?.trim() || undefined,

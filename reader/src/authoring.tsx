@@ -19,7 +19,7 @@ interface Story {
   locations: Location[];
   narration_modes: Array<{ id: string; perspective: string; tense: string; rules: string[]; positive_examples?: NarrationExample[]; negative_examples?: NarrationExample[]; kind?: "replace" | "supplemental" }>;
   facts: Array<{ id: string; fact: string; from?: string; until?: string; beats: string[]; subjects: string[] }>;
-  beats: Array<{ id: string; location: string; characters: string[]; time?: string; events: string[]; narration_mode?: string; keywords: Array<{ type: string; word: string }>; narration_rules: string[] }>;
+  beats: Array<{ id: string; title?: string; location: string; characters: string[]; time?: string; events: string[]; narration_mode?: string; keywords: Array<{ type: string; word: string }>; narration_rules: string[] }>;
 }
 type SubjectKind = "characters" | "locations";
 interface ChatMessage { role: "user" | "assistant"; text: string; reasoning?: string; stopped?: boolean; failed?: boolean; noFinal?: boolean }
@@ -128,6 +128,7 @@ function normalize(story: Story): Story {
     beat.events = cleanLines(beat.events);
     beat.narration_rules = cleanLines(beat.narration_rules);
     beat.time = beat.time?.trim() || undefined;
+    beat.title = beat.title?.trim() || undefined;
   });
   return copy;
 }
@@ -213,10 +214,10 @@ export function AuthoringApp() {
     if (!story) return;
     const oldId = story.characters[index].id; const nextId = patch.id ?? oldId;
     update({
-      characters: story.characters.map((item, itemIndex) => ({
-        ...(itemIndex === index ? { ...item, ...patch } : item),
-        relations: item.relations.map((relation) => relation.to === oldId ? { ...relation, to: nextId } : relation),
-      })),
+      characters: story.characters.map((item, itemIndex) => {
+        const next = itemIndex === index ? { ...item, ...patch } : item;
+        return { ...next, relations: next.relations.map((relation) => relation.to === oldId ? { ...relation, to: nextId } : relation) };
+      }),
       beats: story.beats.map((beat) => ({ ...beat, characters: beat.characters.map((id) => id === oldId ? nextId : id) })),
     });
   }
@@ -489,6 +490,7 @@ export function AuthoringApp() {
           <section className="beats-editor"><div className="panel-heading"><h2>Beats</h2><button className="secondary" onClick={addBeat}>Add beat</button></div>{story.beats.map((beat, index) => <article className="beat-editor" key={index}>
             <div className="beat-toolbar"><strong>{String(index + 1).padStart(2, "0")}</strong><input className="beat-id" aria-label="Beat ID" value={beat.id} title="State and fact windows refer to this id" onChange={(event) => renameBeat(index, event.target.value)} /><select aria-label="Location" value={beat.location} onChange={(event) => changeBeat(index, { location: event.target.value })}>{story.locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}</select><button className="icon-button" title="Move up" onClick={() => moveBeat(index, -1)}>↑</button><button className="icon-button" title="Move down" onClick={() => moveBeat(index, 1)}>↓</button><button className="icon-button danger" title="Delete beat" onClick={() => update({ beats: story.beats.filter((_, beatIndex) => beatIndex !== index) })}>×</button></div>
             <div className="beat-fields">
+              <label className="wide">Title<input value={beat.title ?? ""} placeholder="Shown only in the reader's beat map, never in the prose" onChange={(event) => changeBeat(index, { title: event.target.value })} /></label>
               <label className="wide">Outcomes<textarea value={beat.events.join("\n")} placeholder={"One per line. Each must be true when the beat ends,\nnot a script of how it happens."} onChange={(event) => changeBeat(index, { events: event.target.value.split("\n") })} /></label>
               <label>Time<input value={beat.time ?? ""} placeholder="Three weeks later" title="Fill this in whenever the beat does not open where the previous one stopped" onChange={(event) => changeBeat(index, { time: event.target.value })} /></label>
               <label>Narration mode<select value={beat.narration_mode ?? ""} onChange={(event) => changeBeat(index, { narration_mode: event.target.value || undefined })}><option value="">Story default</option>{story.narration_modes.map((mode) => <option key={mode.id} value={mode.id}>{mode.id}: {mode.perspective}, {mode.tense}</option>)}</select></label>

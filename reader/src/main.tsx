@@ -12,6 +12,10 @@ const CONTEXT_MODE_LABELS: Record<ContextMode, string> = {
   blueprint: "beat events",
   hybrid: "recent prose + history",
 };
+const REVISION_VERDICT_LABELS: Record<"replace" | "append", string> = {
+  replace: "replacement",
+  append: "addition",
+};
 
 interface StoryItem { path: string; title: string; premise: string; beats: number }
 interface RunItem {
@@ -28,6 +32,7 @@ interface RunItem {
 }
 interface NarrationReview {
   narration: string;
+  verdict?: "valid" | "replace" | "append";
   reasoning?: string;
   model: string;
   reviewed_at: string;
@@ -58,6 +63,7 @@ interface ReaderState {
   premise: string;
   beat_index: number;
   total_beats: number;
+  beat_titles: string[];
   accepted: Narration[];
   current_draft?: { narration: string; review?: NarrationReview };
   ongoing_instructions: string[];
@@ -99,6 +105,8 @@ function App() {
   const [actionStatus, setActionStatus] = useState("");
   const [actionReasoning, setActionReasoning] = useState("");
   const [actionStreamed, setActionStreamed] = useState("");
+  const [reviewBeatIndex, setReviewBeatIndex] = useState<number>();
+  const [reviewInstruction, setReviewInstruction] = useState("");
   const [visibleReviews, setVisibleReviews] = useState<Set<number>>(new Set());
   const [error, setError] = useState("");
   const [autoContinue, setAutoContinue] = useState(
@@ -185,7 +193,8 @@ function App() {
     return result;
   }
 
-  async function runReview(run: ReaderState, beatIndex: number, signal?: AbortSignal) {
+  async function runReview(run: ReaderState, beatIndex: number, signal?: AbortSignal, instruction?: string) {
+    setReasoning("");
     setActionBeatIndex(beatIndex);
     setActionStreamed("");
     setActionReasoning("");
@@ -193,7 +202,12 @@ function App() {
     const response = await fetch(`/api/runs/${run.run_id}/review`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ story_path: run.story_path, model, beat_index: beatIndex }),
+      body: JSON.stringify({
+        story_path: run.story_path,
+        model,
+        beat_index: beatIndex,
+        instruction: instruction?.trim() || undefined,
+      }),
       signal,
     });
     if (!response.ok || !response.body) {
@@ -212,11 +226,16 @@ function App() {
     return { state: reviewed, changed: original !== result };
   }
 
+  function openReview(beatIndex: number) {
+    setReviewBeatIndex(beatIndex);
+    setReviewInstruction("");
+  }
+
   async function reviewBeat(run: ReaderState, beatIndex: number) {
     setError("");
     setBusy(true);
     try {
-      await runReview(run, beatIndex);
+      await runReview(run, beatIndex, undefined, reviewInstruction);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -225,6 +244,8 @@ function App() {
       setActionStatus("");
       setActionStreamed("");
       setActionReasoning("");
+      setReviewBeatIndex(undefined);
+      setReviewInstruction("");
     }
   }
 
@@ -616,6 +637,39 @@ function App() {
         </section>
       ) : (
         <>
+          <nav className="beat-map" aria-label="Beat map">
+            <p className="eyebrow">Beats</p>
+            <ol>
+              {state.beat_titles.map((beatTitle, index) => {
+                const written = state.accepted.some((item) => item.beat_index === index)
+                  || Boolean(state.current_draft && state.beat_index === index);
+                const className = [
+                  "beat-map-entry",
+                  written ? "written" : "pending",
+                  index === currentBeatIndex ? "active" : "",
+                ].filter(Boolean).join(" ");
+                return (
+                  <li key={index}>
+                    {written ? (
+                      <a
+                        className={className}
+                        href={`#beat-${index}`}
+                        aria-current={index === currentBeatIndex ? "true" : undefined}
+                      >
+                        <span className="beat-map-number">{index + 1}</span>
+                        <span className="beat-map-title">{beatTitle}</span>
+                      </a>
+                    ) : (
+                      <span className={className}>
+                        <span className="beat-map-number">{index + 1}</span>
+                        <span className="beat-map-title">{beatTitle}</span>
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+          </nav>
           <article className="manuscript">
             <header>
               <p className="eyebrow">{state.premise}</p>
@@ -625,7 +679,7 @@ function App() {
               const isActing = actionBeatIndex === beat.beat_index;
               const displayNarration = isActing && actionStreamed ? actionStreamed : beat.narration;
               return (
-                <section className={`beat ${isActing ? "writing" : ""}`} key={beat.beat_index}>
+                <section className={`beat ${isActing ? "writing" : ""}`} id={`beat-${beat.beat_index}`} key={beat.beat_index}>
                   <span className="beat-number">{String(beat.beat_index + 1).padStart(2, "0")}</span>
                   {displayNarration.split(/\n{2,}/).map((paragraph, index) => <p key={index}>{paragraph}</p>)}
                   {isActing && (
@@ -642,10 +696,25 @@ function App() {
                   )}
                   <div className="beat-review-actions">
                     <button className="secondary" disabled={busy} onClick={() => void regenerateBeat(state, beat.beat_index)}>Regenerate</button>
-                    <button className="secondary" disabled={busy} onClick={() => void reviewBeat(state, beat.beat_index)}>Review</button>
+                    <button className="secondary" disabled={busy} onClick={() => openReview(beat.beat_index)}>Review</button>
                   </div>
+                  {reviewBeatIndex === beat.beat_index && <div className="review-focus">
+                    <input
+                      aria-label={`Review focus for beat ${beat.beat_index + 1}`}
+                      autoFocus
+                      placeholder="Optional review focus"
+                      value={reviewInstruction}
+                      onChange={(event) => setReviewInstruction(event.target.value)}
+                    />
+                    <button className="secondary" onClick={() => setReviewBeatIndex(undefined)}>Cancel</button>
+                    <button className="primary" onClick={() => void reviewBeat(state, beat.beat_index)}>Start review</button>
+                  </div>}
                   {visibleReviews.has(beat.beat_index) && beat.review && <section className={`beat-review ${beat.review.narration === beat.narration ? "keep" : "replace"}`}>
-                    <strong>{beat.review.narration === beat.narration ? "Review passed" : "Revision suggested"}</strong>
+                    <strong>
+                      {beat.review.narration === beat.narration ? "Review passed" : "Revision suggested"}
+                      {beat.review.narration !== beat.narration && beat.review.verdict && beat.review.verdict !== "valid" &&
+                        <span className="review-verdict"> ({REVISION_VERDICT_LABELS[beat.review.verdict]})</span>}
+                    </strong>
                     {beat.review.narration !== beat.narration && <>
                       <div className="review-prose">{beat.review.narration}</div>
                       <div className="beat-review-actions">
@@ -658,7 +727,7 @@ function App() {
               );
             })}
             {currentDisplayNarration && state.status === "active" && (
-              <section className={`beat current ${busy ? "writing" : ""}`}>
+              <section className={`beat current ${busy ? "writing" : ""}`} id={`beat-${state.beat_index}`}>
                 <span className="beat-number current-number">
                   {String(state.beat_index + 1).padStart(2, "0")}
                   <small>Current</small>
@@ -678,10 +747,25 @@ function App() {
                 )}
                 {!busy && state.current_draft && <div className="beat-review-actions">
                   <button className="secondary" onClick={() => void regenerateBeat(state, state.beat_index)}>Regenerate</button>
-                  <button className="secondary" onClick={() => void reviewBeat(state, state.beat_index)}>Review</button>
+                  <button className="secondary" onClick={() => openReview(state.beat_index)}>Review</button>
+                </div>}
+                {reviewBeatIndex === state.beat_index && <div className="review-focus">
+                  <input
+                    aria-label={`Review focus for beat ${state.beat_index + 1}`}
+                    autoFocus
+                    placeholder="Optional review focus"
+                    value={reviewInstruction}
+                    onChange={(event) => setReviewInstruction(event.target.value)}
+                  />
+                  <button className="secondary" onClick={() => setReviewBeatIndex(undefined)}>Cancel</button>
+                  <button className="primary" onClick={() => void reviewBeat(state, state.beat_index)}>Start review</button>
                 </div>}
                 {visibleReviews.has(state.beat_index) && state.current_draft?.review && <section className={`beat-review ${state.current_draft.review.narration === state.current_draft.narration ? "keep" : "replace"}`}>
-                  <strong>{state.current_draft.review.narration === state.current_draft.narration ? "Review passed" : "Revision suggested"}</strong>
+                  <strong>
+                    {state.current_draft.review.narration === state.current_draft.narration ? "Review passed" : "Revision suggested"}
+                    {state.current_draft.review.narration !== state.current_draft.narration && state.current_draft.review.verdict && state.current_draft.review.verdict !== "valid" &&
+                      <span className="review-verdict"> ({REVISION_VERDICT_LABELS[state.current_draft.review.verdict]})</span>}
+                  </strong>
                   {state.current_draft.review.narration !== state.current_draft.narration && <>
                     <div className="review-prose">{state.current_draft.review.narration}</div>
                     <div className="beat-review-actions">

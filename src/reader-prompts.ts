@@ -31,26 +31,38 @@ export interface AcceptedNarration {
 
 export type ReasoningMode = "native" | "template_think" | "think" | "thinking";
 
+function reasoningTags(mode: ReasoningMode): { open: string; close: string } | undefined {
+  if (mode === "native") return undefined;
+  if (mode === "think") return { open: "<think>", close: "</think>" };
+  if (mode === "template_think") return { open: "[THINK]", close: "[/THINK]" };
+  return { open: "<thinking>", close: "</thinking>" };
+}
+
+/**
+ * Where reasoning is allowed to live, named in the model's own terms.
+ *
+ * A native reasoner has no tags to write, so every rule that shapes the
+ * reasoning must point at its private channel instead; without that the model
+ * reads "format your reasoning block" as a request for a visible section and
+ * prints the plan as prose.
+ */
+export function reasoningLocus(mode: ReasoningMode): string {
+  const tags = reasoningTags(mode);
+  return tags ? `inside ${tags.open}...${tags.close}` : "in your internal reasoning channel";
+}
+
 export function taggedReasoningRule(mode: ReasoningMode): string[] {
-  if (mode === "native") return [];
+  const tags = reasoningTags(mode);
 
-  let start_tag = "<thinking>";
-  let end_tag = "</thinking>";
-
-  if (mode === "think")
-  {
-    start_tag = "<think>";
-    end_tag = "</think>";
-  }
-  else if (mode === "template_think")
-  {
-    start_tag = "[THINK]";
-    end_tag = "[/THINK]";
-  }
+  if (!tags) return [
+    "- Do all reasoning in your internal reasoning channel. That channel is not part of your response.",
+    "- Your response contains the final answer only: no reasoning, no plan, no checklist, no headings such as \"Reasoning\", \"Reasoning Block\", \"Analysis\", or \"Plan\", and no commentary.",
+    "- Never repeat, summarise, or re-render your reasoning in the response.",
+  ];
 
   return [
-    `- You must begin every response with ${start_tag} and reason inside ${start_tag}...${end_tag}.`,
-    `- Close with ${end_tag} before your response.`,
+    `- You must begin every response with ${tags.open} and reason inside ${tags.open}...${tags.close}.`,
+    `- Close with ${tags.close} before your response.`,
     "- Do not output the tags other then to start and end your reasoning."
   ];
 }
@@ -60,6 +72,7 @@ function renderSystemPrompt(story: StoryBlueprint, reasoningMode: ReasoningMode,
   const currentBeat = story.beats[beatIndex];
   const mode = beatNarrationMode(story, currentBeat);
   if (!mode) throw new Error(`Beat ${beatIndex} references an unknown narration mode.`);
+  const locus = reasoningLocus(reasoningMode);
 
   return [
     ...(reasoningMode === "template_think" ? ["/think",""] : []),
@@ -69,11 +82,11 @@ function renderSystemPrompt(story: StoryBlueprint, reasoningMode: ReasoningMode,
     "",
     "# Response format and reasoning",    
     ...taggedReasoningRule(reasoningMode),
-    "- Before writing the scene, reason about its events, the ongoing story, context, constraints and active instructions.",    
-    "- Format your reasoning block as a structured plan: include an event checklist, pacing breakdown, and transition notes. Move forward linearly through the \"Scene outcomes\" list; never revisit completed events unless required for direct cause-and-effect.",
+    `- Before writing the scene, and ${locus} only, reason about its events, the ongoing story, context, constraints and active instructions.`,
+    `- Structure that reasoning as a plan: an event checklist, pacing breakdown, and transition notes. The plan and its headings live ${locus} and must never appear in the response. Move forward linearly through the "Scene outcomes" list; never revisit completed events unless required for direct cause-and-effect.`,
     "- Inside the checklist, mark completed events with [x] and leave undone as [ ]. Validate progress against context before writing.",
-    "- Your output must contain the **complete** scene; never leave the scene only in reasoning or planning.",
-    "- Do not output reasoning outside of your reasoning block. Write only the fictional scene. Do not explain reasoning or mention instructions in the prose.",
+    "- Your response must contain the **complete** scene and nothing else; never leave the scene only in reasoning or planning.",
+    `- Do not output reasoning outside of ${locus}. Write only the fictional scene. Do not explain reasoning or mention instructions in the prose.`,
     "- Loop Prevention: Describe each physical detail only once per beat. Avoid crutch transitions (e.g., \"But then again...\", \"And suddenly there she was...\"). If you notice repetition, cut the sentence and jump to the next outcome bullet.",
     "- Hard Stop Rule: End exactly after the final mandatory event occurs. Zero extra dialogue, internal monologue, or scene-setting beyond that point.",
     "",

@@ -171,6 +171,39 @@ describe("reader generation stream", () => {
     });
   });
 
+  it("does not stream a review verdict tag as prose", async () => {
+    vi.mocked(streamLmStudioNarration).mockImplementationOnce(async (options) => {
+      options.onDelta("[RE");
+      options.onDelta("PLACE]\n\nJessica's smile returned.");
+      return {
+        narration: "[REPLACE]\n\nJessica's smile returned.",
+        responseId: "resp_test",
+      };
+    });
+    const app = await createReaderServer({ root, lmStudioUrl: "http://lmstudio.test/api/v1" });
+    const started = await app.inject({
+      method: "POST",
+      url: "/api/runs",
+      payload: { story_path: storyPath, model: "test-model", context_mode: "blueprint" },
+    });
+    const run = started.json<{ run_id: string }>();
+    await app.inject({
+      method: "POST",
+      url: `/api/runs/${run.run_id}/generate`,
+      payload: { story_path: storyPath, model: "test-model", action: "regenerate" },
+    });
+
+    const reviewed = await app.inject({
+      method: "POST",
+      url: `/api/runs/${run.run_id}/review`,
+      payload: { story_path: storyPath, model: "test-model", beat_index: 0 },
+    });
+    await app.close();
+
+    expect(reviewed.payload).not.toContain("[REPLACE]");
+    expect(reviewed.payload).toContain("Jessica's smile returned.");
+  });
+
   it("deletes a saved told story", async () => {
     const app = await createReaderServer({ root, lmStudioUrl: "http://lmstudio.test/api/v1" });
     const started = await app.inject({

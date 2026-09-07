@@ -343,6 +343,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       story_path: storyPathSchema,
       model: z.string().trim().min(1).max(500),
       beat_index: z.number().int().nonnegative(),
+      instruction: z.string().trim().min(1).max(10_000).optional(),
     }).safeParse(request.body);
     if (!params.success || !body.success) {
       return reply.code(400).send({ error: "Invalid review request." });
@@ -359,7 +360,8 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         options.root,
         body.data.story_path,
         params.data.runId,
-        body.data.beat_index
+        body.data.beat_index,
+        body.data.instruction
       );
     } catch (error) {
       return reply.code(400).send({ error: message(error) });
@@ -379,6 +381,8 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
     reply.raw.on("close", () => {
       if (!reply.raw.writableEnded) abort.abort();
     });
+    let reviewPrefix = "";
+    let reviewVerdictHandled = false;
     try {
       const beatNumber = body.data.beat_index + 1;
       reply.raw.write(`event: status\ndata: ${JSON.stringify(`Reviewing beat ${beatNumber}...`)}\n\n`);
@@ -392,6 +396,15 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         store: review.store,
         signal: abort.signal,
         onDelta: (delta) => {
+          if (!reviewVerdictHandled) {
+            reviewPrefix += delta;
+            if (/^\s*\[/.test(reviewPrefix) && !reviewPrefix.includes("]")) return;
+            reviewVerdictHandled = true;
+            const withoutVerdict = reviewPrefix.replace(/^\s*\[(?:VALID|REPLACE|APPEND)\]\s*/i, "");
+            if (!withoutVerdict) return;
+            reply.raw.write(`event: delta\ndata: ${JSON.stringify(withoutVerdict)}\n\n`);
+            return;
+          }
           reply.raw.write(`event: delta\ndata: ${JSON.stringify(delta)}\n\n`);
         },
         onReasoning: () => {
@@ -404,6 +417,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
           reply.raw.write(`event: status\ndata: ${JSON.stringify("Reasoning finished without a verdict. Asking the model to output the beat...")}\n\n`);
         },
       });
+      const resolved = resolveReviewNarration(review.narration, generated.narration);
       const state = await saveReaderReview(
         options.root,
         body.data.story_path,
@@ -411,7 +425,8 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         body.data.beat_index,
         {
           model: body.data.model,
-          narration: resolveReviewNarration(review.narration, generated.narration),
+          narration: resolved.narration,
+          verdict: resolved.verdict,
           reasoning: generated.reasoning || undefined,
           responseId: review.store ? generated.responseId : undefined,
         }

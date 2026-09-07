@@ -237,14 +237,17 @@ describe("reader run service", () => {
       system_prompt: "Original system prompt",
     });
 
-    const review = await prepareReaderReview(root, storyPath, started.run_id, 0);
+    const review = await prepareReaderReview(root, storyPath, started.run_id, 0, "Check sentence endings.");
 
     expect(review.input).toContain("Original system prompt");
     expect(review.input).toContain("Original beat input");
     expect(review.input).toContain("Original prose.");
-    expect(review.systemPrompt).toContain("[VALID] if the result already satisfies every instruction");
-    expect(review.systemPrompt).toContain("[REPLACE] if the result needs a correction");
-    expect(review.systemPrompt).toContain("[APPEND] if the prose so far is correct but stopped");
+    expect(review.input).toContain("Check sentence endings.");
+    expect(review.systemPrompt).toContain("reply with [VALID]");
+    expect(review.systemPrompt).toContain("Start your reply with the [REPLACE] tag");
+    expect(review.systemPrompt).toContain("Start your reply with the [APPEND] tag");
+    expect(review.systemPrompt).toContain("word-list padding");
+    expect(review.systemPrompt).toContain("unexplained trailing em dash");
     expect(review.store).toBe(false);
   });
 
@@ -267,22 +270,27 @@ describe("reader run service", () => {
   });
 
   it("keeps the original narration when the reviewer answers with [VALID]", () => {
-    expect(resolveReviewNarration("Original prose.", "[VALID]")).toBe("Original prose.");
-    expect(resolveReviewNarration("Original prose.", "  [valid]")).toBe("Original prose.");
+    expect(resolveReviewNarration("Original prose.", "[VALID]")).toEqual({ narration: "Original prose.", verdict: "valid" });
+    expect(resolveReviewNarration("Original prose.", "  [valid]")).toEqual({ narration: "Original prose.", verdict: "valid" });
   });
 
   it("replaces the beat with the tagged prose when the reviewer answers [REPLACE]", () => {
-    expect(resolveReviewNarration("Original prose.", "[REPLACE]Rewritten prose.")).toBe("Rewritten prose.");
+    expect(resolveReviewNarration("Original prose.", "[REPLACE]Rewritten prose.")).toEqual({ narration: "Rewritten prose.", verdict: "replace" });
   });
 
   it("appends only the missing continuation when the reviewer answers [APPEND]", () => {
     const result = resolveReviewNarration("Events one through four happened.", "[APPEND]\nEvent five occurred. Event six followed.");
-    expect(result).toBe("Events one through four happened.\n\nEvent five occurred. Event six followed.");
+    expect(result).toEqual({
+      narration: "Events one through four happened.\n\nEvent five occurred. Event six followed.",
+      verdict: "append",
+    });
   });
 
   it("strips control and tracking tags from stored narration", () => {
     expect(resolveReviewNarration("Original.", "[REPLACE]Beat text [EVENT 2] continues here."))
-      .toBe("Beat text  continues here.");
+      .toEqual({ narration: "Beat text  continues here.", verdict: "replace" });
+    expect(resolveReviewNarration("Original.", "[REPLACE]<thinking>Internal notes</thinking>Beat text.</thinking>"))
+      .toEqual({ narration: "Internal notesBeat text.", verdict: "replace" });
   });
 
   it("replaces a beat directly on regeneration without leaving a review record", async () => {

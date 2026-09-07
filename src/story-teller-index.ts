@@ -190,6 +190,8 @@ export function registerStoryTools(
   ].join(" "), {
     story_path: storyPath,
     id,
+    title: text.optional()
+      .describe("Short navigation label for the reader's beat map. Never narrated."),
     location_id: id,
     character_ids: z.array(id).max(64),
     events: z.array(text).min(1).max(64)

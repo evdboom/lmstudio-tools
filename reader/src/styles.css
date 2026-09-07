@@ -13,6 +13,7 @@
   --red-dark: #8a2f3c;
   --red-pale: #fff3f4;
   --bar: rgba(244, 246, 243, 0.94);
+  --beat-map: 264px;
   color: var(--ink);
   background: var(--paper);
   font-family: "Aptos", "Segoe UI", sans-serif;
@@ -138,6 +139,39 @@ button:disabled { cursor: default; opacity: 0.45; }
 .progress span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .progress i { display: block; height: 2px; margin-top: 7px; background: var(--red); transition: width 300ms ease; }
 
+.reader.active { padding-left: var(--beat-map); }
+.beat-map {
+  position: fixed;
+  z-index: 3;
+  top: 68px;
+  left: 0;
+  bottom: 0;
+  width: var(--beat-map);
+  padding: 22px 14px 22px clamp(14px, 2vw, 22px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border-right: 1px solid var(--line);
+  background: var(--surface);
+}
+.beat-map .eyebrow { margin-bottom: 12px; }
+.beat-map ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; }
+.beat-map-entry {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 8px;
+  padding: 7px 8px;
+  border-left: 2px solid transparent;
+  border-radius: 3px;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.35;
+  text-decoration: none;
+}
+.beat-map-number { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+.beat-map-entry.pending { color: var(--muted); opacity: 0.55; }
+.beat-map-entry.active { border-left-color: var(--red); background: var(--paper); font-weight: 700; }
+a.beat-map-entry:hover { background: var(--paper); color: var(--green); }
+
 .manuscript {
   width: min(760px, calc(100% - 40px));
   margin: 0 auto;
@@ -145,7 +179,7 @@ button:disabled { cursor: default; opacity: 0.45; }
 }
 .manuscript > header { padding-bottom: 70px; border-bottom: 1px solid var(--line); }
 .manuscript > header h1 { font-size: clamp(38px, 6vw, 64px); }
-.beat { position: relative; padding: 64px 0 30px; }
+.beat { position: relative; padding: 64px 0 30px; scroll-margin-top: 88px; }
 .beat-number {
   position: absolute;
   left: -72px;
@@ -175,9 +209,12 @@ button:disabled { cursor: default; opacity: 0.45; }
 .beat.current { border-top: 1px solid var(--line); }
 .beat-review-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .beat-review-actions button { min-height: 34px; padding-inline: 12px; }
+.review-focus { display: flex; gap: 8px; margin-top: 10px; }
+.review-focus input { min-width: 0; flex: 1; }
 .beat-review { margin-top: 18px; padding: 14px 16px; border-left: 3px solid var(--green); background: var(--surface); }
 .beat-review.replace { border-left-color: var(--red); }
 .beat-review > strong { display: block; margin-bottom: 10px; font-size: 13px; }
+.review-verdict { color: var(--muted); font-weight: 400; text-transform: lowercase; }
 .review-prose { margin-bottom: 14px; white-space: pre-wrap; color: var(--prose); font: 16px/1.65 "Palatino Linotype", "Book Antiqua", Georgia, serif; }
 .beat-review button { min-height: 34px; }
 .beat-action-status { display: flex; align-items: center; gap: 10px; margin-top: 18px; color: var(--muted); font-size: 13px; }
@@ -228,7 +265,7 @@ button:disabled { cursor: default; opacity: 0.45; }
   position: fixed;
   z-index: 5;
   bottom: 0;
-  left: 0;
+  left: var(--beat-map);
   right: 0;
   display: grid;
   justify-content: center;
@@ -239,7 +276,7 @@ button:disabled { cursor: default; opacity: 0.45; }
   backdrop-filter: blur(16px);
 }
 .control-primary-row {
-  width: min(760px, calc(100vw - 36px));
+  width: min(760px, calc(100vw - var(--beat-map) - 36px));
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: stretch;
@@ -358,10 +395,20 @@ summary span { color: var(--muted); font-size: 12px; font-weight: 400; }
 }
 
 @media (max-width: 900px) {
+  :root { --beat-map: 0px; }
   .wordmark { display: none; }
   .selectors select { flex: 1 1 0; }
+  .reader.active { padding-left: 0; }
+  .beat-map {
+    position: static;
+    width: auto;
+    max-height: 34vh;
+    padding: 16px clamp(18px, 4vw, 64px);
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .controls { left: 0; }
 }
-
 @media (max-width: 1100px) {
   .studio-layout { grid-template-columns: 190px minmax(400px, 1fr); }
   .author-chat { position: fixed; z-index: 6; right: 0; bottom: 0; top: 68px; width: min(390px, 90vw); box-shadow: -8px 0 24px color-mix(in srgb, var(--ink) 15%, transparent); }

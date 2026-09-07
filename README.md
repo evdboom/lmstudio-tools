@@ -355,6 +355,8 @@ Canon about a single character or location does not belong here at all: permanen
 
 `events` on a beat are postconditions, not a script: each must be true when the beat ends, and how they come about is left to the narrator. Set a beat's optional `time` whenever it does not open where the previous beat stopped.
 
+A beat's optional `title` is a navigation label only. The reader lists every title in an always-visible beat map beside the manuscript, and nothing in the prompts or the prose ever shows it, so it may name an outcome the reader has not reached yet only at the cost of spoiling the beat map. Beats without a title fall back to their id.
+
 Everything else the prompts need is derived, never authored: which beats already established a character or location, the folded state entering a beat, which facts are in scope, and whether a beat continues the previous scene or opens a new one. Because the derivation is a pure function of the blueprint, every context mode sees the same context, and regenerating an earlier beat recomputes correctly.
 
 A beat's prompt carries state only for subjects on stage in it. State belonging to an absent character is context the narrator cannot act on, and a small local model absorbs it anyway — a wound on someone three locations away turns up in the prose. If an absent character's condition matters to a scene, it belongs to a subject that is present, or to a fact. A state change is still reported in the beat's postconditions and its history even when the beat never shows the subject.

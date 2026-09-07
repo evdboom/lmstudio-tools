@@ -92,6 +92,8 @@ export const storyFactSchema = z.object({
 /** Beat order is the array order. Beats carry no stored position. */
 export const storyBeatSchema = z.object({
   id: storyId,
+  /** Navigation label for the reader's beat map. Never narrated or shown in the prose. */
+  title: nonEmpty.optional(),
   location: storyId,
   characters: z.array(storyId),
   /** Free text placing the beat in time. Its presence marks a gap from the previous beat. */

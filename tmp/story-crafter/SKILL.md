@@ -38,6 +38,7 @@ Design the beats with the user. Generate a suggestion for 3-4 beats and discuss 
 
 Every beat must provide:
 
+- `title`: a short spoiler-light label such as `The smith visits the village`, used only for reader navigation
 - `events`: an ordered array covering how the beat begins, what changes or happens, and exactly where narration stops
 - one location ID and the IDs of characters present
 - an optional narration-mode ID when it differs from the story default

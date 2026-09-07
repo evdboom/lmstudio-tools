@@ -25,6 +25,8 @@ export interface ReaderState {
   premise: string;
   beat_index: number;
   total_beats: number;
+  /** Navigation labels for every beat, falling back to the beat id. */
+  beat_titles: string[];
   accepted: ReaderRun["accepted"];
   current_draft?: ReaderRun["current_draft"];
   ongoing_instructions: string[];
@@ -34,8 +36,9 @@ export interface ReaderState {
 
 type ReviewableNarration = ReaderRun["accepted"][number] | NonNullable<ReaderRun["current_draft"]>;
 
-// Matches control/tracking tags like [VALID], [REPLACE], [APPEND], or a future [EVENT 3] so they never reach stored prose.
+// Matches control/tracking tags so they never reach stored prose.
 const NARRATION_TAG_PATTERN = /\[[A-Z][A-Z0-9 _-]*\]/g;
+const XML_TAG_PATTERN = /<\/?[A-Za-z][^<>]*>/g;
 const REVIEW_TAG_PATTERN = /^\s*\[(VALID|REPLACE|APPEND)\]/i;
 
 function narrationAt(run: ReaderRun, beatIndex: number): ReviewableNarration | undefined {
@@ -44,7 +47,7 @@ function narrationAt(run: ReaderRun, beatIndex: number): ReviewableNarration | u
 }
 
 export function stripNarrationTags(text: string): string {
-  const withoutTags = text.replace(NARRATION_TAG_PATTERN, "");
+  const withoutTags = text.replace(NARRATION_TAG_PATTERN, "").replace(XML_TAG_PATTERN, "");
   const withoutTrailingSpaces = withoutTags.split("\n").map((line) => line.trimEnd()).join("\n");
   return withoutTrailingSpaces.replace(/\n{3,}/g, "\n\n").trim();
 }
@@ -54,14 +57,19 @@ function appendNarration(original: string, continuation: string): string {
   return addition ? `${original.trimEnd()}\n\n${addition}` : original;
 }
 
-export function resolveReviewNarration(original: string, generated: string): string {
+export type ReviewVerdict = "valid" | "replace" | "append";
+
+export function resolveReviewNarration(
+  original: string,
+  generated: string
+): { narration: string; verdict: ReviewVerdict } {
   const match = REVIEW_TAG_PATTERN.exec(generated);
-  if (!match) return stripNarrationTags(generated);
+  if (!match) return { narration: stripNarrationTags(generated), verdict: "replace" };
   const rest = generated.slice(match[0].length);
   switch (match[1].toUpperCase()) {
-    case "VALID": return original;
-    case "APPEND": return appendNarration(original, rest);
-    default: return stripNarrationTags(rest);
+    case "VALID": return { narration: original, verdict: "valid" };
+    case "APPEND": return { narration: appendNarration(original, rest), verdict: "append" };
+    default: return { narration: stripNarrationTags(rest), verdict: "replace" };
   }
 }
 
@@ -96,7 +104,8 @@ export async function prepareReaderReview(
   root: string,
   storyPath: string,
   runId: string,
-  beatIndex: number
+  beatIndex: number,
+  instruction?: string
 ): Promise<{
   systemPrompt: string;
   input: string;
@@ -118,12 +127,26 @@ export async function prepareReaderReview(
       ...taggedReasoningRule(run.reasoning_mode),      
       "",
       "# Review instructions",      
-      "Verify the generated beat against the original instructions: every required event occurs in order, no future beat begins, the maximum word budget is not exceeded, viewpoint and tense hold, canon is not invented, and every sentence is grammatical and relevant.",
-      "Begin your final answer with exactly one of these tags on its own, then nothing else on that line:",
-      "[VALID] if the result satisfies every instruction. Output nothing else after the tag.",
-      "[REPLACE] if the result needs a correction. Follow it with the **complete** corrected prose for the entire beat.",
-      "[APPEND] if the prose so far is correct but stopped before covering every required event. Follow it with only the **missing** continuation, picking up exactly where the prose stopped, including any paragraph break needed before it.",
-      "Never repeat prose that is already correct. Do not add other tags, headings, verdicts, or code fences.",
+      "Validate the prose against the original instructions:",
+      "- Does every event occur in order",
+      "- Does the prose end before the future beat begins",
+      "- Is the prose within the word budget",
+      "- Are viewpoint, tense, and established canon maintained",
+      "- Is the prose coherent with well defined paragraphs and sentences",
+      "- Are all sentences well defined as in not stopping abruptly or ending with incomplete thoughts",
+      "- Are there no sentence fragments, run-on sentences, repetitive phrasing, filler, word-list padding, nonsensical escalation, abrupt topic shifts, meta-commentary, or irrelevant material",
+      "- Do sentences end with appropriate punctuation; reject an unexplained trailing em dash that leaves a sentence unfinished",
+      "",
+      "## Result",
+      "If the prose meets all these criteria, reply with [VALID]. Output nothing else after the tag.",
+      "",
+      "If the prose so far is correct but incomplete, think carefully about what is missing and how to continue it appropriately.",
+      "Start your reply with the [APPEND] tag on its own line. Follow it with the missing continuation of the prose.",
+      "",
+      "Otherwise, if the prose contains errors or deviates from the instructions, think carefully about what needs to be corrected and how to fix it appropriately. This can require just corrected paragraphs, sentences or a complete rewrite.",
+      "Start your reply with the [REPLACE] tag on its own line. Follow it with the complete corrected prose for the entire beat.",
+      "",
+      "Do not add other tags, headings, verdicts, or code fences.",
     ].join("\n"),
     input: [
       "# Original system instructions",
@@ -131,6 +154,7 @@ export async function prepareReaderReview(
       "",
       "# Original beat request",
       narration.prompt.input,
+      ...(instruction?.trim() ? ["", "# Specific review focus", instruction.trim()] : []),
       "",
       "# Result to review",
       narration.narration,
@@ -221,6 +245,7 @@ export async function saveReaderReview(
   review: {
     model: string;
     narration: string;
+    verdict?: ReviewVerdict;
     reasoning?: string;
     responseId?: string;
     prompt?: NarrationPrompt;
@@ -231,6 +256,7 @@ export async function saveReaderReview(
     if (!target) throw new Error(`Beat ${beatIndex + 1} has no narration to review.`);
     target.review = {
       narration: review.narration,
+      verdict: review.verdict,
       reasoning: review.reasoning,
       response_id: review.responseId,
       prompt: review.prompt,
@@ -325,6 +351,7 @@ async function toState(root: string, run: ReaderRun): Promise<ReaderState> {
     premise: story.premise,
     beat_index: run.beat_index,
     total_beats: story.beats.length,
+    beat_titles: story.beats.map((beat) => beat.title ?? beat.id),
     accepted: run.accepted,
     current_draft: run.current_draft,
     ongoing_instructions: run.ongoing_instructions,

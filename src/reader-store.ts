@@ -13,6 +13,7 @@ const narrationPromptSchema = z.object({
 
 const narrationReviewSchema = z.object({
   narration: z.string().min(1),
+  verdict: z.enum(["valid", "replace", "append"]).optional(),
   reasoning: z.string().optional(),
   response_id: z.string().startsWith("resp_").optional(),
   prompt: narrationPromptSchema.optional(),

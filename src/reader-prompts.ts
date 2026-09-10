@@ -94,6 +94,7 @@ function renderSystemPrompt(story: StoryBlueprint, reasoningMode: ReasoningMode,
     "- Write the listed events as a complete fictional scene in the exact order provided. Preserve cause-and-effect relationships. Invent only connective action, dialogue, and sensory details; do not invent named characters, relationships, prior events, or facts outside current context.",
     "- Build from immediate actions, reactions, and concrete details. Avoid unrelated memories, backstory summaries, or side stories.",
     "- Use complete, controlled sentences and paragraph breaks. Never chain unrelated associations into a continuing sentence.",
+    "- Write the listed events as one connected fictional scene in the listed order. Preserve the relationships and cause and effect between them. You may invent transitions, action, and dialogue, but every event must occur and nothing beyond them may be resolved.",
     "- Once every listed event is true, end the scene immediately. Do not resolve plot threads or write beyond the event list.",
     "- Treat history/state/facts as context only; never retell them.",
     "- Never re-introduce or fully re-describe characters/locations marked [established].",
@@ -143,8 +144,8 @@ function renderSceneContext(story: StoryBlueprint, beatIndex: number): string[] 
   const lines: string[] = [
     `*Main location*: ${location.name}: ${location.description}${
       locationEstablished === undefined
-        ? ""
-        : ` [established]`
+        ? " [new]"
+        : " [established]"
     }`,
     ...location.details.map((detail) => `- ${detail}`),
     ...stateFor(location.id).map((entry) => `- ${entry.state.state}`),
@@ -170,11 +171,12 @@ function renderOutcomes(story: StoryBlueprint, beatIndex: number): string[] {
   return [
     "### Scene outcomes",
     "",
-    "**All of the following must be true when the beat ends**",
-    "**Write these events as one connected fictional scene in the listed order. Preserve the relationships and cause and effect between them. You may invent transitions, action, and dialogue, but every event must occur and nothing beyond them may be resolved.**",
+    "**All of the following events must have occured before the beat ends**",    
     "",
-    ...beat.events.map((event) => `- ${event}`),
+    ...beat.events.map((event, index) => `${index + 1}. ${event}`),
     "",
+    "**Stop once all listed events have occurred.**",
+    ""
   ];
 }
 
@@ -185,9 +187,8 @@ function renderNextBeatBoundary(story: StoryBlueprint, beatIndex: number): strin
   if (!location) throw new Error(`Beat ${beatIndex + 1} references unknown location '${nextBeat.location}'.`);
 
   return [
-    "",
     "## Next beat stop boundary",
-    "**The details below are future context only. Do not narrate, begin, foreshadow, or resolve them in the current scene. End before this next beat starts.**",
+    "**The details below are where the **next** beat starts. Do not narrate it, Use it **only** to  make sure your current scene ends appropriately, before these event occur.**",
     ...(nextBeat.time ? [`*Next beat time frame from current*: ${nextBeat.time}`] : []),
     `*Next beat location*: ${location.name}`,
     "*Start of next beat — do not include in this scene*:",
@@ -396,15 +397,17 @@ function characterCard(story: StoryBlueprint, characterId: string, established: 
     throw new Error(`Character with ID ${characterId} not found`);
   }
 
+  const hasDetails = character.attributes.length > 0 || activeState.length > 0 || newState.length > 0 || oldState.length > 0;
+
   return [
     `**${character.name}**${
       established === undefined
-        ? ""
-        :` [established]`
+        ? " [new]"
+        :" [established]"
       }`,
       character.description,
       `${character.appearance ? `*Appearance*: ${character.appearance}` : ""}`,
-      "*Details*:",
+      hasDetails ? "*Details*:" : "",
       ...character.attributes.map((attr) => `  - ${attr}`),
       ...activeState
       .map((entry) => `  - ${entry.state.state}`),
@@ -412,6 +415,7 @@ function characterCard(story: StoryBlueprint, characterId: string, established: 
       .map((entry) => `  - [New this beat]: ${entry.state.state}`),
       ...oldState
       .map((entry) => `  - [Leaving this beat]: ${entry.state.state}`),
+      ""
   ];
 };
 

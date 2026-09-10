@@ -296,10 +296,12 @@ a.beat-map-entry:hover { background: var(--paper); color: var(--green); }
 
 .studio { min-height: 100vh; background: var(--paper); }
 .studio .topbar nav { display: flex; align-items: center; gap: 20px; }
-.studio-layout { display: grid; grid-template-columns: 230px minmax(420px, 1fr) minmax(300px, 390px); min-height: calc(100vh - 68px); }
+.studio-layout { display: grid; grid-template-columns: 230px minmax(420px, 1fr) 6px var(--chat-width, 390px); min-height: calc(100vh - 68px); }
 .story-library, .author-chat { position: sticky; top: 68px; height: calc(100vh - 68px); overflow: auto; background: var(--surface); }
 .story-library { border-right: 1px solid var(--line); padding: 20px 14px; }
 .author-chat { border-left: 1px solid var(--line); display: grid; grid-template-rows: auto 1fr auto; }
+.chat-resizer { position: sticky; top: 68px; height: calc(100vh - 68px); width: 6px; cursor: col-resize; background: transparent; }
+.chat-resizer:hover, .chat-resizer:active { background: var(--line); }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .panel-heading h2 { margin: 0; font-size: 15px; }
 .icon-button { width: 34px; min-height: 34px; padding: 0; border-color: var(--line); background: var(--surface); color: var(--ink); font-size: 20px; }
@@ -423,12 +425,14 @@ summary span { color: var(--muted); font-size: 12px; font-weight: 400; }
 }
 @media (max-width: 1100px) {
   .studio-layout { grid-template-columns: 190px minmax(400px, 1fr); }
+  .chat-resizer { display: none; }
   .author-chat { position: fixed; z-index: 6; right: 0; bottom: 0; top: 68px; width: min(390px, 90vw); box-shadow: -8px 0 24px color-mix(in srgb, var(--ink) 15%, transparent); }
 }
 
 @media (max-width: 700px) {
   .studio-layout { display: block; }
   .story-library, .author-chat { position: static; width: auto; height: auto; overflow: visible; }
+  .chat-resizer { display: none; }
   .story-library { border-right: 0; border-bottom: 1px solid var(--line); }
   .blueprint-editor { padding: 28px 18px 64px; overflow: hidden; }
   .editor-title { align-items: flex-start; flex-direction: column; }

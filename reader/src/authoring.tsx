@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { useScreenWakeLock } from "./wake-lock";
 
 interface StoryItem { path: string; title: string; status: "draft" | "final"; beats: number }
@@ -27,6 +27,10 @@ interface StoredChat { messages: ChatMessage[]; responseId?: string }
 type Keyword = Story["beats"][number]["keywords"][number];
 
 const AUTHOR_CHAT_KEY = "folio-author-chat";
+const CHAT_WIDTH_KEY = "folio-author-chat-width";
+const CHAT_WIDTH_DEFAULT = 390;
+const CHAT_WIDTH_MIN = 280;
+const CHAT_WIDTH_MAX = 640;
 
 function formatKeywords(keywords: Keyword[]): string {
   return keywords.map((keyword) => `${keyword.type}: ${keyword.word}`).join("\n");
@@ -160,6 +164,10 @@ export function AuthoringApp() {
   const [entityDesignInput, setEntityDesignInput] = useState("");
   const [designingEntity, setDesigningEntity] = useState(false);
   const [suggestions, setSuggestions] = useState<Array<{ id: string; sourceId: string; type: string; content: string }>>([]);
+  const [chatWidth, setChatWidth] = useState<number>(() => {
+    const saved = Number(localStorage.getItem(CHAT_WIDTH_KEY));
+    return saved >= CHAT_WIDTH_MIN && saved <= CHAT_WIDTH_MAX ? saved : CHAT_WIDTH_DEFAULT;
+  });
   useScreenWakeLock(chatBusy);
   const chatAbort = useRef<AbortController>();
 
@@ -167,6 +175,31 @@ export function AuthoringApp() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("story-reader-theme", theme);
   }, [theme]);
+
+  function beginChatResize(event: ReactMouseEvent) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = chatWidth;
+    function onMove(moveEvent: MouseEvent) {
+      const next = Math.min(CHAT_WIDTH_MAX, Math.max(CHAT_WIDTH_MIN, startWidth - (moveEvent.clientX - startX)));
+      setChatWidth(next);
+    }
+    function onUp() {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      setChatWidth((current) => { localStorage.setItem(CHAT_WIDTH_KEY, String(current)); return current; });
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
+  function nudgeChatWidth(delta: number) {
+    setChatWidth((current) => {
+      const next = Math.min(CHAT_WIDTH_MAX, Math.max(CHAT_WIDTH_MIN, current + delta));
+      localStorage.setItem(CHAT_WIDTH_KEY, String(next));
+      return next;
+    });
+  }
 
   useEffect(() => {
     localStorage.setItem(AUTHOR_CHAT_KEY, JSON.stringify({ messages, responseId }));
@@ -574,7 +607,7 @@ export function AuthoringApp() {
 
   return <main className="studio">
     <header className="topbar"><a className="wordmark" href="/">Folio</a><nav><a className="nav-link" href="/">Read</a><strong>Write</strong><button className="theme-toggle" aria-label={`Use ${theme === "light" ? "dark" : "light"} mode`} title={`Use ${theme === "light" ? "dark" : "light"} mode`} onClick={() => setTheme((current) => current === "light" ? "dark" : "light")}>{theme === "light" ? "☾" : "☀"}</button></nav></header>
-    <div className="studio-layout">
+    <div className="studio-layout" style={{ "--chat-width": `${chatWidth}px` } as CSSProperties}>
       <aside className="story-library"><div className="panel-heading"><h2>Stories</h2><button className="icon-button" title="New story" onClick={beginNew}>+</button></div>{stories.map((item) => <button key={item.path} className={item.path === storyPath ? "story-choice selected" : "story-choice"} onClick={() => void load(item.path)}><strong>{item.title}</strong><span>{item.status} · {item.beats} beats</span></button>)}</aside>
       <section className="blueprint-editor">
         {!story ? <p>Select or create a story.</p> : <>
@@ -633,10 +666,12 @@ export function AuthoringApp() {
                 <label>Narration rules<textarea value={beat.narration_rules.join("\n")} placeholder="One rule per line" onChange={(event) => changeBeat(index, { narration_rules: event.target.value.split("\n") })} /></label>
               </details>
             </div>
-          </article>{beatSlot(index + 1)}</Fragment>)}</section>
+          </article>{beatSlot(index + 1)}</Fragment>)}
+          <div className="panel-heading"><button className="secondary" onClick={addBeat}>Add beat</button><button className="primary" disabled={!dirty} onClick={() => void save()}>Save</button></div></section>
           {notice && <div className="notice">{notice}</div>}{error && <div className="error">{error}</div>}
         </>}
       </section>
+      <div className="chat-resizer" role="separator" aria-orientation="vertical" aria-label="Resize model collaborator panel" tabIndex={0} onMouseDown={beginChatResize} onKeyDown={(event) => { if (event.key === "ArrowLeft") { event.preventDefault(); nudgeChatWidth(20); } else if (event.key === "ArrowRight") { event.preventDefault(); nudgeChatWidth(-20); } }} />
       <aside className="author-chat"><div className="panel-heading"><h2>Model collaborator</h2><div className="chat-heading-actions"><select value={model} onChange={(event) => setModel(event.target.value)}>{models.map((item) => <option key={item}>{item}</option>)}</select><button className="icon-button" disabled={chatBusy || messages.length === 0} title="New chat" aria-label="New chat" onClick={beginNewChat}>+</button></div></div><div className="chat-log">{messages.length === 0 && <p>Ask the model to create, inspect, or expand a story. Changes are applied through validated MCP tools.</p>}{messages.map((message, index) => <div key={index} className={`chat-message ${message.role}`}>{message.role === "assistant" && message.reasoning && <details className="collaborator-reasoning"><summary>Reasoning <span>{chatBusy && index === messages.length - 1 ? "live" : "trace"}</span></summary><pre>{message.reasoning}</pre></details>}<div className="chat-output">{message.text || (message.stopped ? "Stopped." : message.failed ? "Request failed." : message.noFinal ? "Reasoning finished without a final answer." : "Working...")}</div>{message.noFinal && index === messages.length - 1 && !chatBusy && <button className="secondary output-draft" onClick={() => void chat("Output the complete draft answer.")}>Output draft</button>}</div>)}</div><div className="chat-input"><textarea value={chatInput} disabled={chatBusy} placeholder="Expand the midpoint with two escalating beats..." onChange={(event) => setChatInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void chat(); } }} />{chatBusy ? <button className="danger stop-button" onClick={cancelChat}>Stop</button> : <button className="primary" disabled={!chatInput.trim()} onClick={() => void chat()}>Send</button>}</div></aside>
     </div>
   </main>;

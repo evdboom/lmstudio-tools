@@ -31,6 +31,10 @@ import {
   saveReaderReview,
   startReaderRun,
 } from "./reader-service.js";
+import { buildBeatDesignPrompt, parseBeatDraft } from "./reader-beat-design.js";
+import { buildCharacterDesignPrompt, parseCharacterDraft } from "./reader-character-design.js";
+import { buildLocationDesignPrompt, parseLocationDraft } from "./reader-location-design.js";
+import { storyBlueprintSchema } from "./story-model.js";
 import { deleteReaderRun, listFinalStories, listReaderRuns } from "./reader-store.js";
 import {
   listEditableStories,
@@ -577,6 +581,100 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       );
     } catch (error) {
       return reply.code(400).send({ error: message(error) });
+    }
+  });
+
+  app.post("/api/editor/design-beat", async (request, reply) => {
+    const body = z.object({
+      model: z.string().trim().min(1).max(500),
+      instruction: z.string().trim().min(1).max(4_000),
+      insert_index: z.number().int().nonnegative(),
+      story: z.unknown(),
+    }).safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: "Invalid beat design request." });
+    const story = storyBlueprintSchema.safeParse(body.data.story);
+    if (!story.success) return reply.code(400).send({ error: "Invalid story blueprint." });
+
+    const abort = new AbortController();
+    request.raw.on("aborted", () => abort.abort());
+    await acquireWakeLock();
+    try {
+      const prompt = buildBeatDesignPrompt(story.data, body.data.instruction, body.data.insert_index);
+      const output = await generateLmStudioText({
+        baseUrl: options.lmStudioUrl,
+        model: body.data.model,
+        input: prompt.input,
+        systemPrompt: prompt.systemPrompt,
+        apiToken: options.lmStudioApiToken,
+        signal: abort.signal,
+      });
+      return { beat: parseBeatDraft(output, story.data) };
+    } catch (error) {
+      return reply.code(400).send({ error: message(error) });
+    } finally {
+      releaseWakeLock();
+    }
+  });
+
+  app.post("/api/editor/design-character", async (request, reply) => {
+    const body = z.object({
+      model: z.string().trim().min(1).max(500),
+      instruction: z.string().trim().min(1).max(4_000),
+      story: z.unknown(),
+    }).safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: "Invalid character design request." });
+    const story = storyBlueprintSchema.safeParse(body.data.story);
+    if (!story.success) return reply.code(400).send({ error: "Invalid story blueprint." });
+
+    const abort = new AbortController();
+    request.raw.on("aborted", () => abort.abort());
+    await acquireWakeLock();
+    try {
+      const prompt = buildCharacterDesignPrompt(story.data, body.data.instruction);
+      const output = await generateLmStudioText({
+        baseUrl: options.lmStudioUrl,
+        model: body.data.model,
+        input: prompt.input,
+        systemPrompt: prompt.systemPrompt,
+        apiToken: options.lmStudioApiToken,
+        signal: abort.signal,
+      });
+      return { character: parseCharacterDraft(output, story.data) };
+    } catch (error) {
+      return reply.code(400).send({ error: message(error) });
+    } finally {
+      releaseWakeLock();
+    }
+  });
+
+  app.post("/api/editor/design-location", async (request, reply) => {
+    const body = z.object({
+      model: z.string().trim().min(1).max(500),
+      instruction: z.string().trim().min(1).max(4_000),
+      story: z.unknown(),
+    }).safeParse(request.body);
+    if (!body.success) return reply.code(400).send({ error: "Invalid location design request." });
+    const story = storyBlueprintSchema.safeParse(body.data.story);
+    if (!story.success) return reply.code(400).send({ error: "Invalid story blueprint." });
+
+    const abort = new AbortController();
+    request.raw.on("aborted", () => abort.abort());
+    await acquireWakeLock();
+    try {
+      const prompt = buildLocationDesignPrompt(story.data, body.data.instruction);
+      const output = await generateLmStudioText({
+        baseUrl: options.lmStudioUrl,
+        model: body.data.model,
+        input: prompt.input,
+        systemPrompt: prompt.systemPrompt,
+        apiToken: options.lmStudioApiToken,
+        signal: abort.signal,
+      });
+      return { location: parseLocationDraft(output, story.data) };
+    } catch (error) {
+      return reply.code(400).send({ error: message(error) });
+    } finally {
+      releaseWakeLock();
     }
   });
 

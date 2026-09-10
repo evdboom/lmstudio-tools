@@ -120,7 +120,7 @@ export function buildImagePlanPrompt(story: StoryBlueprint, run: ReaderRun): {
   };
 }
 
-function jsonObject(text: string): unknown {
+export function jsonObject(text: string): unknown {
   const trimmed = text.trim();
   const fenceStart = trimmed.startsWith("```") ? trimmed.indexOf("\n") : -1;
   const fenceEnd = fenceStart >= 0 ? trimmed.lastIndexOf("```") : -1;

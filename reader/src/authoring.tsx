@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { useScreenWakeLock } from "./wake-lock";
 
 interface StoryItem { path: string; title: string; status: "draft" | "final"; beats: number }
@@ -153,6 +153,13 @@ export function AuthoringApp() {
   const [messages, setMessages] = useState<ChatMessage[]>(initialChat.messages);
   const [responseId, setResponseId] = useState<string | undefined>(initialChat.responseId);
   const [chatBusy, setChatBusy] = useState(false);
+  const [designAtIndex, setDesignAtIndex] = useState<number>();
+  const [beatDesignInput, setBeatDesignInput] = useState("");
+  const [designingBeat, setDesigningBeat] = useState(false);
+  const [designEntityKind, setDesignEntityKind] = useState<"character" | "location">();
+  const [entityDesignInput, setEntityDesignInput] = useState("");
+  const [designingEntity, setDesigningEntity] = useState(false);
+  const [suggestions, setSuggestions] = useState<Array<{ id: string; sourceId: string; type: string; content: string }>>([]);
   useScreenWakeLock(chatBusy);
   const chatAbort = useRef<AbortController>();
 
@@ -344,6 +351,129 @@ export function AuthoringApp() {
     update({ beats: [...story.beats, { id: nextBeatId(story), location: story.locations[0].id, characters: [], events: [""], keywords: [], narration_rules: [] }] });
   }
 
+  /**
+   * A single structured call, not a chat turn: it sends the whole in-progress
+   * blueprint plus a short instruction and the target position, and gets
+   * exactly one JSON beat back to splice in there, pre-filled by the model.
+   * Anything the beat implies but doesn't encode comes back as `suggested`
+   * text for the writer to act on manually; nothing is applied automatically.
+   */
+  async function designBeat(index: number) {
+    if (!story || !model) return;
+    const instruction = beatDesignInput.trim();
+    if (!instruction) return;
+    setDesigningBeat(true); setError("");
+    try {
+      const result = await json<{ beat: {
+        id?: string; title?: string; location: string; characters: string[]; time?: string;
+        narration_mode?: string; events: string[]; keywords: Keyword[]; narration_rules: string[];
+        suggested: Array<{ type: string; content: string }>;
+      } }>("/api/editor/design-beat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model, instruction, insert_index: index, story: normalize(story) }),
+      });
+      const beat = result.beat;
+      const id = beat.id ?? nextBeatId(story);
+      const beats = [...story.beats];
+      beats.splice(index, 0, {
+        id, title: beat.title, location: beat.location, characters: beat.characters,
+        time: beat.time, events: beat.events, narration_mode: beat.narration_mode,
+        keywords: beat.keywords, narration_rules: beat.narration_rules,
+      });
+      update({ beats });
+      addSuggestions(id, beat.suggested);
+      setBeatDesignInput(""); setDesignAtIndex(undefined);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setDesigningBeat(false);
+    }
+  }
+
+  /** Follow-ups any design call flags but doesn't apply itself; the writer reviews and dismisses them from the panel. */
+  function addSuggestions(sourceId: string, items: Array<{ type: string; content: string }>) {
+    if (items.length === 0) return;
+    setSuggestions((current) => [
+      ...current,
+      ...items.map((item, itemIndex) => ({ id: `${sourceId}-${itemIndex}-${Date.now()}`, sourceId, type: item.type, content: item.content })),
+    ]);
+  }
+
+  function dismissSuggestion(id: string) {
+    setSuggestions((current) => current.filter((item) => item.id !== id));
+  }
+
+  /** Same single-shot pattern as `designBeat`, for the two entity kinds that don't need an insertion position. */
+  async function designEntity(kind: "character" | "location") {
+    if (!story || !model) return;
+    const instruction = entityDesignInput.trim();
+    if (!instruction) return;
+    setDesigningEntity(true); setError("");
+    try {
+      if (kind === "character") {
+        const result = await json<{ character: {
+          id?: string; name: string; description: string; appearance: string;
+          attributes: string[]; relations: Array<{ to: string; kind: string }>;
+          suggested: Array<{ type: string; content: string }>;
+        } }>("/api/editor/design-character", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model, instruction, story: normalize(story) }),
+        });
+        const character = result.character;
+        const id = character.id ?? `character-${story.characters.length + 1}`;
+        update({ characters: [...story.characters, {
+          id, name: character.name, description: character.description, appearance: character.appearance,
+          attributes: character.attributes, relations: character.relations, states: [],
+        }] });
+        addSuggestions(id, character.suggested);
+      } else {
+        const result = await json<{ location: {
+          id?: string; name: string; description: string; details: string[];
+          suggested: Array<{ type: string; content: string }>;
+        } }>("/api/editor/design-location", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model, instruction, story: normalize(story) }),
+        });
+        const location = result.location;
+        const id = location.id ?? `location-${story.locations.length + 1}`;
+        update({ locations: [...story.locations, { id, name: location.name, description: location.description, details: location.details, states: [] }] });
+        addSuggestions(id, location.suggested);
+      }
+      setEntityDesignInput(""); setDesignEntityKind(undefined);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setDesigningEntity(false);
+    }
+  }
+
+  /** Toggleable inline designer next to a world section's "Add" button; characters and locations have no order, so there is only one slot per kind. */
+  function entityDesigner(kind: "character" | "location") {
+    const open = designEntityKind === kind;
+    return <span className="entity-designer-slot">
+      <button className="secondary" disabled={!model} onClick={() => { setDesignEntityKind(open ? undefined : kind); setEntityDesignInput(""); }}>{open ? "Cancel" : `Design ${kind}`}</button>
+      {open && <div className="beat-designer">
+        <textarea value={entityDesignInput} disabled={designingEntity} placeholder={kind === "character" ? "Describe the character: role, personality, how they fit the story..." : "Describe the location: purpose, mood, key details..."} onChange={(event) => setEntityDesignInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void designEntity(kind); } }} />
+        <div className="beat-designer-actions">{designingEntity ? <span>Designing...</span> : <button className="primary" disabled={!entityDesignInput.trim()} onClick={() => void designEntity(kind)}>Generate</button>}</div>
+      </div>}
+    </span>;
+  }
+
+  /** One entry point per gap in the beat list: before the first beat, between every pair, and after the last. */
+  function beatSlot(index: number) {
+    const open = designAtIndex === index;
+    return <div className="beat-slot" key={`slot-${index}`}>
+      <button className="compact-button beat-slot-button" disabled={!model} onClick={() => { setDesignAtIndex(open ? undefined : index); setBeatDesignInput(""); }}>{open ? "Cancel" : "+ Design beat here"}</button>
+      {open && <div className="beat-designer">
+        <textarea value={beatDesignInput} disabled={designingBeat} placeholder="Describe the beat: what should happen, who is involved, any escalation..." onChange={(event) => setBeatDesignInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void designBeat(index); } }} />
+        <div className="beat-designer-actions">{designingBeat ? <span>Designing...</span> : <button className="primary" disabled={!beatDesignInput.trim()} onClick={() => void designBeat(index)}>Generate</button>}</div>
+      </div>}
+    </div>;
+  }
+
   function changeBeat(index: number, patch: Partial<Story["beats"][number]>) { if (!story) return; const beats = [...story.beats]; beats[index] = { ...beats[index], ...patch }; update({ beats }); }
 
   /** A renamed beat has to be followed by every state and fact window pointing at it. */
@@ -457,8 +587,8 @@ export function AuthoringApp() {
               <div className="world-fields"><label>ID<input value={character.id} onChange={(event) => changeCharacter(index, { id: event.target.value })} /></label><label>Name<input value={character.name} onChange={(event) => changeCharacter(index, { name: event.target.value })} /></label><label className="wide">Description<textarea value={character.description} onChange={(event) => changeCharacter(index, { description: event.target.value })} /></label><label className="wide">Appearance<textarea value={character.appearance} onChange={(event) => changeCharacter(index, { appearance: event.target.value })} /></label><label className="wide">Attributes<textarea value={character.attributes.join("\n")} placeholder="One attribute per line" onChange={(event) => changeCharacter(index, { attributes: event.target.value.split("\n") })} /></label>
                 {statesEditor("characters", index, character.states)}
                 <fieldset className="wide"><legend>Relations</legend>{character.relations.map((relation, relationIndex) => <div className="relation-row" key={relationIndex}><select aria-label="Related character" value={relation.to} onChange={(event) => changeCharacter(index, { relations: character.relations.map((item, itemIndex) => itemIndex === relationIndex ? { ...item, to: event.target.value } : item) })}>{story.characters.filter((_, itemIndex) => itemIndex !== index).map((item) => <option key={item.id} value={item.id}>{item.name || item.id}</option>)}</select><input aria-label="Relation kind" value={relation.kind} placeholder="Relation" onChange={(event) => changeCharacter(index, { relations: character.relations.map((item, itemIndex) => itemIndex === relationIndex ? { ...item, kind: event.target.value } : item) })} /><button className="icon-button danger" title="Delete relation" onClick={() => changeCharacter(index, { relations: character.relations.filter((_, itemIndex) => itemIndex !== relationIndex) })}>×</button></div>)}<button className="compact-button" disabled={story.characters.length < 2} onClick={() => changeCharacter(index, { relations: [...character.relations, { to: story.characters.find((_, itemIndex) => itemIndex !== index)!.id, kind: "" }] })}>Add relation</button></fieldset>
-              </div></article>)}<button className="secondary add-world-item" onClick={() => update({ characters: [...story.characters, { id: `character-${story.characters.length + 1}`, name: "", description: "", appearance: "", relations: [], attributes: [], states: [] }] })}>Add character</button></div></details>
-            <details open><summary>Locations <span>{story.locations.length}</span></summary><div className="world-list">{story.locations.map((location, index) => <article className="world-item" key={index}><div className="world-item-heading"><strong>{location.name || location.id || `Location ${index + 1}`}</strong><button className="icon-button danger" title="Delete location" onClick={() => removeLocation(index)}>×</button></div><div className="world-fields"><label>ID<input value={location.id} onChange={(event) => changeLocation(index, { id: event.target.value })} /></label><label>Name<input value={location.name} onChange={(event) => changeLocation(index, { name: event.target.value })} /></label><label className="wide">Description<textarea value={location.description} onChange={(event) => changeLocation(index, { description: event.target.value })} /></label><label className="wide">Details<textarea value={location.details.join("\n")} placeholder="One detail per line" onChange={(event) => changeLocation(index, { details: event.target.value.split("\n") })} /></label>{statesEditor("locations", index, location.states)}</div></article>)}<button className="secondary add-world-item" onClick={() => update({ locations: [...story.locations, { id: `location-${story.locations.length + 1}`, name: "", description: "", details: [], states: [] }] })}>Add location</button></div></details>
+              </div></article>)}<button className="secondary add-world-item" onClick={() => update({ characters: [...story.characters, { id: `character-${story.characters.length + 1}`, name: "", description: "", appearance: "", relations: [], attributes: [], states: [] }] })}>Add character</button>{entityDesigner("character")}</div></details>
+            <details open><summary>Locations <span>{story.locations.length}</span></summary><div className="world-list">{story.locations.map((location, index) => <article className="world-item" key={index}><div className="world-item-heading"><strong>{location.name || location.id || `Location ${index + 1}`}</strong><button className="icon-button danger" title="Delete location" onClick={() => removeLocation(index)}>×</button></div><div className="world-fields"><label>ID<input value={location.id} onChange={(event) => changeLocation(index, { id: event.target.value })} /></label><label>Name<input value={location.name} onChange={(event) => changeLocation(index, { name: event.target.value })} /></label><label className="wide">Description<textarea value={location.description} onChange={(event) => changeLocation(index, { description: event.target.value })} /></label><label className="wide">Details<textarea value={location.details.join("\n")} placeholder="One detail per line" onChange={(event) => changeLocation(index, { details: event.target.value.split("\n") })} /></label>{statesEditor("locations", index, location.states)}</div></article>)}<button className="secondary add-world-item" onClick={() => update({ locations: [...story.locations, { id: `location-${story.locations.length + 1}`, name: "", description: "", details: [], states: [] }] })}>Add location</button>{entityDesigner("location")}</div></details>
             <details><summary>Narration modes <span>{story.narration_modes.length}</span></summary><div className="world-list">{story.narration_modes.map((mode, index) => <article className="world-item" key={index}><div className="world-item-heading"><strong>{mode.id || `Mode ${index + 1}`}</strong><button className="icon-button danger" disabled={story.narration_modes.length === 1} title="Delete narration mode" onClick={() => removeMode(index)}>×</button></div><div className="world-fields"><label>ID<input value={mode.id} onChange={(event) => changeMode(index, { id: event.target.value })} /></label><label>Perspective<input value={mode.perspective} onChange={(event) => changeMode(index, { perspective: event.target.value })} /></label><label>Tense<input value={mode.tense} onChange={(event) => changeMode(index, { tense: event.target.value })} /></label><label>Kind<select value={mode.kind ?? "replace"} disabled={mode.id === story.default_narration_mode} onChange={(event) => changeMode(index, { kind: event.target.value as "replace" | "supplemental" })}><option value="replace">Replace default rules</option><option value="supplemental">Add to default rules</option></select></label><label className="wide">Rules<textarea value={mode.rules.join("\n")} placeholder="One rule per line" onChange={(event) => changeMode(index, { rules: event.target.value.split("\n") })} /></label>{examplesEditor(index, "positive_examples", "Positive examples")}{examplesEditor(index, "negative_examples", "Negative examples")}</div></article>)}<button className="secondary add-world-item" onClick={() => update({ narration_modes: [...story.narration_modes, { id: `mode-${story.narration_modes.length + 1}`, perspective: "third-person limited", tense: "past", rules: ["Keep the viewpoint consistent."], positive_examples: [], negative_examples: [], kind: "replace" }] })}>Add mode</button></div></details>
             <details><summary>Hard canon facts <span>{story.facts.length}</span></summary><div className="world-list">
               <p className="field-hint">World and plot canon only. Canon about one character or location belongs on that subject: permanent traits in its description, anything that changes in a state.</p>
@@ -487,7 +617,10 @@ export function AuthoringApp() {
                       </>}
                 </div></article>; })}<button className="secondary add-world-item" onClick={() => update({ facts: [...story.facts, { id: `fact-${story.facts.length + 1}`, fact: "", beats: [], subjects: [] }] })}>Add fact</button></div></details>
           </section>
-          <section className="beats-editor"><div className="panel-heading"><h2>Beats</h2><button className="secondary" onClick={addBeat}>Add beat</button></div>{story.beats.map((beat, index) => <article className="beat-editor" key={index}>
+          <section className="beats-editor"><div className="panel-heading"><h2>Beats</h2><button className="secondary" onClick={addBeat}>Add beat</button></div>
+          {suggestions.length > 0 && <div className="beat-suggestions"><strong>Suggestions from designed beats</strong>{suggestions.map((item) => <div className="suggestion-row" key={item.id}><span className="suggestion-type">{item.type}</span><span className="suggestion-content">{item.content}</span><button className="icon-button" title="Dismiss suggestion" onClick={() => dismissSuggestion(item.id)}>×</button></div>)}</div>}
+          {beatSlot(0)}
+          {story.beats.map((beat, index) => <Fragment key={beat.id}><article className="beat-editor">
             <div className="beat-toolbar"><strong>{String(index + 1).padStart(2, "0")}</strong><input className="beat-id" aria-label="Beat ID" value={beat.id} title="State and fact windows refer to this id" onChange={(event) => renameBeat(index, event.target.value)} /><select aria-label="Location" value={beat.location} onChange={(event) => changeBeat(index, { location: event.target.value })}>{story.locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}</select><button className="icon-button" title="Move up" onClick={() => moveBeat(index, -1)}>↑</button><button className="icon-button" title="Move down" onClick={() => moveBeat(index, 1)}>↓</button><button className="icon-button danger" title="Delete beat" onClick={() => update({ beats: story.beats.filter((_, beatIndex) => beatIndex !== index) })}>×</button></div>
             <div className="beat-fields">
               <label className="wide">Title<input value={beat.title ?? ""} placeholder="Shown only in the reader's beat map, never in the prose" onChange={(event) => changeBeat(index, { title: event.target.value })} /></label>
@@ -500,7 +633,7 @@ export function AuthoringApp() {
                 <label>Narration rules<textarea value={beat.narration_rules.join("\n")} placeholder="One rule per line" onChange={(event) => changeBeat(index, { narration_rules: event.target.value.split("\n") })} /></label>
               </details>
             </div>
-          </article>)}</section>
+          </article>{beatSlot(index + 1)}</Fragment>)}</section>
           {notice && <div className="notice">{notice}</div>}{error && <div className="error">{error}</div>}
         </>}
       </section>

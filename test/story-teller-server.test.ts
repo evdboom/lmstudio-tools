@@ -34,7 +34,7 @@ describe("story teller server integration", () => {
 
   it("prefixes every story tool consistently", () => {
     const names = Object.values(storyToolNames("story"));
-    expect(names).toHaveLength(15);
+    expect(names).toHaveLength(16);
     expect(names.every((name) => name.startsWith("story_"))).toBe(true);
     expect(names).toContain("story_next_beat");
     expect(names).toContain("story_story_save");

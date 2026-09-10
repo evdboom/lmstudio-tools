@@ -13,6 +13,7 @@ import {
   addNarrationMode,
   createStory,
   finalizeStory,
+  storyInstructions,
   validateStory,
 } from "./story-authoring.js";
 import {
@@ -45,6 +46,7 @@ export function storyToolNames(prefix?: string) {
     list: name("story_list"),
     read: name("story_read"),
     save: name("story_save"),
+    instructions: name("story_instructions"),
     start: name("telling_start"),
     nextBeat: name("next_beat"),
     status: name("telling_status"),
@@ -223,6 +225,10 @@ export function registerStoryTools(
   server.tool(names.finalize, "Validate and freeze a story blueprint for telling.", {
     story_path: storyPath,
   }, wrap(names.finalize, ({ story_path }) => finalizeStory(root, story_path), log));
+
+  server.tool(names.instructions, "Get the authoring workflow for a topic before making changes. Call with topic 'create' when starting a new story, or 'update' when changing an existing one.", {
+    topic: z.enum(["create", "update"]),
+  }, wrap(names.instructions, ({ topic }) => Promise.resolve(storyInstructions(topic)), log));
 
   server.registerTool(names.list, {
     description: "List story blueprints available for editing.",

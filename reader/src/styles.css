@@ -376,9 +376,9 @@ summary span { color: var(--muted); font-size: 12px; font-weight: 400; }
 .beat-advanced { margin: 0; padding: 12px 0 0; border-bottom: 0; }
 .beat-advanced > label { margin-top: 12px; }
 .notice { margin-top: 20px; padding: 12px; border-left: 3px solid var(--green); background: var(--surface); color: var(--green); }
-.author-chat .panel-heading { padding: 16px; border-bottom: 1px solid var(--line); }
+.author-chat .panel-heading { padding: 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .author-chat .panel-heading select { max-width: 170px; min-height: 34px; }
-.chat-heading-actions { display: flex; align-items: center; gap: 8px; }
+.chat-heading-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .chat-log { overflow: auto; padding: 18px; }
 .chat-log > p { color: var(--muted); font: 15px/1.5 "Palatino Linotype", serif; }
 .chat-message { margin-bottom: 14px; padding: 10px 12px; font-size: 13px; line-height: 1.45; }
@@ -390,6 +390,8 @@ summary span { color: var(--muted); font-size: 12px; font-weight: 400; }
 .collaborator-reasoning summary { color: var(--muted); font: 700 11px/1.4 "Aptos", "Segoe UI", sans-serif; text-transform: uppercase; }
 .collaborator-reasoning summary span { color: var(--red); font-size: 9px; }
 .collaborator-reasoning pre { max-height: 240px; margin: 10px 0 0; padding: 10px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface); color: var(--muted); font: 11px/1.5 Consolas, "Courier New", monospace; }
+.chat-tools { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.tool-chip { padding: 2px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--muted); font: 11px/1.6 Consolas, "Courier New", monospace; }
 .chat-input { padding: 12px; display: grid; grid-template-columns: 1fr auto; gap: 8px; border-top: 1px solid var(--line); }
 .chat-input textarea { min-height: 70px; }
 .stop-button { align-self: stretch; min-width: 64px; }

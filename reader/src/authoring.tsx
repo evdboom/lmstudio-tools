@@ -22,9 +22,10 @@ interface Story {
   beats: Array<{ id: string; title?: string; location: string; characters: string[]; time?: string; events: string[]; narration_mode?: string; keywords: Array<{ type: string; word: string }>; narration_rules: string[] }>;
 }
 type SubjectKind = "characters" | "locations";
-interface ChatMessage { role: "user" | "assistant"; text: string; reasoning?: string; stopped?: boolean; failed?: boolean; noFinal?: boolean }
+interface ChatMessage { role: "user" | "assistant"; text: string; reasoning?: string; tools?: string[]; stopped?: boolean; failed?: boolean; noFinal?: boolean }
 interface StoredChat { messages: ChatMessage[]; responseId?: string }
 type Keyword = Story["beats"][number]["keywords"][number];
+type ReasoningMode = "native" | "template_think" | "think" | "thinking";
 
 const AUTHOR_CHAT_KEY = "folio-author-chat";
 const CHAT_WIDTH_KEY = "folio-author-chat-width";
@@ -152,6 +153,7 @@ export function AuthoringApp() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [model, setModel] = useState("");
+  const [reasoningMode, setReasoningMode] = useState<ReasoningMode>("native");
   const [chatInput, setChatInput] = useState("");
   const [initialChat] = useState(storedChat);
   const [messages, setMessages] = useState<ChatMessage[]>(initialChat.messages);
@@ -571,7 +573,7 @@ export function AuthoringApp() {
       const instruction = directOutput
         ? `DIRECT OUTPUT MODE: Begin the final answer immediately. Do not analyze, plan, revise, summarize, or call tools. Reproduce the complete answer already drafted in the preceding reasoning.\n\n${input}`
         : input;
-      const response = await fetch("/api/editor/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model, input: storyPath ? `Work on story '${storyPath}'. ${instruction}` : instruction, previous_response_id: responseId }), signal: abort.signal });
+      const response = await fetch("/api/editor/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model, input: storyPath ? `Work on story '${storyPath}'. ${instruction}` : instruction, previous_response_id: responseId, reasoning_mode: reasoningMode }), signal: abort.signal });
       if (!response.ok || !response.body) throw new Error("Authoring chat could not start.");
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
       while (true) {
@@ -580,7 +582,7 @@ export function AuthoringApp() {
           const type = raw.match(/^event: (.+)$/m)?.[1]; const data = raw.match(/^data: (.+)$/m)?.[1]; if (!data) continue;
           if (type === "delta") setMessages((current) => { const next = [...current]; const last = next[next.length - 1]; next[next.length - 1] = { ...last, text: last.text + JSON.parse(data) }; return next; });
           if (type === "reasoning") setMessages((current) => { const next = [...current]; const last = next[next.length - 1]; next[next.length - 1] = { ...last, reasoning: (last.reasoning ?? "") + JSON.parse(data) }; return next; });
-          if (type === "tool") setNotice(`Model is using ${JSON.parse(data)}...`);
+          if (type === "tool") setMessages((current) => { const next = [...current]; const last = next[next.length - 1]; next[next.length - 1] = { ...last, tools: [...(last.tools ?? []), JSON.parse(data)] }; return next; });
           if (type === "done") {
             const result = JSON.parse(data) as { message: string; responseId: string };
             setResponseId(result.responseId);
@@ -590,6 +592,7 @@ export function AuthoringApp() {
         }
         if (done) break;
       }
+      await refreshList();
       if (storyPath) await load(storyPath);
     } catch (reason) {
       if (abort.signal.aborted) {
@@ -672,7 +675,7 @@ export function AuthoringApp() {
         </>}
       </section>
       <div className="chat-resizer" role="separator" aria-orientation="vertical" aria-label="Resize model collaborator panel" tabIndex={0} onMouseDown={beginChatResize} onKeyDown={(event) => { if (event.key === "ArrowLeft") { event.preventDefault(); nudgeChatWidth(20); } else if (event.key === "ArrowRight") { event.preventDefault(); nudgeChatWidth(-20); } }} />
-      <aside className="author-chat"><div className="panel-heading"><h2>Model collaborator</h2><div className="chat-heading-actions"><select value={model} onChange={(event) => setModel(event.target.value)}>{models.map((item) => <option key={item}>{item}</option>)}</select><button className="icon-button" disabled={chatBusy || messages.length === 0} title="New chat" aria-label="New chat" onClick={beginNewChat}>+</button></div></div><div className="chat-log">{messages.length === 0 && <p>Ask the model to create, inspect, or expand a story. Changes are applied through validated MCP tools.</p>}{messages.map((message, index) => <div key={index} className={`chat-message ${message.role}`}>{message.role === "assistant" && message.reasoning && <details className="collaborator-reasoning"><summary>Reasoning <span>{chatBusy && index === messages.length - 1 ? "live" : "trace"}</span></summary><pre>{message.reasoning}</pre></details>}<div className="chat-output">{message.text || (message.stopped ? "Stopped." : message.failed ? "Request failed." : message.noFinal ? "Reasoning finished without a final answer." : "Working...")}</div>{message.noFinal && index === messages.length - 1 && !chatBusy && <button className="secondary output-draft" onClick={() => void chat("Output the complete draft answer.")}>Output draft</button>}</div>)}</div><div className="chat-input"><textarea value={chatInput} disabled={chatBusy} placeholder="Expand the midpoint with two escalating beats..." onChange={(event) => setChatInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void chat(); } }} />{chatBusy ? <button className="danger stop-button" onClick={cancelChat}>Stop</button> : <button className="primary" disabled={!chatInput.trim()} onClick={() => void chat()}>Send</button>}</div></aside>
+      <aside className="author-chat"><div className="panel-heading"><h2>Model collaborator</h2><div className="chat-heading-actions"><select aria-label="Reasoning mode" value={reasoningMode} onChange={(event) => setReasoningMode(event.target.value as ReasoningMode)}><option value="native">Native reasoning</option><option value="template_think">Template /think ([THINK])</option><option value="think">XML &lt;think&gt;</option><option value="thinking">XML &lt;thinking&gt;</option></select><select value={model} onChange={(event) => setModel(event.target.value)}>{models.map((item) => <option key={item}>{item}</option>)}</select><button className="icon-button" disabled={chatBusy || messages.length === 0} title="New chat" aria-label="New chat" onClick={beginNewChat}>+</button></div></div><div className="chat-log">{messages.length === 0 && <p>Ask the model to create, inspect, or expand a story. Changes are applied through validated MCP tools.</p>}{messages.map((message, index) => <div key={index} className={`chat-message ${message.role}`}>{message.role === "assistant" && message.reasoning && <details className="collaborator-reasoning"><summary>Reasoning <span>{chatBusy && index === messages.length - 1 ? "live" : "trace"}</span></summary><pre>{message.reasoning}</pre></details>}{message.tools && message.tools.length > 0 && <div className="chat-tools">{message.tools.map((tool, toolIndex) => <span className="tool-chip" key={toolIndex}>{tool}</span>)}</div>}<div className="chat-output">{message.text || (message.stopped ? "Stopped." : message.failed ? "Request failed." : message.noFinal ? "Reasoning finished without a final answer." : "Working...")}</div>{message.noFinal && index === messages.length - 1 && !chatBusy && <button className="secondary output-draft" onClick={() => void chat("Output the complete draft answer.")}>Output draft</button>}</div>)}</div><div className="chat-input"><textarea value={chatInput} disabled={chatBusy} placeholder="Expand the midpoint with two escalating beats..." onChange={(event) => setChatInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void chat(); } }} />{chatBusy ? <button className="danger stop-button" onClick={cancelChat}>Stop</button> : <button className="primary" disabled={!chatInput.trim()} onClick={() => void chat()}>Send</button>}</div></aside>
     </div>
   </main>;
 }

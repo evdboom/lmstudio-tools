@@ -238,11 +238,25 @@ describe("reader generation stream", () => {
     expect(readerUrls("127.0.0.1", 4317)).toEqual(["http://127.0.0.1:4317"]);
   });
 
+  it("rejects MCP requests without the per-process bearer token", async () => {
+    const app = await createReaderServer({ root, lmStudioUrl: "http://lmstudio.test/api/v1" });
+    const missing = await app.inject({ method: "POST", url: "/mcp/story-teller", payload: {} });
+    const wrong = await app.inject({
+      method: "POST",
+      url: "/mcp/story-teller",
+      headers: { authorization: "Bearer not-the-token" },
+      payload: {},
+    });
+    await app.close();
+
+    expect(missing.statusCode).toBe(401);
+    expect(wrong.statusCode).toBe(401);
+  });
+
   it("discovers finalized stories", async () => {
     const app = await createReaderServer({ root, lmStudioUrl: "http://lmstudio.test/api/v1" });
     const response = await app.inject({ method: "GET", url: "/api/stories" });
     await app.close();
-
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       stories: [{ path: storyPath, title: "The Night Train", beats: 2 }],

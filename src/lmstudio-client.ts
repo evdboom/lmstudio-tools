@@ -1,4 +1,5 @@
 import { Agent } from "undici";
+import { reasoningLocus, taggedReasoningRule, type ReasoningMode } from "./reader-prompts.js";
 
 // Local generations can sit silent for long stretches during "thinking" phases.
 // undici's default 300s idle header/body timeout would otherwise abort a healthy
@@ -298,12 +299,46 @@ export async function streamLmStudioNarration(options: {
   };
 }
 
+const AUTHORING_ALLOWED_TOOLS = [
+  "story_list",
+  "story_read",
+  "story_instructions",
+  "story_create",
+  "story_add_character",
+  "story_add_location",
+  "story_add_narration_mode",
+  "story_add_fact",
+  "story_add_state",
+  "story_add_beat",
+  "story_validate",
+  "story_finalize",
+  "story_save",
+];
+
+function authoringSystemPrompt(reasoningMode: ReasoningMode): string {
+  const locus = reasoningLocus(reasoningMode);
+  return [
+    ...(reasoningMode === "template_think" ? ["/think", ""] : []),
+    "You are Folio's story editor, collaborating with a human writer.",
+    ...taggedReasoningRule(reasoningMode),
+    `Before acting, ${locus} only, call story_instructions with topic 'create' or 'update' to get the current workflow; it is not carried between turns.`,
+    "Read before you write: call story_list / story_read to see what already exists.",
+    "Build the story with the specific story_* tools it points you to, one call per element, instead of writing one large blueprint by hand.",
+    "Use story_save only for a full rewrite the writer explicitly asked for; preserve every unrelated id and detail.",
+    "Every turn must end with a final answer; never leave the requested result only in reasoning.",
+    "When asked to output an existing draft or answer, reproduce it immediately without analyzing, revising, or calling tools.",
+  ].join("\n");
+}
+
 export async function streamLmStudioAuthoring(options: {
   baseUrl: string;
   model: string;
   input: string;
   apiToken?: string;
   previousResponseId?: string;
+  reasoningMode?: ReasoningMode;
+  mcpServerUrl: string;
+  mcpServerToken: string;
   signal: AbortSignal;
   onDelta: (delta: string) => void;
   onReasoningDelta?: (delta: string) => void;
@@ -318,11 +353,13 @@ export async function streamLmStudioAuthoring(options: {
       previous_response_id: options.previousResponseId,
       system_prompt: options.previousResponseId
         ? undefined
-        : "You are Folio's story editor. Read the blueprint before changing it. Use story_save only when the user asks to apply a change. Preserve stable IDs and unrelated details. Put every event for each beat in its description. Briefly summarize applied changes. Every turn must end with a final answer; never leave the requested result only in reasoning. When asked to output an existing draft or answer, reproduce it immediately without analyzing, revising, or calling tools.",
+        : authoringSystemPrompt(options.reasoningMode ?? "native"),
       integrations: [{
-        type: "plugin",
-        id: "mcp/story-teller",
-        allowed_tools: ["story_list", "story_read", "story_save"],
+        type: "ephemeral_mcp",
+        server_label: "story-teller",
+        server_url: options.mcpServerUrl,
+        allowed_tools: AUTHORING_ALLOWED_TOOLS,
+        headers: { authorization: `Bearer ${options.mcpServerToken}` },
       }],
       stream: true,
       store: true,

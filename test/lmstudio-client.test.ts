@@ -300,6 +300,8 @@ describe("LM Studio streaming client", () => {
       model: "test-model",
       input: "Expand the midpoint.",
       apiToken: "local-token",
+      mcpServerUrl: "http://127.0.0.1:4317/mcp/story-teller",
+      mcpServerToken: "test-mcp-token",
       signal: new AbortController().signal,
       onDelta: vi.fn(),
       onReasoningDelta,
@@ -311,13 +313,52 @@ describe("LM Studio streaming client", () => {
       authorization: "Bearer local-token",
     });
     expect(request.integrations).toEqual([{
-      type: "plugin",
-      id: "mcp/story-teller",
-      allowed_tools: ["story_list", "story_read", "story_save"],
+      type: "ephemeral_mcp",
+      server_label: "story-teller",
+      server_url: "http://127.0.0.1:4317/mcp/story-teller",
+      allowed_tools: [
+        "story_list",
+        "story_read",
+        "story_instructions",
+        "story_create",
+        "story_add_character",
+        "story_add_location",
+        "story_add_narration_mode",
+        "story_add_fact",
+        "story_add_state",
+        "story_add_beat",
+        "story_validate",
+        "story_finalize",
+        "story_save",
+      ],
+      headers: { authorization: "Bearer test-mcp-token" },
     }]);
     expect(onTool).toHaveBeenCalledWith("story_read");
     expect(onReasoningDelta).toHaveBeenCalledWith("Need to inspect the beats.");
     expect(result).toEqual({ message: "I expanded the midpoint.", responseId: "resp_author" });
+  });
+
+  it("tags authoring reasoning when a non-native reasoning mode is requested", async () => {
+    const stream = 'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_reasoning_mode"}}\n\n';
+    const fetchMock = vi.fn(async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await streamLmStudioAuthoring({
+      baseUrl: "http://127.0.0.1:1234/api/v1",
+      model: "test-model",
+      input: "Add a character.",
+      reasoningMode: "think",
+      mcpServerUrl: "http://127.0.0.1:4317/mcp/story-teller",
+      mcpServerToken: "test-mcp-token",
+      signal: new AbortController().signal,
+      onDelta: vi.fn(),
+    });
+
+    const request = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string);
+    expect(request.system_prompt).toContain("<think>...</think>");
   });
 
   it("finishes authoring on chat.end without waiting for the HTTP stream to close", async () => {
@@ -337,6 +378,8 @@ describe("LM Studio streaming client", () => {
       baseUrl: "http://127.0.0.1:1234/api/v1",
       model: "test-model",
       input: "Save it.",
+      mcpServerUrl: "http://127.0.0.1:4317/mcp/story-teller",
+      mcpServerToken: "test-mcp-token",
       signal: new AbortController().signal,
       onDelta: vi.fn(),
     });
@@ -359,6 +402,8 @@ describe("LM Studio streaming client", () => {
       baseUrl: "http://127.0.0.1:1234/api/v1",
       model: "test-model",
       input: "Expand the midpoint.",
+      mcpServerUrl: "http://127.0.0.1:4317/mcp/story-teller",
+      mcpServerToken: "test-mcp-token",
       signal: new AbortController().signal,
       onDelta,
       onReasoningDelta,
@@ -385,6 +430,8 @@ describe("LM Studio streaming client", () => {
       model: "test-model",
       input: "Continue.",
       previousResponseId: "resp_parent",
+      mcpServerUrl: "http://127.0.0.1:4317/mcp/story-teller",
+      mcpServerToken: "test-mcp-token",
       signal: new AbortController().signal,
       onDelta: vi.fn(),
     });
@@ -408,6 +455,8 @@ describe("LM Studio streaming client", () => {
       baseUrl: "http://127.0.0.1:1234/api/v1",
       model: "test-model",
       input: "Draft it.",
+      mcpServerUrl: "http://127.0.0.1:4317/mcp/story-teller",
+      mcpServerToken: "test-mcp-token",
       signal: new AbortController().signal,
       onDelta: vi.fn(),
     });
@@ -427,6 +476,8 @@ describe("LM Studio streaming client", () => {
       baseUrl: "http://127.0.0.1:1234/api/v1",
       model: "test-model",
       input: "Draft it.",
+      mcpServerUrl: "http://127.0.0.1:4317/mcp/story-teller",
+      mcpServerToken: "test-mcp-token",
       signal: new AbortController().signal,
       onDelta,
     });

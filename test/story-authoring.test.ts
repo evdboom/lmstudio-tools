@@ -9,6 +9,7 @@ import {
   addNarrationMode,
   createStory,
   finalizeStory,
+  storyInstructions,
   validateStory,
 } from "../src/story-authoring.js";
 import { makeSandbox } from "./helpers.js";
@@ -137,5 +138,15 @@ describe("story authoring foundation", () => {
       await fs.readFile(path.join(root, "stories", "night-train", "story.json"), "utf8")
     );
     expect(story.beats).toEqual([]);
+  });
+
+  it("returns topic-scoped workflow guidance without touching disk", async () => {
+    const create = storyInstructions("create");
+    expect(create.ok).toBe(true);
+    if (create.ok) expect(create.text).toMatch(/story_create/);
+
+    const update = storyInstructions("update");
+    expect(update.ok).toBe(true);
+    if (update.ok) expect(update.text).toMatch(/story_read/);
   });
 });

@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { promises as fs } from "node:fs";
 import { networkInterfaces, type NetworkInterfaceInfo } from "node:os";
 import * as path from "node:path";
@@ -16,6 +17,7 @@ import {
   streamLmStudioAuthoring,
   streamLmStudioNarration,
 } from "./lmstudio-client.js";
+import { createServer as createStoryTellerServer } from "./story-teller-index.js";
 import {
   applyReaderRegeneration,
   applyReaderReview,
@@ -50,8 +52,11 @@ interface ReaderServerOptions {
   lmStudioApiToken?: string;
   webRoot?: string;
   folioPassword?: string;
+  /** Base URL LM Studio uses to reach this process's own MCP endpoint. */
+  mcpBaseUrl?: string;
 }
 
+const AUTHORING_MCP_PATH = "/mcp/story-teller";
 const storyPathSchema = z.string().trim().min(1).max(500);
 const runIdSchema = z.string().uuid();
 const activeGenerations = new Set<string>();
@@ -81,6 +86,26 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
   const app = Fastify({ logger: false });
   const sessions = new Map<string, number>();
   const password = options.folioPassword?.trim();
+  // Generated per process: lets LM Studio call this server's own MCP endpoint
+  // without exposing it to anyone who can merely reach the port.
+  const mcpToken = randomBytes(32).toString("base64url");
+
+  app.all(AUTHORING_MCP_PATH, async (request, reply) => {
+    if (request.headers.authorization !== `Bearer ${mcpToken}`) {
+      return reply.code(401).send({ error: "Unauthorized." });
+    }
+    reply.hijack();
+    // Stateless: the MCP SDK binds one transport to one server, so both are
+    // created fresh per request and torn down once the response ends.
+    const server = await createStoryTellerServer(options.root);
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    reply.raw.on("close", () => {
+      void transport.close();
+      void server.close();
+    });
+    await server.connect(transport);
+    await transport.handleRequest(request.raw, reply.raw, request.body);
+  });
 
   if (password) {
     app.post("/api/auth/login", async (request, reply) => {
@@ -95,6 +120,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
 
     app.addHook("onRequest", async (request, reply) => {
       if (request.url.startsWith("/api/auth/login")) return;
+      if (request.url.startsWith(AUTHORING_MCP_PATH)) return;
       const token = cookieValue(request.headers.cookie, SESSION_COOKIE);
       const expiresAt = token ? sessions.get(token) : undefined;
       if (expiresAt && expiresAt > Date.now()) return;
@@ -168,6 +194,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       model: z.string().trim().min(1).max(500),
       input: z.string().trim().min(1).max(20_000),
       previous_response_id: z.string().startsWith("resp_").optional(),
+      reasoning_mode: z.enum(["native", "template_think", "think", "thinking"]).default("native"),
     }).safeParse(request.body);
     if (!body.success) return reply.code(400).send({ error: "Invalid authoring chat request." });
     reply.hijack();
@@ -189,6 +216,9 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         input: body.data.input,
         apiToken: options.lmStudioApiToken,
         previousResponseId: body.data.previous_response_id,
+        reasoningMode: body.data.reasoning_mode,
+        mcpServerUrl: `${options.mcpBaseUrl ?? "http://127.0.0.1:4317"}${AUTHORING_MCP_PATH}`,
+        mcpServerToken: mcpToken,
         signal: abort.signal,
         onDelta: (delta) => reply.raw.write(`event: delta\ndata: ${JSON.stringify(delta)}\n\n`),
         onReasoningDelta: (delta) => reply.raw.write(`event: reasoning\ndata: ${JSON.stringify(delta)}\n\n`),
@@ -788,9 +818,10 @@ async function main(): Promise<void> {
   const lmStudioApiToken = option(argv, "--lmstudio-api-token")
     ?? process.env.LMSTUDIO_API_TOKEN;
   const webRoot = fileURLToPath(new URL("../reader-dist", import.meta.url));
-  const app = await createReaderServer({ root, lmStudioUrl, lmStudioApiToken, webRoot, folioPassword });
-  await app.listen({ host, port });
   const localUrl = `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`;
+  const mcpBaseUrl = option(argv, "--mcp-base-url") ?? process.env.STORY_READER_MCP_URL ?? localUrl;
+  const app = await createReaderServer({ root, lmStudioUrl, lmStudioApiToken, webRoot, folioPassword, mcpBaseUrl });
+  await app.listen({ host, port });
   const urls = readerUrls(host, port, networkInterfaces(), await defaultGatewayInterfaces());
   console.log(`Story reader ready at ${localUrl}`);
   if (host === "0.0.0.0" && urls.length > 0) {

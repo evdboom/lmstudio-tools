@@ -75,6 +75,34 @@ export interface AddBeatInput {
   narrationRules?: string[];
 }
 
+export type StoryInstructionsTopic = "create" | "update";
+
+/**
+ * JIT guidance for the authoring model, fetched on demand instead of packed
+ * into every system prompt so the model only pays for the workflow it needs.
+ */
+export function storyInstructions(topic: StoryInstructionsTopic): ToolResult {
+  if (topic === "create") {
+    return { ok: true, text: [
+      "Creating a new story from scratch:",
+      "1. Call story_create with title, premise, story_type, beat_size and a default_narration_mode id you choose.",
+      "2. Call story_add_narration_mode with that same id right after; a story is invalid until its default mode exists.",
+      "3. Add every character and location referenced by a beat with story_add_character / story_add_location before that beat.",
+      "4. Add beats in order with story_add_beat. Each event is a postcondition that must be true once the beat ends, not a script of how it happens.",
+      "5. Use story_add_fact / story_add_state only for things that are not true from the very first beat.",
+      "6. Call story_validate once the draft looks complete. Only call story_finalize if the writer asked to lock the story in.",
+      "Prefer one tool call per element over a single large story_save; call story_read at any point to see the current draft.",
+    ].join("\n") };
+  }
+  return { ok: true, text: [
+    "Updating an existing story:",
+    "1. Call story_read first; never guess at the current content.",
+    "2. Add new characters, locations, facts, states, or beats with the matching story_add_* tool, one call per element.",
+    "3. Use story_save only for a full rewrite the writer explicitly asked for; it replaces the whole blueprint and must preserve every unrelated id and detail.",
+    "4. Call story_validate after non-trivial changes and fix any reported errors before telling the writer you are done.",
+  ].join("\n") };
+}
+
 function errorMessage(error: unknown): string {
   if (error instanceof StoryStoreError || error instanceof Error) return error.message;
   return String(error);

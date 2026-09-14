@@ -52,6 +52,37 @@ function narrationAt(run: ReaderRun, beatIndex: number): ReviewableNarration | u
   return run.accepted.find((item) => item.beat_index === beatIndex);
 }
 
+const SENTENCE_WORD_CAP = 30;
+// Splits on sentence-ending punctuation followed by whitespace; good enough to count sentences per paragraph.
+const SENTENCE_SPLIT_PATTERN = /(?<=[.!?])\s+(?=[A-Z"'\u201C(])/;
+
+/** Flags paragraphs made of a single sentence over the soft word cap, so the reviewer can be pointed at them directly. */
+function findOverlongSingleSentenceParagraphs(narration: string): Array<{ index: number; words: number }> {
+  const paragraphs = narration.split(/\n{2,}/);
+  const flagged: Array<{ index: number; words: number }> = [];
+  paragraphs.forEach((paragraph, index) => {
+    const trimmed = paragraph.trim();
+    if (!trimmed) return;
+    const sentences = trimmed.split(SENTENCE_SPLIT_PATTERN).filter((sentence) => sentence.trim());
+    if (sentences.length !== 1) return;
+    const words = trimmed.split(/\s+/).filter(Boolean).length;
+    if (words > SENTENCE_WORD_CAP) flagged.push({ index: index + 1, words });
+  });
+  return flagged;
+}
+
+/** Renders a deterministic flag block for the reviewer when overlong single-sentence paragraphs are detected. */
+function flaggedParagraphNote(flagged: Array<{ index: number; words: number }>): string[] {
+  if (!flagged.length) return [];
+  const list = flagged.map(({ index, words }) => `paragraph ${index} (${words} words)`).join(", ");
+  return [
+    "",
+    "# Automated flag",
+    `Deterministic scan found single-sentence paragraph(s) over the ${SENTENCE_WORD_CAP}-word soft cap: ${list}.`,
+    "Pay extra attention to these; confirm whether they should be split into multiple sentences or shortened before deciding your verdict.",
+  ];
+}
+
 export function stripNarrationTags(text: string): string {
   const withoutTags = text.replace(NARRATION_TAG_PATTERN, "").replace(XML_TAG_PATTERN, "");
   const withoutTrailingSpaces = withoutTags.split("\n").map((line) => line.trimEnd()).join("\n");
@@ -230,6 +261,8 @@ export async function prepareReaderReview(
       "- Are all sentences well defined as in not stopping abruptly or ending with incomplete thoughts",
       "- Are there no sentence fragments, run-on sentences, repetitive phrasing, filler, word-list padding, nonsensical escalation, abrupt topic shifts, meta-commentary, or irrelevant material",
       "- Do sentences end with appropriate punctuation; reject an unexplained trailing em dash that leaves a sentence unfinished",
+      "- Are sentences kept to roughly 30 words or fewer as a soft cap; longer sentences are acceptable only when the length is clearly deliberate (e.g. a rhythmic list or a run of clauses), not when it is just an unbroken clause chain",
+      "- Is any paragraph a single sentence longer than about 30 words; a lone long sentence reads as a wall of text and almost always needs to be split into two or more sentences, or shortened",
       "",
       "## Result",
       "If the prose meets all these criteria, reply with [VALID]. Output nothing else after the tag.",
@@ -251,6 +284,7 @@ export async function prepareReaderReview(
         "# Original beat request",
         promptInput(narration.prompt),
         ...(instruction?.trim() ? ["", "# Specific review focus", instruction.trim()] : []),
+        ...flaggedParagraphNote(findOverlongSingleSentenceParagraphs(narration.narration)),
         "",
         "# Result to review",
         narration.narration,

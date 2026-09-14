@@ -16,11 +16,13 @@ import {
   listLmStudioModels,
   streamLmStudioAuthoring,
   streamLmStudioNarration,
+  type OverrunReason,
 } from "./lmstudio-client.js";
 import { createServer as createStoryTellerServer } from "./story-teller-index.js";
 import {
   applyReaderRegeneration,
   applyReaderReview,
+  auditReaderBeat,
   dismissReaderReview,
   getReaderState,
   prepareReaderBeatRegeneration,
@@ -80,6 +82,12 @@ function passwordsMatch(expected: string, actual: string): boolean {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function overrunMessage(beatNumber: number, words: number, reason: OverrunReason): string {
+  return reason === "budget"
+    ? `Beat ${beatNumber} ran to ${words} words, past its budget. Starting over...`
+    : `Beat ${beatNumber} drifted into unfinished, repeating paragraphs. Starting over...`;
 }
 
 export async function createReaderServer(options: ReaderServerOptions): Promise<FastifyInstance> {
@@ -240,6 +248,8 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       context_mode: z.enum(["full", "blueprint", "hybrid"]).default("full"),
       prose_window: z.number().int().min(0).max(20).default(1),
       reasoning_mode: z.enum(["native", "template_think", "think", "thinking"]).default("native"),
+      reasoning_effort: z.enum(["default", "off", "low", "medium", "high"]).default("default"),
+      ongoing_instructions: z.array(z.string().trim().min(1)).default([]),
     }).safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "A valid story_path and model are required." });
     try {
@@ -249,7 +259,9 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         parsed.data.model,
         parsed.data.context_mode,
         parsed.data.prose_window,
-        parsed.data.reasoning_mode
+        parsed.data.reasoning_mode,
+        parsed.data.reasoning_effort,
+        parsed.data.ongoing_instructions
       );
     } catch (error) {
       return reply.code(400).send({ error: message(error) });
@@ -262,6 +274,27 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
     if (!parsed.success || !query.success) return reply.code(400).send({ error: "Invalid run request." });
     try {
       return await getReaderState(options.root, query.data.story_path, parsed.data.runId);
+    } catch (error) {
+      return reply.code(404).send({ error: message(error) });
+    }
+  });
+
+  app.get("/api/runs/:runId/beats/:beatIndex/prompt", async (request, reply) => {
+    const parsed = z.object({
+      runId: runIdSchema,
+      beatIndex: z.coerce.number().int().nonnegative(),
+    }).safeParse(request.params);
+    const query = z.object({ story_path: storyPathSchema }).safeParse(request.query);
+    if (!parsed.success || !query.success) {
+      return reply.code(400).send({ error: "Invalid prompt audit request." });
+    }
+    try {
+      return await auditReaderBeat(
+        options.root,
+        query.data.story_path,
+        parsed.data.runId,
+        parsed.data.beatIndex
+      );
     } catch (error) {
       return reply.code(404).send({ error: message(error) });
     }
@@ -326,11 +359,13 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       const generated = await streamLmStudioNarration({
         baseUrl: options.lmStudioUrl,
         model: body.data.model,
-        input: prepared.input!,
+        messages: prepared.messages!,
         apiToken: options.lmStudioApiToken,
         systemPrompt: prepared.systemPrompt,
         previousResponseId: prepared.previousResponseId,
         store: storeResponse,
+        reasoningEffort: prepared.reasoningEffort,
+        wordBudget: prepared.wordBudget,
         signal: abort.signal,
         onDelta: (delta) => {
           reply.raw.write(`event: delta\ndata: ${JSON.stringify(delta)}\n\n`);
@@ -340,6 +375,9 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         },
         onReasoningDelta: (delta) => {
           reply.raw.write(`event: reasoning\ndata: ${JSON.stringify(delta)}\n\n`);
+        },
+        onOverrun: (words, reason) => {
+          reply.raw.write(`event: restart\ndata: ${JSON.stringify(overrunMessage(beatNumber, words, reason))}\n\n`);
         },
         onRecovery: () => {
           reply.raw.write(`event: status\ndata: ${JSON.stringify("Reasoning finished without narration. Asking the model to output the beat...")}\n\n`);
@@ -353,8 +391,8 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         prepared.promptInstruction,
         storeResponse ? generated.responseId : undefined,
         {
-          input: prepared.input!,
-          system_prompt: prepared.recordedSystemPrompt,
+          messages: prepared.messages,
+          system_prompt: prepared.systemPrompt,
           previous_response_id: prepared.previousResponseId,
           reasoning: generated.reasoning || undefined,
         }
@@ -423,11 +461,12 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       const generated = await streamLmStudioNarration({
         baseUrl: options.lmStudioUrl,
         model: body.data.model,
-        input: review.input,
+        messages: review.messages,
         apiToken: options.lmStudioApiToken,
         systemPrompt: review.systemPrompt,
         previousResponseId: review.previousResponseId,
         store: review.store,
+        reasoningEffort: review.reasoningEffort,
         signal: abort.signal,
         onDelta: (delta) => {
           if (!reviewVerdictHandled) {
@@ -525,11 +564,13 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       const generated = await streamLmStudioNarration({
         baseUrl: options.lmStudioUrl,
         model: body.data.model,
-        input: regeneration.input,
+        messages: regeneration.messages,
         apiToken: options.lmStudioApiToken,
         systemPrompt: regeneration.systemPrompt,
         previousResponseId: regeneration.previousResponseId,
         store: regeneration.store,
+        reasoningEffort: regeneration.reasoningEffort,
+        wordBudget: regeneration.wordBudget,
         signal: abort.signal,
         onDelta: (delta) => {
           reply.raw.write(`event: delta\ndata: ${JSON.stringify(delta)}\n\n`);
@@ -539,6 +580,9 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         },
         onReasoningDelta: (delta) => {
           reply.raw.write(`event: reasoning\ndata: ${JSON.stringify(delta)}\n\n`);
+        },
+        onOverrun: (words, reason) => {
+          reply.raw.write(`event: restart\ndata: ${JSON.stringify(overrunMessage(beatNumber, words, reason))}\n\n`);
         },
         onRecovery: () => {
           reply.raw.write(`event: status\ndata: ${JSON.stringify("Reasoning finished without narration. Asking the model to output the beat...")}\n\n`);
@@ -554,8 +598,8 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
           reasoning: generated.reasoning || undefined,
           responseId: regeneration.store ? generated.responseId : undefined,
           prompt: {
-            input: regeneration.input,
-            system_prompt: regeneration.recordedSystemPrompt,
+            messages: regeneration.messages,
+            system_prompt: regeneration.systemPrompt,
             previous_response_id: regeneration.previousResponseId,
           },
         }

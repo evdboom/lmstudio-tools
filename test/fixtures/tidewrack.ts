@@ -17,7 +17,7 @@ export function tidewrack(overrides: Partial<StoryBlueprint> = {}): StoryBluepri
     premise: "A lighthouse keeper hides a wounded smuggler from the harbour bailiff.",
     story_type: "coastal noir novella",
     default_narration_mode: "close_third",
-    beat_size: "900-1200 words",
+    beat_budget: { min_words: 900, max_words: 1200 },
     characters: [
       {
         id: "joris",

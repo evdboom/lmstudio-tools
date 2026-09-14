@@ -1,5 +1,11 @@
 import { Agent } from "undici";
-import { reasoningLocus, taggedReasoningRule, type ReasoningMode } from "./reader-prompts.js";
+import {
+  reasoningLocus,
+  taggedReasoningRule,
+  type ReaderChatMessage,
+  type ReasoningMode,
+} from "./reader-prompts.js";
+import { countWords } from "./story-model.js";
 
 // Local generations can sit silent for long stretches during "thinking" phases.
 // undici's default 300s idle header/body timeout would otherwise abort a healthy
@@ -11,6 +17,45 @@ type LmStudioRequestInit = RequestInit & { dispatcher?: Agent };
 
 function endpoint(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/$/, "")}${path}`;
+}
+
+export type OverrunReason = "budget" | "drift";
+
+// A handful of paragraphs in a row trailing off on an ellipsis or a bare em
+// dash reads as the model looping on an unfinished thought rather than
+// genuine budget overrun, so it is treated as its own resample trigger.
+const DRIFT_PARAGRAPH_WINDOW = 5;
+const DRIFT_ENDING = /(\.{3}|\u2026|\u2014)["'\u201d\u2019)\]]*\s*$/;
+
+function isDrifting(text: string): boolean {
+  const paragraphs = text.split(/\n{2,}/).map((paragraph) => paragraph.trim()).filter(Boolean);
+  if (paragraphs.length < DRIFT_PARAGRAPH_WINDOW) return false;
+  return paragraphs.slice(-DRIFT_PARAGRAPH_WINDOW).every((paragraph) => DRIFT_ENDING.test(paragraph));
+}
+
+/**
+ * The OpenAI-compatible surface, which sits beside the LM Studio REST API
+ * rather than under it. Only it accepts role-tagged input items.
+ */
+function responsesEndpoint(baseUrl: string): string {
+  const url = new URL(baseUrl);
+  url.pathname = "/v1/responses";
+  return url.toString();
+}
+
+/** Text of the assistant messages in a terminal response object. */
+function responseOutputText(output: unknown): string {
+  if (!Array.isArray(output)) return "";
+  return output
+    .filter((item): item is { content?: unknown } =>
+      typeof item === "object" && item !== null && (item as { type?: unknown }).type === "message")
+    .flatMap((item) => (Array.isArray(item.content) ? item.content : []))
+    .filter((part): part is { text: string } =>
+      typeof part === "object" && part !== null &&
+      (part as { type?: unknown }).type === "output_text" &&
+      typeof (part as { text?: unknown }).text === "string")
+    .map((part) => part.text)
+    .join("\n\n");
 }
 
 function headers(apiToken?: string): Record<string, string> {
@@ -147,32 +192,55 @@ export async function generateLmStudioText(options: {
   return message;
 }
 
+export type ReasoningEffort = "default" | "off" | "low" | "medium" | "high";
+
+/**
+ * The runtime-level reasoning switch.
+ *
+ * Without it a model decides for itself whether to think, and a transcript
+ * whose assistant turns carry no reasoning will talk it out of doing so. It is
+ * omitted for "default" because a model that cannot reason rejects the request.
+ */
+function reasoningParameter(effort: ReasoningEffort | undefined): { effort: string } | undefined {
+  return !effort || effort === "default" ? undefined : { effort };
+}
+
 export async function streamLmStudioNarration(options: {
   baseUrl: string;
   model: string;
-  input: string;
+  messages: ReaderChatMessage[];
   apiToken?: string;
   systemPrompt?: string;
   previousResponseId?: string;
   store?: boolean;
+  reasoningEffort?: ReasoningEffort;
+  /** Narration past `ceilingWords` is abandoned mid-stream and resampled once. */
+  wordBudget?: { maxWords: number; ceilingWords: number };
   signal: AbortSignal;
   onDelta: (delta: string) => void;
   onReasoning?: () => void;
   onReasoningDelta?: (delta: string) => void;
   onRecovery?: () => void;
+  onOverrun?: (words: number, reason: OverrunReason) => void;
 }): Promise<{ narration: string; reasoning: string; responseId?: string }> {
   let reasoningReported = false;
   const store = options.store ?? true;
+  const ceiling = options.wordBudget?.ceilingWords;
 
-  async function attempt(input: string, previousResponseId?: string, systemPrompt?: string) {
-    const response = await fetch(endpoint(options.baseUrl, "/chat"), {
+  async function attempt(
+    messages: ReaderChatMessage[],
+    previousResponseId?: string,
+    systemPrompt?: string
+  ) {
+    const response = await fetch(responsesEndpoint(options.baseUrl), {
       method: "POST",
       headers: headers(options.apiToken),
       body: JSON.stringify({
         model: options.model,
-        input,
-        system_prompt: systemPrompt,
+        input: messages,
+        instructions: systemPrompt,
         previous_response_id: previousResponseId,
+        reasoning: reasoningParameter(options.reasoningEffort),
         stream: true,
         store,
         temperature: 0.6,
@@ -193,6 +261,8 @@ export async function streamLmStudioNarration(options: {
     let reasoning = "";
     let responseId: string | undefined;
     let streamEnded = false;
+    let overrunWords = 0;
+    let overrunReason: OverrunReason | undefined;
     const taggedContent = createThinkTagSplitter({
       onMessage: (content) => {
         narration += content;
@@ -208,53 +278,68 @@ export async function streamLmStudioNarration(options: {
       },
     });
 
+    function reportReasoning(delta: unknown): void {
+      if (!reasoningReported) {
+        reasoningReported = true;
+        options.onReasoning?.();
+      }
+      if (typeof delta !== "string") return;
+      reasoning += delta;
+      options.onReasoningDelta?.(delta);
+    }
+
+    function finish(response: { id?: unknown; output?: unknown } | undefined): void {
+      streamEnded = true;
+      taggedContent.flush();
+      if (narration.trim()) return;
+      const finalMessage = responseOutputText(response?.output);
+      if (!finalMessage.trim()) return;
+      taggedContent.push(finalMessage);
+      taggedContent.flush();
+    }
+
     function processEvent(raw: string): void {
       const data = raw.split(/\r?\n/)
         .filter((line) => line.startsWith("data:"))
         .map((line) => line.slice(5).trim())
         .join("\n");
-      if (!data) return;
+      if (!data || data === "[DONE]") return;
       const event = JSON.parse(data) as {
-        type?: unknown;
-        content?: unknown;
-        error?: { message?: unknown };
-        result?: {
-          response_id?: unknown;
-          output?: Array<{ type?: unknown; content?: unknown }>;
+        type?: string;
+        delta?: unknown;
+        message?: unknown;
+        response?: {
+          id?: unknown;
+          output?: unknown;
+          error?: { message?: unknown };
         };
       };
-      if (event.type === "error") {
-        const detail = event.error?.message;
+      const type = event.type ?? "";
+      if (typeof event.response?.id === "string") responseId = event.response.id;
+
+      if (type === "error" || type === "response.failed") {
+        const detail = event.response?.error?.message ?? event.message;
         throw new Error(typeof detail === "string" ? detail : "LM Studio generation failed.");
       }
-      if ((event.type === "reasoning.start" || event.type === "reasoning.delta") &&
-          !reasoningReported) {
-        reasoningReported = true;
-        options.onReasoning?.();
+      // Reasoning arrives as reasoning_text or reasoning_summary_text depending on the model.
+      if (type.startsWith("response.reasoning") && type.endsWith(".delta")) {
+        reportReasoning(event.delta);
+        return;
       }
-      if (event.type === "reasoning.delta" && typeof event.content === "string") {
-        reasoning += event.content;
-        options.onReasoningDelta?.(event.content);
+      if (type === "response.output_text.delta" && typeof event.delta === "string") {
+        taggedContent.push(event.delta);
+        return;
       }
-      if (event.type === "message.delta" && typeof event.content === "string") {
-        taggedContent.push(event.content);
-      }
-      if (event.type === "chat.end") {
-        streamEnded = true;
-        taggedContent.flush();
-        if (typeof event.result?.response_id === "string") responseId = event.result.response_id;
-        if (!narration.trim()) {
-          const finalMessage = event.result?.output
-            ?.filter((item) => item.type === "message" && typeof item.content === "string")
-            .map((item) => item.content as string)
-            .join("\n\n");
-          if (finalMessage?.trim()) {
-            taggedContent.push(finalMessage);
-            taggedContent.flush();
-          }
-        }
-      }
+      if (type === "response.completed" || type === "response.incomplete") finish(event.response);
     }
+
+    /** The reason streaming was cut short, and the word count at that point, otherwise undefined. */
+    const overrunAt = (text: string): { words: number; reason: OverrunReason } | undefined => {
+      const words = countWords(text);
+      if (ceiling !== undefined && words > ceiling) return { words, reason: "budget" };
+      if (isDrifting(text)) return { words, reason: "drift" };
+      return undefined;
+    };
 
     while (true) {
       const { done, value } = await reader.read();
@@ -265,36 +350,71 @@ export async function streamLmStudioNarration(options: {
         processEvent(event);
         if (streamEnded) break;
       }
+      if (!streamEnded) {
+        const overrun = overrunAt(narration);
+        overrunWords = overrun?.words ?? 0;
+        overrunReason = overrun?.reason;
+        if (overrunReason) break;
+      }
       if (done || streamEnded) break;
     }
-    if (!streamEnded && buffer.trim()) processEvent(buffer);
-    if (streamEnded) await reader.cancel();
-    return { narration: narration.trim(), reasoning: reasoning.trim(), responseId };
-  }
-
-  const first = await attempt(options.input, options.previousResponseId, options.systemPrompt);
-  if (first.narration) {
-    if (store && !first.responseId) throw new Error("LM Studio did not return a stateful response_id.");
+    if (!streamEnded && !overrunReason && buffer.trim()) processEvent(buffer);
+    if (streamEnded || overrunReason) await reader.cancel();
     return {
-      narration: first.narration,
-      reasoning: first.reasoning,
-      ...(store && first.responseId ? { responseId: first.responseId } : {}),
+      narration: narration.trim(),
+      reasoning: reasoning.trim(),
+      responseId,
+      overrunWords,
+      overrunReason,
     };
   }
-  if (store && !first.responseId) {
+
+  type Attempt = Awaited<ReturnType<typeof attempt>>;
+
+  function complete(result: Attempt) {
+    if (store && !result.responseId) {
+      throw new Error("LM Studio did not return a stateful response_id.");
+    }
+    return {
+      narration: result.narration,
+      reasoning: result.reasoning,
+      ...(store && result.responseId ? { responseId: result.responseId } : {}),
+    };
+  }
+
+  async function resampleAfterOverrun(words: number, reason: OverrunReason): Promise<Attempt> {
+    options.onOverrun?.(words, reason);
+    // A fresh sample of the same request; the abandoned response is not chained onto.
+    const retry = await attempt(options.messages, options.previousResponseId, options.systemPrompt);
+    if (!retry.overrunReason) return retry;
+    throw new Error(reason === "budget"
+      ? `The model went over the word budget of ${options.wordBudget!.maxWords} twice (${words} and ${retry.overrunWords} words). Review this beat's events and budget before trying again: this usually means the events do not fit the budget.`
+      : "The model drifted into unfinished, repeating paragraphs twice in a row. Review this beat's events before trying again."
+    );
+  }
+
+  const first = await attempt(options.messages, options.previousResponseId, options.systemPrompt);
+  const sampled = first.overrunReason ? await resampleAfterOverrun(first.overrunWords, first.overrunReason) : first;
+  if (sampled.narration) return complete(sampled);
+  if (store && !sampled.responseId) {
     throw new Error("LM Studio returned an empty narration without a response_id.");
   }
 
   options.onRecovery?.();
   const recoveryInstruction = "You completed the reasoning but did not provide the fictional scene as your final answer. Output the complete scene now. Do not explain, plan, summarize, or mention this correction; return only the requested fictional prose.";
+  // Stateless retries extend the closing turn rather than adding one, to keep the roles alternating.
+  const retryMessages = options.messages.map((item, index) =>
+    index === options.messages.length - 1
+      ? { ...item, content: `${item.content}\n\n${recoveryInstruction}` }
+      : item);
   const recovered = store
-    ? await attempt(recoveryInstruction, first.responseId)
-    : await attempt(`${options.input}\n\n${recoveryInstruction}`, undefined, options.systemPrompt);
+    ? await attempt([{ role: "user", content: recoveryInstruction }], sampled.responseId)
+    : await attempt(retryMessages, undefined, options.systemPrompt);
   if (!recovered.narration) throw new Error("LM Studio returned an empty narration after one recovery attempt.");
   if (store && !recovered.responseId) throw new Error("LM Studio did not return a stateful response_id.");
   return {
     narration: recovered.narration,
-    reasoning: [first.reasoning, recovered.reasoning].filter(Boolean).join("\n\n"),
+    reasoning: [sampled.reasoning, recovered.reasoning].filter(Boolean).join("\n\n"),
     ...(store && recovered.responseId ? { responseId: recovered.responseId } : {}),
   };
 }

@@ -35,10 +35,9 @@ describe("LM Studio streaming client", () => {
 
   it("reports reasoning before forwarding narration content", async () => {
     const stream = [
-      'event: reasoning.start\ndata: {"type":"reasoning.start"}\n\n',
-      'event: reasoning.delta\ndata: {"type":"reasoning.delta","content":"Planning"}\n\n',
-      'event: message.delta\ndata: {"type":"message.delta","content":"The carriage stirred."}\n\n',
-      'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_next"}}\n\n',
+      'event: response.reasoning_text.delta\ndata: {"type":"response.reasoning_text.delta","delta":"Planning"}\n\n',
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"The carriage stirred."}\n\n',
+      'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_next"}}\n\n',
     ].join("");
     const fetchMock = vi.fn(async () => new Response(stream, {
       status: 200,
@@ -52,7 +51,7 @@ describe("LM Studio streaming client", () => {
     const result = await streamLmStudioNarration({
       baseUrl: "http://127.0.0.1:1234/api/v1",
       model: "test-model",
-      input: "Narrate.",
+      messages: [{ role: "user", content: "Narrate." }],
       previousResponseId: "resp_parent",
       signal: new AbortController().signal,
       onReasoning,
@@ -69,20 +68,52 @@ describe("LM Studio streaming client", () => {
       responseId: "resp_next",
     });
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:1234/api/v1/chat",
+      "http://127.0.0.1:1234/v1/responses",
       expect.objectContaining({
         body: expect.stringContaining('"previous_response_id":"resp_parent"'),
       })
     );
   });
 
-  it("finishes on chat.end without waiting for the HTTP stream to close", async () => {
+  it("sends the transcript as role-tagged input items", async () => {
+    const stream = [
+      'data: {"type":"response.output_text.delta","delta":"The next scene."}\n\n',
+      'data: {"type":"response.completed","response":{"id":"resp_roles"}}\n\n',
+    ].join("");
+    const fetchMock = vi.fn(async () => new Response(stream));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await streamLmStudioNarration({
+      baseUrl: "http://127.0.0.1:1234/api/v1",
+      model: "test-model",
+      messages: [
+        { role: "user", content: "Beat 1 request" },
+        { role: "assistant", content: "Beat 1 prose" },
+        { role: "user", content: "Beat 2 request" },
+      ],
+      systemPrompt: "Narrator rules.",
+      store: false,
+      signal: new AbortController().signal,
+      onDelta: vi.fn(),
+    });
+
+    const request = JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string);
+    expect(request.input).toEqual([
+      { role: "user", content: "Beat 1 request" },
+      { role: "assistant", content: "Beat 1 prose" },
+      { role: "user", content: "Beat 2 request" },
+    ]);
+    expect(request.instructions).toBe("Narrator rules.");
+    expect(request).not.toHaveProperty("system_prompt");
+  });
+
+  it("finishes on response.completed without waiting for the HTTP stream to close", async () => {
     const cancel = vi.fn();
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(new TextEncoder().encode([
-          'event: message.delta\ndata: {"type":"message.delta","content":"The scene ended."}\n\n',
-          'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_done"}}\n\n',
+          'data: {"type":"response.output_text.delta","delta":"The scene ended."}\n\n',
+          'data: {"type":"response.completed","response":{"id":"resp_done"}}\n\n',
         ].join("")));
       },
       cancel,
@@ -92,7 +123,7 @@ describe("LM Studio streaming client", () => {
     const result = await streamLmStudioNarration({
       baseUrl: "http://127.0.0.1:1234/api/v1",
       model: "test-model",
-      input: "Narrate.",
+      messages: [{ role: "user", content: "Narrate." }],
       signal: new AbortController().signal,
       onDelta: vi.fn(),
     });
@@ -107,10 +138,10 @@ describe("LM Studio streaming client", () => {
 
   it("routes think tags from message chunks to narration reasoning", async () => {
     const stream = [
-      'event: message.delta\ndata: {"type":"message.delta","content":"<thi"}\n\n',
-      'event: message.delta\ndata: {"type":"message.delta","content":"nk>Planning the beat.</thi"}\n\n',
-      'event: message.delta\ndata: {"type":"message.delta","content":"nk>The carriage stirred."}\n\n',
-      'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_tagged"}}\n\n',
+      'data: {"type":"response.output_text.delta","delta":"<thi"}\n\n',
+      'data: {"type":"response.output_text.delta","delta":"nk>Planning the beat.</thi"}\n\n',
+      'data: {"type":"response.output_text.delta","delta":"nk>The carriage stirred."}\n\n',
+      'data: {"type":"response.completed","response":{"id":"resp_tagged"}}\n\n',
     ].join("");
     vi.stubGlobal("fetch", vi.fn(async () => new Response(stream)));
     const onReasoning = vi.fn();
@@ -120,7 +151,7 @@ describe("LM Studio streaming client", () => {
     const result = await streamLmStudioNarration({
       baseUrl: "http://127.0.0.1:1234/api/v1",
       model: "test-model",
-      input: "Narrate.",
+      messages: [{ role: "user", content: "Narrate." }],
       signal: new AbortController().signal,
       onReasoning,
       onReasoningDelta,
@@ -139,17 +170,17 @@ describe("LM Studio streaming client", () => {
 
   it("routes thinking tags split after the think prefix", async () => {
     const stream = [
-      'event: message.delta\ndata: {"type":"message.delta","content":"<think"}\n\n',
-      'event: message.delta\ndata: {"type":"message.delta","content":"ing>Checking causality.</think"}\n\n',
-      'event: message.delta\ndata: {"type":"message.delta","content":"ing>The bell rang."}\n\n',
-      'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_thinking"}}\n\n',
+      'data: {"type":"response.output_text.delta","delta":"<think"}\n\n',
+      'data: {"type":"response.output_text.delta","delta":"ing>Checking causality.</think"}\n\n',
+      'data: {"type":"response.output_text.delta","delta":"ing>The bell rang."}\n\n',
+      'data: {"type":"response.completed","response":{"id":"resp_thinking"}}\n\n',
     ].join("");
     vi.stubGlobal("fetch", vi.fn(async () => new Response(stream)));
 
     const result = await streamLmStudioNarration({
       baseUrl: "http://127.0.0.1:1234/api/v1",
       model: "test-model",
-      input: "Narrate.",
+      messages: [{ role: "user", content: "Narrate." }],
       signal: new AbortController().signal,
       onDelta: vi.fn(),
     });
@@ -163,17 +194,17 @@ describe("LM Studio streaming client", () => {
 
   it("routes square THINK tags used by slash-think templates", async () => {
     const stream = [
-      'event: message.delta\ndata: {"type":"message.delta","content":"[THI"}\n\n',
-      'event: message.delta\ndata: {"type":"message.delta","content":"NK]Checking the beat.[/TH"}\n\n',
-      'event: message.delta\ndata: {"type":"message.delta","content":"INK]The bell rang."}\n\n',
-      'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_square_think"}}\n\n',
+      'data: {"type":"response.output_text.delta","delta":"[THI"}\n\n',
+      'data: {"type":"response.output_text.delta","delta":"NK]Checking the beat.[/TH"}\n\n',
+      'data: {"type":"response.output_text.delta","delta":"INK]The bell rang."}\n\n',
+      'data: {"type":"response.completed","response":{"id":"resp_square_think"}}\n\n',
     ].join("");
     vi.stubGlobal("fetch", vi.fn(async () => new Response(stream)));
 
     const result = await streamLmStudioNarration({
       baseUrl: "http://127.0.0.1:1234/api/v1",
       model: "test-model",
-      input: "Narrate.",
+      messages: [{ role: "user", content: "Narrate." }],
       signal: new AbortController().signal,
       onDelta: vi.fn(),
     });
@@ -185,10 +216,10 @@ describe("LM Studio streaming client", () => {
     });
   });
 
-  it("uses narration found only in the terminal chat result", async () => {
+  it("uses narration found only in the terminal response object", async () => {
     const stream = [
-      'event: reasoning.delta\ndata: {"type":"reasoning.delta","content":"Drafting."}\n\n',
-      'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_terminal","output":[{"type":"reasoning","content":"Drafting."},{"type":"message","content":"The terminal-only scene."}]}}\n\n',
+      'data: {"type":"response.reasoning_text.delta","delta":"Drafting."}\n\n',
+      'data: {"type":"response.completed","response":{"id":"resp_terminal","output":[{"type":"reasoning","summary":[]},{"type":"message","content":[{"type":"output_text","text":"The terminal-only scene."}]}]}}\n\n',
     ].join("");
     vi.stubGlobal("fetch", vi.fn(async () => new Response(stream, {
       status: 200,
@@ -199,7 +230,7 @@ describe("LM Studio streaming client", () => {
     const result = await streamLmStudioNarration({
       baseUrl: "http://127.0.0.1:1234/api/v1",
       model: "test-model",
-      input: "Narrate.",
+      messages: [{ role: "user", content: "Narrate." }],
       signal: new AbortController().signal,
       onDelta,
     });
@@ -214,8 +245,8 @@ describe("LM Studio streaming client", () => {
 
   it("does not retain a response id when narration storage is disabled", async () => {
     const stream = [
-      'event: message.delta\ndata: {"type":"message.delta","content":"A stateless scene."}\n\n',
-      'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_ignored"}}\n\n',
+      'data: {"type":"response.output_text.delta","delta":"A stateless scene."}\n\n',
+      'data: {"type":"response.completed","response":{"id":"resp_ignored"}}\n\n',
     ].join("");
     const fetchMock = vi.fn(async () => new Response(stream, {
       status: 200,
@@ -226,7 +257,7 @@ describe("LM Studio streaming client", () => {
     const result = await streamLmStudioNarration({
       baseUrl: "http://127.0.0.1:1234/api/v1",
       model: "test-model",
-      input: "Narrate from blueprint events.",
+      messages: [{ role: "user", content: "Narrate from blueprint events." }],
       systemPrompt: "Narrator rules.",
       store: false,
       signal: new AbortController().signal,
@@ -242,12 +273,12 @@ describe("LM Studio streaming client", () => {
   it("continues once when reasoning ends without narration", async () => {
     const responses = [
       [
-        'event: reasoning.delta\ndata: {"type":"reasoning.delta","content":"A complete draft."}\n\n',
-        'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_empty","output":[{"type":"reasoning","content":"A complete draft."}]}}\n\n',
+        'data: {"type":"response.reasoning_text.delta","delta":"A complete draft."}\n\n',
+        'data: {"type":"response.completed","response":{"id":"resp_empty","output":[{"type":"reasoning","summary":[]}]}}\n\n',
       ].join(""),
       [
-        'event: message.delta\ndata: {"type":"message.delta","content":"The recovered scene."}\n\n',
-        'event: chat.end\ndata: {"type":"chat.end","result":{"response_id":"resp_recovered"}}\n\n',
+        'data: {"type":"response.output_text.delta","delta":"The recovered scene."}\n\n',
+        'data: {"type":"response.completed","response":{"id":"resp_recovered"}}\n\n',
       ].join(""),
     ];
     const fetchMock = vi.fn(async () => new Response(responses.shift(), {
@@ -260,7 +291,7 @@ describe("LM Studio streaming client", () => {
     const result = await streamLmStudioNarration({
       baseUrl: "http://127.0.0.1:1234/api/v1",
       model: "test-model",
-      input: "Narrate.",
+      messages: [{ role: "user", content: "Narrate." }],
       systemPrompt: "Narrator rules.",
       signal: new AbortController().signal,
       onDelta: vi.fn(),
@@ -271,13 +302,120 @@ describe("LM Studio streaming client", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const recoveryRequest = JSON.parse((fetchMock.mock.calls[1]?.[1] as RequestInit).body as string);
     expect(recoveryRequest.previous_response_id).toBe("resp_empty");
-    expect(recoveryRequest.input).toContain("Output the complete scene now");
-    expect(recoveryRequest).not.toHaveProperty("system_prompt");
+    expect(recoveryRequest.input).toEqual([
+      { role: "user", content: expect.stringContaining("Output the complete scene now") },
+    ]);
+    expect(recoveryRequest).not.toHaveProperty("instructions");
     expect(result).toEqual({
       narration: "The recovered scene.",
       reasoning: "A complete draft.",
       responseId: "resp_recovered",
     });
+  });
+
+  it("extends the closing turn when a stateless attempt yields no narration", async () => {
+    const responses = [
+      'data: {"type":"response.completed","response":{"id":"resp_none"}}\n\n',
+      [
+        'data: {"type":"response.output_text.delta","delta":"The retried scene."}\n\n',
+        'data: {"type":"response.completed","response":{"id":"resp_retry"}}\n\n',
+      ].join(""),
+    ];
+    const fetchMock = vi.fn(async () => new Response(responses.shift()));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await streamLmStudioNarration({
+      baseUrl: "http://127.0.0.1:1234/api/v1",
+      model: "test-model",
+      messages: [
+        { role: "user", content: "Beat 1 request" },
+        { role: "assistant", content: "Beat 1 prose" },
+        { role: "user", content: "Beat 2 request" },
+      ],
+      store: false,
+      signal: new AbortController().signal,
+      onDelta: vi.fn(),
+    });
+
+    const retry = JSON.parse((fetchMock.mock.calls[1]?.[1] as RequestInit).body as string);
+    // Roles stay alternating: the correction extends the last turn instead of adding one.
+    expect(retry.input.map((item: { role: string }) => item.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+    ]);
+    expect(retry.input[2].content).toContain("Beat 2 request");
+    expect(retry.input[2].content).toContain("Output the complete scene now");
+  });
+
+  it("abandons narration that runs past the word ceiling and resamples once", async () => {
+    const responses = [
+      'data: {"type":"response.output_text.delta","delta":"one two three four five six seven eight nine ten eleven twelve thirteen"}\n\n',
+      [
+        'data: {"type":"response.output_text.delta","delta":"A short scene."}\n\n',
+        'data: {"type":"response.completed","response":{"id":"resp_short"}}\n\n',
+      ].join(""),
+    ];
+    const fetchMock = vi.fn(async () => new Response(responses.shift()));
+    vi.stubGlobal("fetch", fetchMock);
+    const onOverrun = vi.fn();
+
+    const result = await streamLmStudioNarration({
+      baseUrl: "http://127.0.0.1:1234/api/v1",
+      model: "test-model",
+      messages: [{ role: "user", content: "Narrate." }],
+      store: false,
+      wordBudget: { maxWords: 10, ceilingWords: 12 },
+      signal: new AbortController().signal,
+      onDelta: vi.fn(),
+      onOverrun,
+    });
+
+    expect(onOverrun).toHaveBeenCalledWith(13, "budget");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.narration).toBe("A short scene.");
+  });
+
+  it("stops and names the budget when narration overruns twice", async () => {
+    const overrun = 'data: {"type":"response.output_text.delta","delta":"one two three four five six seven eight nine ten eleven twelve thirteen"}\n\n';
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(overrun)));
+
+    await expect(streamLmStudioNarration({
+      baseUrl: "http://127.0.0.1:1234/api/v1",
+      model: "test-model",
+      messages: [{ role: "user", content: "Narrate." }],
+      store: false,
+      wordBudget: { maxWords: 10, ceilingWords: 12 },
+      signal: new AbortController().signal,
+      onDelta: vi.fn(),
+    })).rejects.toThrow(/word budget of 10 twice \(13 and 13 words\)/);
+  });
+
+  it("sends the reasoning effort only when the run asks for one", async () => {
+    const stream = [
+      'data: {"type":"response.output_text.delta","delta":"A scene."}\n\n',
+      'data: {"type":"response.completed","response":{"id":"resp_effort"}}\n\n',
+    ].join("");
+    const fetchMock = vi.fn(async () => new Response(stream));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const call = async (reasoningEffort: "default" | "high" | undefined) => {
+      await streamLmStudioNarration({
+        baseUrl: "http://127.0.0.1:1234/api/v1",
+        model: "test-model",
+        messages: [{ role: "user", content: "Narrate." }],
+        store: false,
+        reasoningEffort,
+        signal: new AbortController().signal,
+        onDelta: vi.fn(),
+      });
+      return JSON.parse((fetchMock.mock.calls.at(-1)?.[1] as RequestInit).body as string);
+    };
+
+    expect(await call("high")).toMatchObject({ reasoning: { effort: "high" } });
+    // A model without reasoning support rejects the parameter, so it stays off by default.
+    expect(await call("default")).not.toHaveProperty("reasoning");
+    expect(await call(undefined)).not.toHaveProperty("reasoning");
   });
 
   it("streams authoring chat with restricted configured MCP tools", async () => {

@@ -16,7 +16,7 @@ export interface CreateStoryInput {
   title: string;
   premise: string;
   storyType: string;
-  beatSize: string;
+  beatBudget: { min_words: number; max_words: number };
   defaultNarrationMode: string;
 }
 
@@ -85,7 +85,7 @@ export function storyInstructions(topic: StoryInstructionsTopic): ToolResult {
   if (topic === "create") {
     return { ok: true, text: [
       "Creating a new story from scratch:",
-      "1. Call story_create with title, premise, story_type, beat_size and a default_narration_mode id you choose.",
+      "1. Call story_create with title, premise, story_type, min_words, max_words and a default_narration_mode id you choose.",
       "2. Call story_add_narration_mode with that same id right after; a story is invalid until its default mode exists.",
       "3. Add every character and location referenced by a beat with story_add_character / story_add_location before that beat.",
       "4. Add beats in order with story_add_beat. Each event is a postcondition that must be true once the beat ends, not a script of how it happens.",
@@ -166,7 +166,7 @@ export async function createStory(
     premise: input.premise.trim(),
     story_type: input.storyType.trim(),
     default_narration_mode: input.defaultNarrationMode,
-    beat_size: input.beatSize.trim(),
+    beat_budget: input.beatBudget,
     characters: [],
     locations: [],
     narration_modes: [],

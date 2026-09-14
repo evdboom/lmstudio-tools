@@ -10,6 +10,7 @@ import {
 import {
   applyReaderRegeneration,
   applyReaderReview,
+  auditReaderBeat,
   getReaderState,
   prepareReaderBeatRegeneration,
   prepareReaderGeneration,
@@ -33,7 +34,7 @@ beforeEach(async () => {
     title: "The Night Train",
     premise: "A conductor finds an impossible passenger.",
     storyType: "mystery",
-    beatSize: "500 words",
+    beatBudget: { min_words: 500, max_words: 500 },
     defaultNarrationMode: "close",
   });
   await addNarrationMode(root, storyPath, {
@@ -120,7 +121,6 @@ describe("reader run service", () => {
       );
 
       expect(request.systemPrompt).toContain("must begin every response with <think>");
-      expect(request.recordedSystemPrompt).toBe(request.systemPrompt);
     }
   );
 
@@ -192,8 +192,8 @@ describe("reader run service", () => {
     );
 
     expect(secondRequest.previousResponseId).toBe("resp_first");
-    expect(secondRequest.systemPrompt).toBeUndefined();
-    expect(secondRequest.recordedSystemPrompt).toBe(firstRequest.systemPrompt);
+    // `instructions` is not inherited across a stored chain, so every turn resends it.
+    expect(secondRequest.systemPrompt).toContain("You are an expert fiction writer");
     expect(secondRequest.input).toContain("Ongoing reader directions");
     expect(secondRequest.input).toContain("The ticket smells of smoke.");
 
@@ -221,8 +221,96 @@ describe("reader run service", () => {
     expect(state.status).toBe("completed");
   });
 
-  it("deletes one saved reader run", async () => {
+  it("rebuilds the stateful chain that produced a beat", async () => {
+    const started = await startReaderRun(root, storyPath, "test-model", "full");
+    const first = await prepareReaderGeneration(root, storyPath, started.run_id, "regenerate");
+    await saveReaderDraft(
+      root,
+      storyPath,
+      started.run_id,
+      "The first beat.",
+      first.promptInstruction,
+      "resp_first",
+      {
+        input: first.input!,
+        system_prompt: first.systemPrompt,
+        previous_response_id: first.previousResponseId,
+      }
+    );
+    const second = await prepareReaderGeneration(root, storyPath, started.run_id, "next");
+    await saveReaderDraft(
+      root,
+      storyPath,
+      started.run_id,
+      "The second beat.",
+      second.promptInstruction,
+      "resp_second",
+      {
+        input: second.input!,
+        system_prompt: second.systemPrompt,
+        previous_response_id: second.previousResponseId,
+      }
+    );
+
+    const audit = await auditReaderBeat(root, storyPath, started.run_id, 1);
+
+    // Only the closing turn went on the wire; the rest is rebuilt from the run.
+    expect(audit.messages).toEqual([
+      { role: "user", content: first.input },
+      { role: "assistant", content: "The first beat." },
+      { role: "user", content: second.input },
+    ]);
+    expect(audit.previous_response_id).toBe("resp_first");
+    expect(audit.system_prompt).toContain("You are an expert fiction writer");
+    expect(audit.gap).toBeUndefined();
+  });
+
+  it("reports a broken stateful chain rather than inventing one", async () => {
+    const started = await startReaderRun(root, storyPath, "test-model", "full");
+    await saveReaderDraft(root, storyPath, started.run_id, "The first beat.", undefined, "resp_first", {
+      input: "Beat 1 request",
+    });
+    await prepareReaderGeneration(root, storyPath, started.run_id, "next");
+    await saveReaderDraft(root, storyPath, started.run_id, "The second beat.", undefined, "resp_second", {
+      input: "Beat 2 request",
+      previous_response_id: "resp_elsewhere",
+    });
+
+    const audit = await auditReaderBeat(root, storyPath, started.run_id, 1);
+
+    expect(audit.gap).toContain("resp_elsewhere");
+    expect(audit.gap).toContain("resp_first");
+  });
+
+  it("returns the transcript as sent for a stateless beat", async () => {
+    const started = await startReaderRun(root, storyPath, "test-model", "hybrid", 1);
+    await saveReaderDraft(root, storyPath, started.run_id, "The first beat.");
+    const second = await prepareReaderGeneration(root, storyPath, started.run_id, "next");
+    await saveReaderDraft(
+      root,
+      storyPath,
+      started.run_id,
+      "The second beat.",
+      undefined,
+      undefined,
+      { input: second.input!, messages: second.messages, system_prompt: second.systemPrompt }
+    );
+
+    const audit = await auditReaderBeat(root, storyPath, started.run_id, 1);
+
+    expect(audit.messages).toEqual(second.messages);
+    expect(audit.previous_response_id).toBeUndefined();
+  });
+
+  it("derives a word ceiling that leaves room above the budget", async () => {
     const started = await startReaderRun(root, storyPath, "test-model");
+    const request = await prepareReaderGeneration(root, storyPath, started.run_id, "regenerate");
+
+    // A tenth of 500 is under the 100-word floor, so the floor applies.
+    expect(request.wordBudget).toEqual({ maxWords: 500, ceilingWords: 600 });
+  });
+
+  it("deletes one saved reader run", async () => {    const started = await startReaderRun(root, storyPath, "test-model");
 
     await deleteReaderRun(root, storyPath, started.run_id);
 
@@ -238,11 +326,12 @@ describe("reader run service", () => {
     });
 
     const review = await prepareReaderReview(root, storyPath, started.run_id, 0, "Check sentence endings.");
+    const reviewInput = review.messages.map((item) => item.content).join("\n");
 
-    expect(review.input).toContain("Original system prompt");
-    expect(review.input).toContain("Original beat input");
-    expect(review.input).toContain("Original prose.");
-    expect(review.input).toContain("Check sentence endings.");
+    expect(reviewInput).toContain("Original system prompt");
+    expect(reviewInput).toContain("Original beat input");
+    expect(reviewInput).toContain("Original prose.");
+    expect(reviewInput).toContain("Check sentence endings.");
     expect(review.systemPrompt).toContain("reply with [VALID]");
     expect(review.systemPrompt).toContain("Start your reply with the [REPLACE] tag");
     expect(review.systemPrompt).toContain("Start your reply with the [APPEND] tag");
@@ -483,8 +572,11 @@ describe("reader run service", () => {
     // Hybrid rebuilds the prompt each beat rather than chaining responses.
     expect(second.previousResponseId).toBeUndefined();
     expect(second.systemPrompt).toContain("You are an expert fiction writer");
-    expect(second.input).toContain("## Recent narration");
-    expect(second.input).toContain("Mara stepped between the brass lamps.");
+    expect(second.messages).toEqual([
+      { role: "user", content: expect.stringContaining("## Current beat 1 of 2") },
+      { role: "assistant", content: "Mara stepped between the brass lamps." },
+      { role: "user", content: expect.stringContaining("## Current beat 2 of 2") },
+    ]);
     expect(second.input).toContain("## Current beat 2 of 2");
   });
 

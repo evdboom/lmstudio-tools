@@ -131,6 +131,13 @@ export const storyImageGenerationSchema = z.object({
   }).default({}),
 });
 
+export const beatBudgetSchema = z.object({
+  min_words: z.number().int().positive().max(100_000),
+  max_words: z.number().int().positive().max(100_000),
+}).refine((budget) => budget.max_words >= budget.min_words, {
+  message: "max_words must be at least min_words.",
+});
+
 export const storyBlueprintSchema = z.object({
   schema: z.literal("story-v3"),
   status: z.enum(["draft", "final"]),
@@ -138,7 +145,7 @@ export const storyBlueprintSchema = z.object({
   premise: nonEmpty,
   story_type: nonEmpty,
   default_narration_mode: storyId,
-  beat_size: nonEmpty,
+  beat_budget: beatBudgetSchema,
   characters: z.array(storyCharacterSchema),
   locations: z.array(storyLocationSchema),
   narration_modes: z.array(narrationModeSchema),
@@ -148,6 +155,30 @@ export const storyBlueprintSchema = z.object({
 });
 
 export type StoryBlueprint = z.infer<typeof storyBlueprintSchema>;
+export type BeatBudget = z.infer<typeof beatBudgetSchema>;
+
+/** The budget as the prompt states it. */
+export function describeBeatBudget(budget: BeatBudget): string {
+  return budget.min_words === budget.max_words
+    ? `${budget.max_words} words`
+    : `${budget.min_words}-${budget.max_words} words`;
+}
+
+/**
+ * The length at which narration is abandoned rather than allowed to run on.
+ *
+ * Cutting at `max_words` would truncate mid-sentence on any beat that merely
+ * lands near its target, so the ceiling sits above it: a tenth of the budget,
+ * or 100 words, whichever leaves more room.
+ */
+export function beatBudgetCeiling(budget: BeatBudget): number {
+  return budget.max_words + Math.max(Math.round(budget.max_words * 0.1), 100);
+}
+
+export function countWords(text: string): number {
+  const trimmed = text.trim();
+  return trimmed ? trimmed.split(/\s+/).length : 0;
+}
 
 export type StoryCharacter = StoryBlueprint["characters"][number];
 export type StoryLocation = StoryBlueprint["locations"][number];

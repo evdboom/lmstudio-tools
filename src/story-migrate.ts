@@ -41,6 +41,8 @@ export interface MigrationReport {
    * `from` if it is a reveal.
    */
   unreferencedFacts: string[];
+  /** Set when the v2 beat size held no usable numbers and a default was written. */
+  unparsedBeatSize?: string;
 }
 
 export function isLegacyStory(raw: unknown): raw is LegacyStory {
@@ -50,6 +52,22 @@ export function isLegacyStory(raw: unknown): raw is LegacyStory {
 /** `b01`-style ids, padded to the width of the beat count. */
 function beatId(index: number, total: number): string {
   return `b${String(index + 1).padStart(Math.max(2, String(total).length), "0")}`;
+}
+
+/**
+ * A v2 beat size was free text. The forms that actually occur are a range, a
+ * single number, or a number with a qualifier; anything else has no defensible
+ * reading, so it is reported rather than guessed at.
+ */
+function parseBeatBudget(
+  beatSize: string
+): { budget: { min_words: number; max_words: number } } | { unparsed: string } {
+  const numbers = [...beatSize.matchAll(/\d+/g)].map((match) => Number(match[0]));
+  if (numbers.length === 1) return { budget: { min_words: numbers[0], max_words: numbers[0] } };
+  if (numbers.length === 2 && numbers[0] <= numbers[1]) {
+    return { budget: { min_words: numbers[0], max_words: numbers[1] } };
+  }
+  return { unparsed: beatSize };
 }
 
 export function migrateStoryToV3(
@@ -72,9 +90,16 @@ export function migrateStoryToV3(
     return { id: fact.id, fact: fact.fact };
   });
 
+  const parsedBudget = parseBeatBudget(legacy.beat_size);
+  const budget = "budget" in parsedBudget
+    ? parsedBudget.budget
+    : { min_words: 500, max_words: 1000 };
+
   const story = storyBlueprintSchema.parse({
     ...legacy,
     schema: "story-v3",
+    beat_size: undefined,
+    beat_budget: budget,
     characters: legacy.characters.map((character) => ({
       id: character.id,
       name: character.name,
@@ -120,6 +145,7 @@ export function migrateStoryToV3(
       unreferencedFacts: facts
         .filter((fact) => !("beats" in fact) && !("subjects" in fact))
         .map((fact) => fact.id),
+      ...("unparsed" in parsedBudget ? { unparsedBeatSize: parsedBudget.unparsed } : {}),
     },
   };
 }

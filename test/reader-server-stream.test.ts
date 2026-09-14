@@ -56,7 +56,7 @@ beforeEach(async () => {
     title: "The Night Train",
     premise: "A conductor finds an impossible passenger.",
     storyType: "mystery",
-    beatSize: "500 words",
+    beatBudget: { min_words: 500, max_words: 500 },
     defaultNarrationMode: "close",
   });
   await addNarrationMode(root, storyPath, {
@@ -132,7 +132,12 @@ describe("reader generation stream", () => {
     expect(state.accepted).toEqual([
       expect.objectContaining({
         narration: "The carriage stirred.",
-        prompt: expect.objectContaining({ input: expect.stringContaining("Mara enters.") }),
+        prompt: expect.objectContaining({
+          messages: [expect.objectContaining({
+            role: "user",
+            content: expect.stringContaining("Mara enters."),
+          })],
+        }),
         revisions: [expect.objectContaining({
           narration: "Old first beat.",
           prompt: { input: "Beat 1 request" },
@@ -348,7 +353,7 @@ describe("reader generation stream", () => {
     expect(savedRun.accepted[0]?.reasoning).toBe("Checking continuity.");
     expect(savedRun.current_draft?.response_id).toBe("resp_test");
     expect(savedRun.current_draft?.reasoning).toBe("Checking continuity.");
-    expect(savedRun.current_draft?.prompt?.input).toContain("## Current beat 2 of 2");
+    expect(savedRun.current_draft?.prompt?.messages?.at(-1)?.content).toContain("## Current beat 2 of 2");
     expect(savedRun.current_draft?.prompt?.system_prompt).toContain("You are an expert fiction writer");
     expect(savedRun.model).toBe("test-model");
   });

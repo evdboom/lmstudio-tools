@@ -96,14 +96,15 @@ export function registerStoryTools(
     title: text,
     premise: text,
     story_type: text,
-    beat_size: text,
+    min_words: z.number().int().positive().describe("Lower bound of the per-beat word budget."),
+    max_words: z.number().int().positive().describe("Upper bound of the per-beat word budget."),
     default_narration_mode: id,
   }, wrap(names.create, (args) => createStory(root, {
     storyPath: args.story_path,
     title: args.title,
     premise: args.premise,
     storyType: args.story_type,
-    beatSize: args.beat_size,
+    beatBudget: { min_words: args.min_words, max_words: args.max_words },
     defaultNarrationMode: args.default_narration_mode,
   }), log));
 

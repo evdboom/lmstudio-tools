@@ -5,8 +5,16 @@ import { z } from "zod";
 import { safeResolve } from "./sandbox.js";
 import { readStoryFile } from "./story-store.js";
 
+const narrationMessageSchema = z.object({
+  role: z.enum(["user", "assistant"]),
+  content: z.string().min(1),
+});
+
 const narrationPromptSchema = z.object({
-  input: z.string().min(1),
+  /** The turns that went on the wire, alongside `system_prompt` and `previous_response_id`. */
+  messages: z.array(narrationMessageSchema).optional(),
+  /** Superseded by `messages`; still read from runs recorded before it existed. */
+  input: z.string().min(1).optional(),
   system_prompt: z.string().min(1).optional(),
   previous_response_id: z.string().startsWith("resp_").optional(),
 });
@@ -83,6 +91,8 @@ export const readerRunSchema = z.object({
   model: z.string().trim().min(1).max(500).optional(),
   context_mode: z.enum(["full", "blueprint", "hybrid"]).default("full"),
   reasoning_mode: z.enum(["native", "template_think", "think", "thinking"]).default("native"),
+  /** "default" sends no reasoning parameter; a model that cannot reason rejects the others. */
+  reasoning_effort: z.enum(["default", "off", "low", "medium", "high"]).default("default"),
   /** Hybrid mode only: how many recent beats are carried as verbatim prose. */
   prose_window: z.number().int().min(0).max(20).default(1),
   beat_index: z.number().int().nonnegative(),
@@ -141,7 +151,9 @@ export async function createReaderRun(
   model?: string,
   contextMode: ReaderRun["context_mode"] = "full",
   proseWindow = 1,
-  reasoningMode: ReaderRun["reasoning_mode"] = "native"
+  reasoningMode: ReaderRun["reasoning_mode"] = "native",
+  reasoningEffort: ReaderRun["reasoning_effort"] = "default",
+  ongoingInstructions: string[] = []
 ): Promise<ReaderRun> {
   const story = await readStoryFile(root, storyPath);
   if (story.status !== "final") throw new Error("Story must be finalized before reading.");
@@ -154,10 +166,11 @@ export async function createReaderRun(
     model,
     context_mode: contextMode,
     reasoning_mode: reasoningMode,
+    reasoning_effort: reasoningEffort,
     prose_window: proseWindow,
     beat_index: 0,
     accepted: [],
-    ongoing_instructions: [],
+    ongoing_instructions: ongoingInstructions,
     started_at: now,
     updated_at: now,
     status: "active",

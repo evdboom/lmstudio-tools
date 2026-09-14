@@ -218,6 +218,37 @@ a.beat-map-entry:hover { background: var(--paper); color: var(--green); }
 .review-prose { margin-bottom: 14px; white-space: pre-wrap; color: var(--prose); font: 16px/1.65 "Palatino Linotype", "Book Antiqua", Georgia, serif; }
 .beat-review button { min-height: 34px; }
 .beat-action-status { display: flex; align-items: center; gap: 10px; margin-top: 18px; color: var(--muted); font-size: 13px; }
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--ink) 45%, transparent);
+}
+.modal {
+  width: min(480px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  padding: 24px;
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: 0 12px 40px color-mix(in srgb, var(--ink) 25%, transparent);
+}
+.modal-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+.modal-heading h2 { margin: 0; font-family: "Palatino Linotype", "Book Antiqua", Georgia, serif; }
+.modal-field { display: grid; gap: 6px; margin-bottom: 16px; }
+.modal-field > span { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; }
+.modal-field select, .modal-field input { width: 100%; max-width: none; }
+.ongoing-instructions-list { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 6px; }
+.ongoing-instructions-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); }
+.ongoing-instructions-list span { font-size: 13px; color: var(--prose); overflow-wrap: anywhere; }
+.ongoing-instructions-list .icon-button { width: 26px; min-height: 26px; font-size: 15px; flex: none; }
+.ongoing-instruction-input { display: flex; gap: 8px; }
+.ongoing-instruction-input input { min-width: 0; flex: 1; }
+.modal-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
 .beat-action-status i { width: 14px; height: 14px; border: 2px solid var(--line); border-top-color: var(--red); border-radius: 50%; animation: spin 800ms linear infinite; }
 .beat.writing::after {
   content: "";

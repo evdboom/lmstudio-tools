@@ -10,7 +10,7 @@ const story = storyBlueprintSchema.parse({
   premise: "A conductor meets an impossible passenger.",
   story_type: "mystery",
   default_narration_mode: "close",
-  beat_size: "500 words",
+  beat_budget: { min_words: 500, max_words: 500 },
   characters: [{
     id: "mara",
     name: "Mara",

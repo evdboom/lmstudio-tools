@@ -1,11 +1,27 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildBlueprintHistoryNarrationInput,
-  buildHybridNarrationInput,
-  buildStatefulNarrationInput,
+  buildBlueprintHistoryNarrationInput as blueprintRequest,
+  buildHybridNarrationInput as hybridRequest,
+  buildStatefulNarrationInput as statefulRequest,
   type AcceptedNarration,
+  type NarrationRequest,
 } from "../src/reader-prompts.js";
 import { tidewrack } from "./fixtures/tidewrack.js";
+
+/** The whole transcript as one string, for assertions that only care that a line is present. */
+function flat(request: NarrationRequest) {
+  return { ...request, input: request.messages.map((item) => item.content).join("\n") };
+}
+
+const buildBlueprintHistoryNarrationInput = (
+  ...args: Parameters<typeof blueprintRequest>
+) => flat(blueprintRequest(...args));
+const buildHybridNarrationInput = (
+  ...args: Parameters<typeof hybridRequest>
+) => flat(hybridRequest(...args));
+const buildStatefulNarrationInput = (
+  ...args: Parameters<typeof statefulRequest>
+) => flat(statefulRequest(...args));
 
 /** Accepted prose for beats 0..count-1, distinguishable in assertions. */
 function accepted(count: number): AcceptedNarration[] {
@@ -20,9 +36,9 @@ describe("beat block", () => {
 
   it("frames events as postconditions rather than a script", () => {
     expect(input).toContain("### Scene outcomes");
-    expect(input).toContain("All of the following must be true when the beat ends");
-    expect(input).toContain("- Mara has scrubbed the grating clean.");
-    expect(input).toContain("You may invent transitions, action, and dialogue, but every event must occur and nothing beyond them may be resolved.");
+    expect(input).toContain("All of the following events must have occured before the beat ends");
+    expect(input).toContain("1. Mara has scrubbed the grating clean.");
+    expect(systemPrompt).toContain("You may invent transitions, action, and dialogue, but every event must occur and nothing beyond them may be resolved.");
   });
 
   it("sets explicit boundaries against runaway narration", () => {
@@ -37,7 +53,7 @@ describe("beat block", () => {
     const opening = buildBlueprintHistoryNarrationInput(story, 0).input;
 
     expect(opening).toContain("## Next beat stop boundary");
-    expect(opening).toContain("future context only");
+    expect(opening).toContain("Do not narrate it");
     expect(opening).toContain("*Next beat time frame from current*: That night.");
     expect(opening).toContain("*Next beat location*: The Lamp Room");
     expect(opening).toContain("- First future outcome.");
@@ -113,8 +129,22 @@ describe("beat block", () => {
   });
 });
 
-describe("scene timing", () => {
-  it("renders an authored time gap", () => {
+describe("beat budget", () => {
+  it("states the authored word range in the prompt", () => {
+    const { systemPrompt, input } = buildBlueprintHistoryNarrationInput(tidewrack(), 5);
+    expect(input).toContain("*Target beat length*: 900-1200 words");
+    expect(systemPrompt).toContain("Never go over the requested beat length of 900-1200 words.");
+  });
+
+  it("states a single figure when the range is fixed", () => {
+    const story = tidewrack();
+    story.beat_budget = { min_words: 500, max_words: 500 };
+    expect(buildBlueprintHistoryNarrationInput(story, 5).input)
+      .toContain("*Target beat length*: 500 words");
+  });
+});
+
+describe("scene timing", () => {  it("renders an authored time gap", () => {
     const { input } = buildBlueprintHistoryNarrationInput(tidewrack(), 5);
     expect(input).toContain("*Time frame since last beat*: Three weeks later.");
   });
@@ -190,11 +220,39 @@ describe("hybrid context mode", () => {
     const { input } = buildHybridNarrationInput(tidewrack(), 5, accepted(5), undefined, 1);
 
     expect(input).toContain("### Beat 4 — The Lamp Room · Joris Vandel, Mara Kest");
-    expect(input).toContain("## Recent narration");
     expect(input).toContain("Prose of beat 5.");
-    // The windowed beat keeps both its blueprint instructions and accepted prose.
-    expect(input).toContain("### Beat 5 — The Lamp Room");
+    // The windowed beat is replayed as its own request rather than summarised.
+    expect(input).toContain("## Current beat 5 of 6");
+    expect(input).not.toContain("### Beat 5 — The Lamp Room");
     expect(input).not.toContain("Prose of beat 4.");
+  });
+
+  it("replays the prose window as alternating user and assistant turns", () => {
+    const { messages } = hybridRequest(tidewrack(), 5, accepted(5), undefined, 2);
+
+    expect(messages.map((item) => item.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+      "user",
+    ]);
+    expect(messages[1].content).toBe("Prose of beat 4.");
+    expect(messages[3].content).toBe("Prose of beat 5.");
+    // The stable blocks ride on the opening turn; the current beat closes the transcript.
+    expect(messages[0].content).toContain("## Story so far");
+    expect(messages[0].content).toContain("## Current beat 4 of 6");
+    expect(messages[2].content).not.toContain("## Story so far");
+    expect(messages[4].content).toContain("## Current beat 6 of 6");
+  });
+
+  it("orders the closing turn so the current beat lands last", () => {
+    const { messages } = hybridRequest(tidewrack(), 5, accepted(5), undefined, 1);
+    const closing = messages.at(-1)!.content;
+
+    expect(closing.indexOf("## Established facts"))
+      .toBeLessThan(closing.indexOf("## Current beat 6 of 6"));
+    expect(closing.trimEnd().endsWith("**beat 6**")).toBe(true);
   });
 
   it("widens the prose window on request", () => {
@@ -206,10 +264,10 @@ describe("hybrid context mode", () => {
   });
 
   it("omits the prose section on the opening beat", () => {
-    const { input } = buildHybridNarrationInput(tidewrack(), 0, []);
-    expect(input).not.toContain("## Recent narration");
-    expect(input).not.toContain("## Story so far");
-    expect(input).toContain("## Current beat 1 of 6");
+    const request = hybridRequest(tidewrack(), 0, []);
+    expect(request.messages).toHaveLength(1);
+    expect(request.messages[0].content).not.toContain("## Story so far");
+    expect(request.messages[0].content).toContain("## Current beat 1 of 6");
   });
 
   it("grows only by history as the story runs", () => {
@@ -229,8 +287,11 @@ describe("hybrid context mode", () => {
 describe("full context mode", () => {
   it("sends only the beat block once the response chain is established", () => {
     const prompt = buildStatefulNarrationInput(tidewrack(), 5);
-    expect(prompt.systemPrompt).toBeUndefined();
+    // `instructions` is not inherited across a stored chain, so it is always present.
+    expect(prompt.systemPrompt).toContain("# Primary task");
+    expect(prompt.messages).toHaveLength(1);
     expect(prompt.input).toContain("## Current beat 6 of 6");
+    expect(prompt.input).not.toContain("# Write the story");
     expect(prompt.input).not.toContain("## Story so far");
     expect(prompt.input).not.toContain("Prose of beat 5.");
   });

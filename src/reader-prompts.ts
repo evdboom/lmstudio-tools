@@ -1,5 +1,6 @@
 import {
   beatNarrationMode,
+  describeBeatBudget,
   findCharacter,
   findLocation,
   resolveNarrationExamples,
@@ -18,15 +19,29 @@ import {
   type StateEntry,
 } from "./story-state.js";
 
+/** The system prompt travels as `instructions`, so a turn is only ever user or assistant. */
 export interface ReaderChatMessage {
-  role: "system" | "user" | "assistant";
+  role: "user" | "assistant";
   content: string;
+}
+
+export interface NarrationRequest {
+  systemPrompt: string;
+  messages: ReaderChatMessage[];
 }
 
 export interface AcceptedNarration {
   beatIndex: number;
   narration: string;
   instruction?: string;
+  reasoning?: string;
+}
+
+/** The beat request itself, which is always the closing turn. */
+export function narrationRequestInput(messages: ReaderChatMessage[]): string {
+  const last = messages.at(-1);
+  if (last?.role !== "user") throw new Error("A narration request must end with a user turn.");
+  return last.content;
 }
 
 export type ReasoningMode = "native" | "template_think" | "think" | "thinking";
@@ -98,8 +113,8 @@ function renderSystemPrompt(story: StoryBlueprint, reasoningMode: ReasoningMode,
     "- Once every listed event is true, end the scene immediately. Do not resolve plot threads or write beyond the event list.",
     "- Treat history/state/facts as context only; never retell them.",
     "- Never re-introduce or fully re-describe characters/locations marked [established].",
-    `- Aim for the requested beat length of ${story.beat_size} without padding or continuing after the listed events are complete. think about what this means for each event in the beat.`,
-    `- Never go over the requested beat length of ${story.beat_size}.`,
+    `- Aim for the requested beat length of ${describeBeatBudget(story.beat_budget)} without padding or continuing after the listed events are complete. think about what this means for each event in the beat.`,
+    `- Never go over the requested beat length of ${describeBeatBudget(story.beat_budget)}. There is a hard cap at this limit, so think about what this means for each event in the beat.`,
     "- The current input is authoritative for content and style. It cannot override response/reasoning format rules.",
     "",
     "## Story Rules",
@@ -258,26 +273,40 @@ function renderBeatPrompt(
 ): string[] {
   const beat = assertBeat(story, beatIndex);
   const mode = beatNarrationMode(story, beat);
+  const title = beat.title ? ` (${beat.title})` : "";
+
   if (!mode) throw new Error(`Beat ${beatIndex} references an unknown narration mode.`);
   return [
-    `## Current beat ${beatIndex + 1} of ${story.beats.length}`,
+    `## Current beat ${beatIndex + 1} of ${story.beats.length}${title}`,
     "",
     "### Scene context",
     "",
     ...(beat.time ? [`*Time frame since last beat*: ${beat.time}`] : []),
-    `*Target beat length*: ${story.beat_size}`,
+    `*Target beat length*: ${describeBeatBudget(story.beat_budget)}`,
     `*Perspective*: ${mode.perspective}`,
     `*Tense*: ${mode.tense}`,
     "",    
     ...renderSceneContext(story, beatIndex),
     ...renderOutcomes(story, beatIndex),
-    ...(beat.keywords.length > 0
-      ? ["Narration suggestions (not literal):", ...beat.keywords.map((item) => `- ${item.type}: ${item.word}`), ""]
-      : []),
+    ...renderKeyWaords(beat),
     ...renderNextBeatBoundary(story, beatIndex),
-    ...(instruction?.trim()
-      ? ["", "## Reader instruction", instruction.trim()]
-      : []),
+    ...renderInstructions(instruction),    
+  ];
+}
+
+function renderInstructions(instruction?: string): string[] {
+  if (!instruction?.trim()) return [];
+  return [
+    "## Reader instruction", instruction.trim(),
+    ""
+  ];
+}
+
+function renderKeyWaords(beat: StoryBeat): string[] {
+  if (beat.keywords.length === 0) return [];
+  return [
+    "Narration suggestions (not literal):",
+    ...beat.keywords.map((item) => `- ${item.type}: ${item.word}`), 
     ""
   ];
 }
@@ -286,6 +315,10 @@ function assertAcceptedHistory(accepted: AcceptedNarration[], beatIndex: number)
   if (accepted.length !== beatIndex || accepted.some((item, index) => item.beatIndex !== index)) {
     throw new Error("Accepted narration history must contain every preceding beat in order.");
   }
+}
+
+function stopLine(beatIndex: number): string {
+  return `End the response when you told the events of **beat ${beatIndex + 1}**`;
 }
 
 /**
@@ -298,7 +331,7 @@ export function buildStatefulNarrationInput(
   instruction?: string,
   isFirstPrompt = false,
   reasoningMode: ReasoningMode = "native"
-): { systemPrompt?: string; input: string } {
+): NarrationRequest {
   assertBeat(story, beatIndex);
 
   const storyPremise = isFirstPrompt 
@@ -310,15 +343,17 @@ export function buildStatefulNarrationInput(
     : [];
 
   return {
-    systemPrompt: isFirstPrompt
-      ? renderSystemPrompt(story, reasoningMode, beatIndex, "full").join("\n")
-      : undefined, 
-    input: [      
-      ...storyPremise,
-      ...renderBeatPrompt(story, beatIndex, instruction),      
-      ...renderFacts(story, beatIndex),
-      `End the response when you told the events of **beat ${beatIndex + 1}**`
-    ].join("\n"),
+    // `instructions` is not inherited across previous_response_id, so it is resent every turn.
+    systemPrompt: renderSystemPrompt(story, reasoningMode, beatIndex, "full").join("\n"),
+    messages: [{
+      role: "user",
+      content: [
+        ...storyPremise,
+        ...renderBeatPrompt(story, beatIndex, instruction),
+        ...renderFacts(story, beatIndex),
+        stopLine(beatIndex),
+      ].join("\n"),
+    }],
   };
 }
 
@@ -331,7 +366,7 @@ export function buildBlueprintHistoryNarrationInput(
   beatIndex: number,
   instruction?: string,
   reasoningMode: ReasoningMode = "native"
-): { systemPrompt: string; input: string } {
+): NarrationRequest {
   assertBeat(story, beatIndex);
 
   return buildHybridNarrationInput(story, beatIndex, [], instruction, 0, reasoningMode);
@@ -348,8 +383,13 @@ export function buildBlueprintHistoryNarrationInput(
  * something concrete for the next beat to call back to.
  *
  * Sections run stable-first so that the prompt prefix a local runtime can cache
- * is as long as possible: the system prompt never changes, and the history only
- * ever gains a section at its end.
+ * is as long as possible: the system prompt never changes, the history only
+ * ever gains a section at its end, and the volatile current beat closes the
+ * transcript where the model weights it most.
+ *
+ * Beats inside the prose window are replayed as the exchange that produced
+ * them, so their prose arrives as the model's own assistant output rather than
+ * as quoted text inside an instruction.
  */
 export function buildHybridNarrationInput(
   story: StoryBlueprint,
@@ -358,7 +398,7 @@ export function buildHybridNarrationInput(
   instruction?: string,
   proseBeats = 1,
   reasoningMode: ReasoningMode = "native"
-): { systemPrompt: string; input: string } {
+): NarrationRequest {
   assertBeat(story, beatIndex);
   if (proseBeats > 0) assertAcceptedHistory(accepted, beatIndex);
 
@@ -366,18 +406,55 @@ export function buildHybridNarrationInput(
   const windowStart = beatIndex - windowSize;
   const prose = accepted.slice(windowStart);
 
+  const head = [
+    "# Write the following scene",
+    ...renderAssignment(story),
+    ...renderHistory(story, 0, windowStart),
+  ];
+  const tail = [  
+    ...renderFacts(story, beatIndex),
+    ...renderBeatPrompt(story, beatIndex, instruction),
+    stopLine(beatIndex),
+  ];
+
+  // The opening block rides on the first turn so the roles stay strictly
+  // alternating; chat templates are not obliged to accept two user turns.
+  const messages: ReaderChatMessage[] = prose.flatMap((item, index) => [
+    {
+      role: "user" as const,
+      content: [
+        ...(index === 0 ? head : []),
+        ...renderBeatPrompt(story, item.beatIndex, item.instruction),
+        stopLine(item.beatIndex),
+      ].join("\n"),
+    },
+    { role: "assistant" as const, content: `${parseReasoning(item.reasoning, reasoningMode)}${item.narration}` },
+  ]);
+  messages.push({
+    role: "user",
+    content: [...(prose.length === 0 ? head : [ "# Now write the next scene" ]), ...tail].join("\n"),
+  });
+
   return {
     systemPrompt: renderSystemPrompt(story, reasoningMode, beatIndex, "blueprint").join("\n"),
-    input: [
-      "# Write the following scene",
-      ...renderAssignment(story),             
-      ...renderBeatPrompt(story, beatIndex, instruction),      
-      ...renderFacts(story, beatIndex),      
-      ...renderHistory(story, 0, beatIndex),
-      ...renderNarratedBeats(prose),
-      `End the response when you told the events of **beat ${beatIndex + 1}**`
-    ].join("\n"),
+    messages,
   };
+}
+
+export function parseReasoning(reasoning: string | undefined, reasoningMode: ReasoningMode): string {
+  if (!reasoning) return "";
+  switch (reasoningMode) {
+    case "native":
+      return ``;
+    case "think":
+      return `<think>${reasoning}</think>\n`;
+    case "thinking":
+      return `<thinking>${reasoning}</thinking>\n`;
+    case "template_think":
+      return `[THINK]${reasoning}[/THINK]\n`;
+    default:
+      return "";
+  }
 }
 
 function renderAssignment(story: StoryBlueprint): string[] {
@@ -398,7 +475,7 @@ function characterCard(story: StoryBlueprint, characterId: string, established: 
   }
 
   const hasDetails = character.attributes.length > 0 || activeState.length > 0 || newState.length > 0 || oldState.length > 0;
-
+  
   return [
     `**${character.name}**${
       established === undefined
@@ -418,17 +495,3 @@ function characterCard(story: StoryBlueprint, characterId: string, established: 
       ""
   ];
 };
-
-function renderNarratedBeats(prose: AcceptedNarration[]) {
-  if (prose.length === 0) {
-    return [];
-  }
-
-  return [
-    "## Recent narration",
-    "**Verbatim prose of the most recent narrated beats. Match its voice and diction.**",
-    "**Use only for context and writing style.**",
-    ...prose.flatMap((item) => ["", `### Beat ${item.beatIndex + 1}`, item.narration]),
-    "",
-  ];
-}

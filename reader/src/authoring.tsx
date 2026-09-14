@@ -14,7 +14,7 @@ interface Story {
   premise: string;
   story_type: string;
   default_narration_mode: string;
-  beat_size: string;
+  beat_budget: { min_words: number; max_words: number };
   characters: Character[];
   locations: Location[];
   narration_modes: Array<{ id: string; perspective: string; tense: string; rules: string[]; positive_examples?: NarrationExample[]; negative_examples?: NarrationExample[]; kind?: "replace" | "supplemental" }>;
@@ -88,7 +88,7 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
 function starter(title = "Untitled story"): Story {
   return {
     schema: "story-v3", status: "draft", title, premise: "", story_type: "fiction",
-    default_narration_mode: "default", beat_size: "300-600 words", characters: [], locations: [],
+    default_narration_mode: "default", beat_budget: { min_words: 300, max_words: 600 }, characters: [], locations: [],
     narration_modes: [{ id: "default", perspective: "third-person limited", tense: "past", rules: ["Keep the viewpoint consistent."], positive_examples: [], negative_examples: [] }],
     facts: [], beats: [],
   };
@@ -616,7 +616,7 @@ export function AuthoringApp() {
         {!story ? <p>Select or create a story.</p> : <>
           <div className="editor-title"><div><p className="eyebrow">Blueprint editor</p><h1>{story.title}</h1></div><div className="editor-actions"><select value={story.status} onChange={(event) => update({ status: event.target.value as Story["status"] })}><option value="draft">Draft</option><option value="final">Final</option></select><button className="primary" disabled={!dirty} onClick={() => void save()}>Save</button></div></div>
           {isNew && <label>Folder path<input value={storyPath} placeholder="stories/my-story" onChange={(event) => setStoryPath(event.target.value)} /></label>}
-          <div className="metadata-grid"><label>Title<input value={story.title} onChange={(event) => update({ title: event.target.value })} /></label><label>Type<input value={story.story_type} onChange={(event) => update({ story_type: event.target.value })} /></label><label>Beat size<input value={story.beat_size} onChange={(event) => update({ beat_size: event.target.value })} /></label><label>Default mode<select value={story.default_narration_mode} onChange={(event) => update({ default_narration_mode: event.target.value })}>{story.narration_modes.map((mode) => <option key={mode.id} value={mode.id}>{mode.id}: {mode.perspective}, {mode.tense}</option>)}</select></label><label className="wide">Premise<textarea value={story.premise} onChange={(event) => update({ premise: event.target.value })} /></label></div>
+          <div className="metadata-grid"><label>Title<input value={story.title} onChange={(event) => update({ title: event.target.value })} /></label><label>Type<input value={story.story_type} onChange={(event) => update({ story_type: event.target.value })} /></label><label>Min words<input type="number" min={1} value={story.beat_budget.min_words} onChange={(event) => update({ beat_budget: { ...story.beat_budget, min_words: Number(event.target.value) } })} /></label><label>Max words<input type="number" min={1} value={story.beat_budget.max_words} onChange={(event) => update({ beat_budget: { ...story.beat_budget, max_words: Number(event.target.value) } })} /></label><label>Default mode<select value={story.default_narration_mode} onChange={(event) => update({ default_narration_mode: event.target.value })}>{story.narration_modes.map((mode) => <option key={mode.id} value={mode.id}>{mode.id}: {mode.perspective}, {mode.tense}</option>)}</select></label><label className="wide">Premise<textarea value={story.premise} onChange={(event) => update({ premise: event.target.value })} /></label></div>
           <section className="world-editor"><div className="panel-heading"><h2>World</h2><span>Characters, locations, narration, and canon</span></div>
             <details open><summary>Characters <span>{story.characters.length}</span></summary><div className="world-list">{story.characters.map((character, index) => <article className="world-item" key={index}>
               <div className="world-item-heading"><strong>{character.name || character.id || `Character ${index + 1}`}</strong><button className="icon-button danger" title="Delete character" onClick={() => removeCharacter(index)}>×</button></div>

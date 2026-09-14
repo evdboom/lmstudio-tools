@@ -30,7 +30,7 @@ const input = {
   title: "The Night Train",
   premise: "A conductor discovers a passenger who should not exist.",
   storyType: "mystery",
-  beatSize: "600-900 words",
+  beatBudget: { min_words: 600, max_words: 900 },
   defaultNarrationMode: "cinematic",
 };
 

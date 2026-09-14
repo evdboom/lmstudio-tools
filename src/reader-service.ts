@@ -2,7 +2,11 @@ import {
   buildBlueprintHistoryNarrationInput,
   buildHybridNarrationInput,
   buildStatefulNarrationInput,
+  narrationRequestInput,
+  parseReasoning,
   taggedReasoningRule,
+  type NarrationRequest,
+  type ReaderChatMessage,
 } from "./reader-prompts.js";
 import { buildImagePlanPrompt, parseImagePlan } from "./reader-image-prompts.js";
 import {
@@ -13,6 +17,7 @@ import {
   type ReaderRun,
 } from "./reader-store.js";
 import { readStoryFile } from "./story-store.js";
+import { beatBudgetCeiling, type StoryBlueprint } from "./story-model.js";
 
 export interface ReaderState {
   run_id: string;
@@ -20,6 +25,7 @@ export interface ReaderState {
   model?: string;
   context_mode: ReaderRun["context_mode"];
   reasoning_mode: ReaderRun["reasoning_mode"];
+  reasoning_effort: ReaderRun["reasoning_effort"];
   prose_window: number;
   title: string;
   premise: string;
@@ -100,6 +106,93 @@ function branchFullContext(
   }
 }
 
+/** The closing beat request, whether the prompt was recorded as turns or as legacy text. */
+export function promptInput(prompt: NarrationPrompt): string {
+  const content = prompt.messages?.at(-1)?.content ?? prompt.input;
+  if (!content) throw new Error("The recorded prompt has no beat request.");
+  return content;
+}
+
+function wordBudget(story: StoryBlueprint): { maxWords: number; ceilingWords: number } {
+  return {
+    maxWords: story.beat_budget.max_words,
+    ceilingWords: beatBudgetCeiling(story.beat_budget),
+  };
+}
+
+export interface NarrationAudit {
+  beat_index: number;
+  context_mode: ReaderRun["context_mode"];
+  system_prompt?: string;
+  messages: ReaderChatMessage[];
+  previous_response_id?: string;
+  response_id?: string;
+  /** Set when the reconstruction is not a faithful record of what went on the wire. */
+  gap?: string;
+}
+
+/**
+ * The exact request that produced one beat.
+ *
+ * Stateless modes put the whole transcript on the wire, so it is stored as sent.
+ * `full` mode sends one turn per beat and leaves the rest to LM Studio, which
+ * offers no way to read a stored response back, so the earlier turns are
+ * rebuilt from the run's own record of the chain instead.
+ */
+export async function auditReaderBeat(
+  root: string,
+  storyPath: string,
+  runId: string,
+  beatIndex: number
+): Promise<NarrationAudit> {
+  const run = await readReaderRun(root, storyPath, runId);
+  const target = narrationAt(run, beatIndex);
+  if (!target) throw new Error(`Beat ${beatIndex + 1} has no narration.`);
+  if (!target.prompt) throw new Error(`Beat ${beatIndex + 1} has no saved prompt.`);
+  const prompt = target.prompt;
+
+  if (run.context_mode !== "full") {
+    return {
+      beat_index: beatIndex,
+      context_mode: run.context_mode,
+      system_prompt: prompt.system_prompt,
+      messages: prompt.messages ?? [{ role: "user", content: promptInput(prompt) }],
+      response_id: target.response_id,
+    };
+  }
+
+  const earlier = run.accepted.filter((item) => item.beat_index < beatIndex);
+  const unrecorded = earlier.filter((item) => !item.prompt).map((item) => item.beat_index + 1);
+  const messages: ReaderChatMessage[] = earlier.flatMap((item) => [
+    ...(item.prompt ? [{ role: "user" as const, content: promptInput(item.prompt) }] : []),
+    { role: "assistant" as const, content: `${parseReasoning(item.reasoning, run.reasoning_mode)}${item.narration}` },
+  ]);
+  messages.push({ role: "user", content: promptInput(prompt) });
+
+  const continued = earlier.at(-1)?.response_id;
+  const broken = prompt.previous_response_id !== continued;
+  return {
+    beat_index: beatIndex,
+    context_mode: run.context_mode,
+    system_prompt: prompt.system_prompt,
+    messages,
+    previous_response_id: prompt.previous_response_id,
+    response_id: target.response_id,
+    ...(broken || unrecorded.length > 0
+      ? {
+        gap: [
+          ...(broken
+            ? [`Beat ${beatIndex + 1} continued ${prompt.previous_response_id ?? "no response"}, but beat ${beatIndex} ended at ${continued ?? "no response"}.`]
+            : []),
+          ...(unrecorded.length > 0
+            ? [`No prompt was recorded for beat ${unrecorded.join(", ")}.`]
+            : []),
+        ].join(" "),
+      }
+      : {}),
+  };
+}
+
 export async function prepareReaderReview(
   root: string,
   storyPath: string,
@@ -108,7 +201,8 @@ export async function prepareReaderReview(
   instruction?: string
 ): Promise<{
   systemPrompt: string;
-  input: string;
+  messages: ReaderChatMessage[];
+  reasoningEffort: ReaderRun["reasoning_effort"];
   previousResponseId?: string;
   store: boolean;
   narration: string;
@@ -148,20 +242,24 @@ export async function prepareReaderReview(
       "",
       "Do not add other tags, headings, verdicts, or code fences.",
     ].join("\n"),
-    input: [
-      "# Original system instructions",
-      narration.prompt.system_prompt ?? "(none)",
-      "",
-      "# Original beat request",
-      narration.prompt.input,
-      ...(instruction?.trim() ? ["", "# Specific review focus", instruction.trim()] : []),
-      "",
-      "# Result to review",
-      narration.narration,
-    ].join("\n"),
+    messages: [{
+      role: "user",
+      content: [
+        "# Original system instructions",
+        narration.prompt.system_prompt ?? "(none)",
+        "",
+        "# Original beat request",
+        promptInput(narration.prompt),
+        ...(instruction?.trim() ? ["", "# Specific review focus", instruction.trim()] : []),
+        "",
+        "# Result to review",
+        narration.narration,
+      ].join("\n"),
+    }],
     previousResponseId: run.context_mode === "full"
       ? narration.prompt.previous_response_id
       : undefined,
+    reasoningEffort: run.reasoning_effort,
     store: run.context_mode === "full",
     narration: narration.narration,
   };
@@ -173,9 +271,11 @@ export async function prepareReaderBeatRegeneration(
   runId: string,
   beatIndex: number
 ): Promise<{
-  systemPrompt?: string;
+  systemPrompt: string;
+  messages: ReaderChatMessage[];
   input: string;
-  recordedSystemPrompt?: string;
+  wordBudget: { maxWords: number; ceilingWords: number };
+  reasoningEffort: ReaderRun["reasoning_effort"];
   previousResponseId?: string;
   promptInstruction?: string;
   store: boolean;
@@ -191,12 +291,13 @@ export async function prepareReaderBeatRegeneration(
     beatIndex: item.beat_index,
     narration: item.narration,
     instruction: item.prompt_instruction,
+    reasoning: item.reasoning
   }));
   const previousResponseId = run.context_mode === "full"
     ? acceptedBefore.at(-1)?.response_id
     : undefined;
   const instruction = narration.prompt_instruction;
-  let prompt: { systemPrompt?: string; input: string };
+  let prompt: NarrationRequest;
   switch (run.context_mode) {
     case "full":
       prompt = buildStatefulNarrationInput(
@@ -229,8 +330,10 @@ export async function prepareReaderBeatRegeneration(
 
   return {
     systemPrompt: prompt.systemPrompt,
-    input: prompt.input,
-    recordedSystemPrompt: prompt.systemPrompt ?? acceptedBefore.at(-1)?.prompt?.system_prompt,
+    messages: prompt.messages,
+    input: narrationRequestInput(prompt.messages),
+    wordBudget: wordBudget(story),
+    reasoningEffort: run.reasoning_effort,
     previousResponseId,
     promptInstruction: instruction,
     store: run.context_mode === "full",
@@ -346,6 +449,7 @@ async function toState(root: string, run: ReaderRun): Promise<ReaderState> {
     model: run.model,
     context_mode: run.context_mode,
     reasoning_mode: run.reasoning_mode,
+    reasoning_effort: run.reasoning_effort,
     prose_window: run.prose_window,
     title: story.title,
     premise: story.premise,
@@ -366,7 +470,9 @@ export async function startReaderRun(
   model?: string,
   contextMode: ReaderRun["context_mode"] = "full",
   proseWindow = 1,
-  reasoningMode: ReaderRun["reasoning_mode"] = "native"
+  reasoningMode: ReaderRun["reasoning_mode"] = "native",
+  reasoningEffort: ReaderRun["reasoning_effort"] = "default",
+  ongoingInstructions: string[] = []
 ): Promise<ReaderState> {
   return toState(root, await createReaderRun(
     root,
@@ -374,7 +480,9 @@ export async function startReaderRun(
     model,
     contextMode,
     proseWindow,
-    reasoningMode
+    reasoningMode,
+    reasoningEffort,
+    ongoingInstructions
   ));
 }
 
@@ -404,9 +512,11 @@ export async function prepareReaderGeneration(
   instruction?: string,
   model?: string
 ): Promise<{
+  messages?: ReaderChatMessage[];
   input?: string;
   systemPrompt?: string;
-  recordedSystemPrompt?: string;
+  wordBudget?: { maxWords: number; ceilingWords: number };
+  reasoningEffort?: ReaderRun["reasoning_effort"];
   previousResponseId?: string;
   promptInstruction?: string;
   state?: ReaderState;
@@ -466,8 +576,9 @@ export async function prepareReaderGeneration(
       beatIndex: item.beat_index,
       narration: item.narration,
       instruction: item.prompt_instruction,
+      reasoning: item.reasoning,
     }));
-    let prompt: { systemPrompt?: string; input: string };
+    let prompt: NarrationRequest;
     switch (run.context_mode) {
       case "full":
         prompt = buildStatefulNarrationInput(
@@ -497,15 +608,12 @@ export async function prepareReaderGeneration(
         );
         break;
     }
-    const recordedSystemPrompt = prompt.systemPrompt
-      ?? run.accepted.at(-1)?.prompt?.system_prompt;
-
     return {
       complete: false as const,
       run,
-      input: prompt.input,
+      messages: prompt.messages,
       systemPrompt: prompt.systemPrompt,
-      recordedSystemPrompt,
+      reasoningEffort: run.reasoning_effort,
       previousResponseId,
       activeInstruction,
     };
@@ -513,9 +621,11 @@ export async function prepareReaderGeneration(
 
   if (prepared.complete) return { state: await toState(root, prepared.run) };
   return {
-    input: prepared.input,
+    messages: prepared.messages,
+    input: narrationRequestInput(prepared.messages),
     systemPrompt: prepared.systemPrompt,
-    recordedSystemPrompt: prepared.recordedSystemPrompt,
+    wordBudget: wordBudget(story),
+    reasoningEffort: prepared.reasoningEffort,
     previousResponseId: prepared.previousResponseId,
     promptInstruction: prepared.activeInstruction,
     generationState: await toState(root, prepared.run),

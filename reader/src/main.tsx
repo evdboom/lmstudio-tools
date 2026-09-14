@@ -6,6 +6,7 @@ import "./styles.css";
 
 type ContextMode = "full" | "blueprint" | "hybrid";
 type ReasoningMode = "native" | "template_think" | "think" | "thinking";
+type ReasoningEffort = "default" | "off" | "low" | "medium" | "high";
 
 const CONTEXT_MODE_LABELS: Record<ContextMode, string> = {
   full: "full context",
@@ -59,6 +60,8 @@ interface ReaderState {
   model?: string;
   context_mode: ContextMode;
   reasoning_mode: ReasoningMode;
+  reasoning_effort?: ReasoningEffort;
+  prose_window: number;
   title: string;
   premise: string;
   beat_index: number;
@@ -91,6 +94,11 @@ function App() {
   const [model, setModel] = useState("");
   const [contextMode, setContextMode] = useState<ContextMode>("full");
   const [reasoningMode, setReasoningMode] = useState<ReasoningMode>("native");
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("default");
+  const [proseWindow, setProseWindow] = useState(1);
+  const [ongoingInstructions, setOngoingInstructions] = useState<string[]>([]);
+  const [ongoingInstructionInput, setOngoingInstructionInput] = useState("");
+  const [modelOptionsOpen, setModelOptionsOpen] = useState(false);
   const [state, setState] = useState<ReaderState>();
   const [streamed, setStreamed] = useState("");
   const [instruction, setInstruction] = useState("");
@@ -102,6 +110,7 @@ function App() {
   const [generationStatus, setGenerationStatus] = useState("");
   const [reasoning, setReasoning] = useState("");
   const [actionBeatIndex, setActionBeatIndex] = useState<number>();
+  const [actionKind, setActionKind] = useState<"regenerate" | "review">();
   const [actionStatus, setActionStatus] = useState("");
   const [actionReasoning, setActionReasoning] = useState("");
   const [actionStreamed, setActionStreamed] = useState("");
@@ -166,6 +175,7 @@ function App() {
     onReasoning?: (value: string) => void;
     onDelta?: (value: string) => void;
     onState?: (value: ReaderState) => void;
+    onRestart?: (value: string) => void;
   }): Promise<ReaderState> {
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
@@ -184,6 +194,7 @@ function App() {
         if (type === "status") handlers.onStatus?.(JSON.parse(data));
         if (type === "reasoning") handlers.onReasoning?.(JSON.parse(data));
         if (type === "delta") handlers.onDelta?.(JSON.parse(data));
+        if (type === "restart") handlers.onRestart?.(JSON.parse(data));
         if (type === "done") result = JSON.parse(data);
         if (type === "error") throw new Error(JSON.parse(data));
       }
@@ -196,6 +207,7 @@ function App() {
   async function runReview(run: ReaderState, beatIndex: number, signal?: AbortSignal, instruction?: string) {
     setReasoning("");
     setActionBeatIndex(beatIndex);
+    setActionKind("review");
     setActionStreamed("");
     setActionReasoning("");
     setActionStatus(`Reviewing beat ${beatIndex + 1}...`);
@@ -244,6 +256,7 @@ function App() {
       setActionStatus("");
       setActionStreamed("");
       setActionReasoning("");
+      setActionKind(undefined);
       setReviewBeatIndex(undefined);
       setReviewInstruction("");
     }
@@ -316,6 +329,7 @@ function App() {
     generationAbort.current = abort;
     setBusy(true);
     setActionBeatIndex(beatIndex);
+    setActionKind("regenerate");
     setActionStreamed("");
     setActionReasoning("");
     setActionStatus(`Regenerating beat ${beatIndex + 1}...`);
@@ -341,6 +355,11 @@ function App() {
         onStatus: setActionStatus,
         onReasoning: (value) => setActionReasoning((current) => current + value),
         onDelta: (value) => setActionStreamed((current) => current + value),
+        onRestart: (value) => {
+          setActionStreamed("");
+          setActionReasoning("");
+          setActionStatus(value);
+        },
       });
       setState(regenerated);
       if (reviewAfterGenerationRef.current) {
@@ -355,6 +374,7 @@ function App() {
       if (generationAbort.current === abort) generationAbort.current = undefined;
       setBusy(false);
       setActionBeatIndex(undefined);
+      setActionKind(undefined);
       setActionStatus("");
       setActionStreamed("");
       setActionReasoning("");
@@ -399,6 +419,11 @@ function App() {
         onDelta: (value) => {
           setGenerationStatus("Writing the beat...");
           setStreamed((current) => current + value);
+        },
+        onRestart: (value) => {
+          setStreamed("");
+          setReasoning("");
+          setGenerationStatus(value);
         },
       });
       setState(completedState);
@@ -479,6 +504,17 @@ function App() {
     }
   }
 
+  function addOngoingInstruction() {
+    const value = ongoingInstructionInput.trim();
+    if (!value) return;
+    setOngoingInstructions((current) => [...current, value]);
+    setOngoingInstructionInput("");
+  }
+
+  function removeOngoingInstruction(index: number) {
+    setOngoingInstructions((current) => current.filter((_, itemIndex) => itemIndex !== index));
+  }
+
   async function begin() {
     if (!storyPath || !model) return;
     setBusy(true);
@@ -492,7 +528,10 @@ function App() {
           story_path: storyPath,
           model,
           context_mode: contextMode,
+          prose_window: proseWindow,
           reasoning_mode: reasoningMode,
+          reasoning_effort: reasoningEffort,
+          ongoing_instructions: ongoingInstructions,
         }),
       });
       setState(run);
@@ -515,6 +554,8 @@ function App() {
       if (resumed.model) setModel(resumed.model);
       setContextMode(resumed.context_mode);
       setReasoningMode(resumed.reasoning_mode);
+      setReasoningEffort(resumed.reasoning_effort ?? "default");
+      setProseWindow(resumed.prose_window);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -552,7 +593,8 @@ function App() {
   const currentNarration = streamed
     || (busy && generationAction !== "next" ? undefined : state?.current_draft?.narration);
   const isActingCurrent = actionBeatIndex !== undefined && actionBeatIndex === state?.beat_index;
-  const currentDisplayNarration = isActingCurrent && actionStreamed ? actionStreamed : currentNarration;
+  const currentDisplayNarration =
+    isActingCurrent && actionKind === "regenerate" && actionStreamed ? actionStreamed : currentNarration;
   const currentBeatIndex = state
     ? state.current_draft
       ? state.beat_index
@@ -573,20 +615,7 @@ function App() {
               <select aria-label="Story" value={storyPath} onChange={(event) => setStoryPath(event.target.value)}>
                 {stories.map((story) => <option key={story.path} value={story.path}>{story.title}</option>) }
               </select>
-              <select aria-label="Model" value={model} onChange={(event) => setModel(event.target.value)}>
-                {models.map((item) => <option key={item}>{item}</option>)}
-              </select>
-              <select aria-label="Narration context" value={contextMode} onChange={(event) => setContextMode(event.target.value as ContextMode)}>
-                <option value="hybrid">Recent prose + derived history</option>
-                <option value="full">Full narration context</option>
-                <option value="blueprint">Beat events only</option>
-              </select>
-              <select aria-label="Reasoning mode" value={reasoningMode} onChange={(event) => setReasoningMode(event.target.value as ReasoningMode)}>
-                <option value="native">Native reasoning</option>
-                <option value="template_think">Template /think ([THINK])</option>
-                <option value="think">XML &lt;think&gt;</option>
-                <option value="thinking">XML &lt;thinking&gt;</option>
-              </select>
+              <button className="secondary" onClick={() => setModelOptionsOpen(true)}>Model options</button>
               <button className="primary" disabled={!storyPath || !model || busy} onClick={begin}>Begin</button>
             </div>
           ) : (
@@ -608,6 +637,104 @@ function App() {
           </button>
         </div>
       </header>
+
+      {modelOptionsOpen && (
+        <div className="modal-overlay">
+          <div className="modal" role="dialog" aria-modal="true" aria-label="Model options">
+            <div className="modal-heading">
+              <h2>Model options</h2>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Close model options"
+                onClick={() => setModelOptionsOpen(false)}
+              >×</button>
+            </div>
+            <label className="modal-field">
+              <span>Model</span>
+              <select aria-label="Model" value={model} onChange={(event) => setModel(event.target.value)}>
+                {models.map((item) => <option key={item}>{item}</option>)}
+              </select>
+            </label>
+            <label className="modal-field">
+              <span>Narration context</span>
+              <select aria-label="Narration context" value={contextMode} onChange={(event) => setContextMode(event.target.value as ContextMode)}>
+                <option value="hybrid">Recent prose + derived history</option>
+                <option value="full">Full narration context</option>
+                <option value="blueprint">Beat events only</option>
+              </select>
+            </label>
+            {contextMode === "hybrid" && (
+              <label className="modal-field">
+                <span>Recent beats carried as prose</span>
+                <input
+                  aria-label="Recent beats carried as prose"
+                  type="number"
+                  min={0}
+                  max={20}
+                  value={proseWindow}
+                  onChange={(event) => setProseWindow(Math.max(0, Math.min(20, Number(event.target.value) || 0)))}
+                />
+              </label>
+            )}
+            <label className="modal-field">
+              <span>Reasoning mode</span>
+              <select aria-label="Reasoning mode" value={reasoningMode} onChange={(event) => setReasoningMode(event.target.value as ReasoningMode)}>
+                <option value="native">Native reasoning</option>
+                <option value="template_think">Template /think ([THINK])</option>
+                <option value="think">XML &lt;think&gt;</option>
+                <option value="thinking">XML &lt;thinking&gt;</option>
+              </select>
+            </label>
+            <label className="modal-field">
+              <span>Reasoning effort</span>
+              <select aria-label="Reasoning effort" value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort)}>
+                <option value="default">Model default effort</option>
+                <option value="off">Reasoning off</option>
+                <option value="low">Low effort</option>
+                <option value="medium">Medium effort</option>
+                <option value="high">High effort</option>
+              </select>
+            </label>
+            <div className="modal-field">
+              <span>Ongoing instructions</span>
+              {ongoingInstructions.length > 0 && (
+                <ul className="ongoing-instructions-list">
+                  {ongoingInstructions.map((item, index) => (
+                    <li key={index}>
+                      <span>{item}</span>
+                      <button
+                        type="button"
+                        className="icon-button danger"
+                        aria-label={`Remove instruction ${index + 1}`}
+                        onClick={() => removeOngoingInstruction(index)}
+                      >×</button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="ongoing-instruction-input">
+                <input
+                  aria-label="New ongoing instruction"
+                  placeholder="e.g. Never use the word 'suddenly'"
+                  value={ongoingInstructionInput}
+                  onChange={(event) => setOngoingInstructionInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      addOngoingInstruction();
+                    }
+                  }}
+                />
+                <button type="button" className="secondary" onClick={addOngoingInstruction}>Add</button>
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button className="primary" onClick={() => setModelOptionsOpen(false)}>Done</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {!state ? (
         <section className="shelf">
@@ -677,7 +804,8 @@ function App() {
             </header>
             {state.accepted.map((beat) => {
               const isActing = actionBeatIndex === beat.beat_index;
-              const displayNarration = isActing && actionStreamed ? actionStreamed : beat.narration;
+              const displayNarration =
+                isActing && actionKind === "regenerate" && actionStreamed ? actionStreamed : beat.narration;
               return (
                 <section className={`beat ${isActing ? "writing" : ""}`} id={`beat-${beat.beat_index}`} key={beat.beat_index}>
                   <span className="beat-number">{String(beat.beat_index + 1).padStart(2, "0")}</span>

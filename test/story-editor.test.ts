@@ -9,7 +9,7 @@ const blueprint = {
   premise: "A keeper sees a second lighthouse offshore.",
   story_type: "mystery",
   default_narration_mode: "close",
-  beat_size: "500 words",
+  beat_budget: { min_words: 500, max_words: 500 },
   characters: [],
   locations: [{ id: "tower", name: "Tower", description: "A salt-streaked lighthouse.", details: [], states: [] }],
   narration_modes: [{ id: "close", perspective: "third-person limited", tense: "past", rules: ["Stay close to the keeper."] }],

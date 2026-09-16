@@ -38,13 +38,13 @@ describe("beat block", () => {
     expect(input).toContain("### Scene outcomes");
     expect(input).toContain("All of the following events must have occured before the beat ends");
     expect(input).toContain("1. Mara has scrubbed the grating clean.");
-    expect(systemPrompt).toContain("You may invent transitions, action, and dialogue, but every event must occur and nothing beyond them may be resolved.");
+    expect(systemPrompt).toContain("Write every listed outcome once, in order, as one connected scene.");
   });
 
   it("sets explicit boundaries against runaway narration", () => {
     expect(systemPrompt).toContain("Avoid unrelated memories, backstory summaries, or side stories.");
-    expect(systemPrompt).toContain("Never chain unrelated associations into a continuing sentence.");
-    expect(systemPrompt).toContain("Once every listed event is true, end the scene immediately.");
+    expect(systemPrompt).toContain("Do not repeat descriptions, use filler transitions, chain unrelated ideas, or leave thoughts unfinished.");
+    expect(systemPrompt).toContain("End immediately after the final outcome.");
   });
 
   it("uses the next beat as a future-only stop boundary", () => {
@@ -133,7 +133,7 @@ describe("beat budget", () => {
   it("states the authored word range in the prompt", () => {
     const { systemPrompt, input } = buildBlueprintHistoryNarrationInput(tidewrack(), 5);
     expect(input).toContain("*Target beat length*: 900-1200 words");
-    expect(systemPrompt).toContain("Never go over the requested beat length of 900-1200 words.");
+    expect(systemPrompt).toContain("Fit the complete scene within 900-1200 words. This is a hard maximum");
   });
 
   it("states a single figure when the range is fixed", () => {
@@ -186,7 +186,7 @@ describe("blueprint context mode", () => {
 
   it("recaps every earlier beat without prose", () => {
     expect(systemPrompt).toContain("You are an expert fiction writer.");
-    expect(systemPrompt).toContain("You are to write the next scene of Tidewrack as polished fictional prose");
+    expect(systemPrompt).toContain("Write the next scene of Tidewrack as polished fictional prose.");
     expect(input).toContain("## Story so far");
     expect(input).toContain("### Beat 1 — The Drowned Mare · Joris Vandel");
     expect(input).toContain("### Beat 5 — The Lamp Room · Joris Vandel, Mara Kest, Bailiff Kest");
@@ -288,7 +288,7 @@ describe("full context mode", () => {
   it("sends only the beat block once the response chain is established", () => {
     const prompt = buildStatefulNarrationInput(tidewrack(), 5);
     // `instructions` is not inherited across a stored chain, so it is always present.
-    expect(prompt.systemPrompt).toContain("# Primary task");
+    expect(prompt.systemPrompt).toContain("# Task");
     expect(prompt.messages).toHaveLength(1);
     expect(prompt.input).toContain("## Current beat 6 of 6");
     expect(prompt.input).not.toContain("# Write the story");
@@ -298,7 +298,7 @@ describe("full context mode", () => {
 
   it("bootstraps the story assignment when there is no chain to resume", () => {
     const prompt = buildStatefulNarrationInput(tidewrack(), 5, undefined, true);
-    expect(prompt.systemPrompt).toContain("# Primary task");
+    expect(prompt.systemPrompt).toContain("# Task");
     expect(prompt.input).toContain("# Write the story");
     expect(prompt.input).toContain("**Title**: Tidewrack");
     expect(prompt.input).toContain("## Current beat 6 of 6");
@@ -316,8 +316,8 @@ describe("full context mode", () => {
     const thinking = buildStatefulNarrationInput(tidewrack(), 0, undefined, true, "thinking");
 
     expect(native.systemPrompt).not.toContain("<think");
-    expect(think.systemPrompt).toContain("must begin every response with <think>");
-    expect(thinking.systemPrompt).toContain("must begin every response with <thinking>");
+    expect(think.systemPrompt).toContain("Begin with <think>");
+    expect(thinking.systemPrompt).toContain("Begin with <thinking>");
   });
 
   it("activates slash-think templates and requires their native tag format", () => {
@@ -329,9 +329,9 @@ describe("full context mode", () => {
       "template_think"
     );
 
-    expect(prompt.systemPrompt).toContain("must begin every response with [THINK]");
-    expect(prompt.systemPrompt).toContain("reason inside [THINK]...[/THINK]");
-    expect(prompt.systemPrompt).not.toContain("must begin every response with <think>");
-    expect(prompt.systemPrompt).not.toContain("must begin every response with <thinking>");
+    expect(prompt.systemPrompt).toContain("Begin with [THINK]");
+    expect(prompt.systemPrompt).toContain("keep all reasoning inside [THINK]...[/THINK]");
+    expect(prompt.systemPrompt).not.toContain("Begin with <think>");
+    expect(prompt.systemPrompt).not.toContain("Begin with <thinking>");
   });
 });

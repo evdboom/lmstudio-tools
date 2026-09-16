@@ -85,9 +85,7 @@ function message(error: unknown): string {
 }
 
 function overrunMessage(beatNumber: number, words: number, reason: OverrunReason): string {
-  return reason === "budget"
-    ? `Beat ${beatNumber} ran to ${words} words, past its budget. Starting over...`
-    : `Beat ${beatNumber} drifted into unfinished, repeating paragraphs. Starting over...`;
+  return `Beat ${beatNumber} ran to ${words} words, past its budget. Starting over...`;
 }
 
 export async function createReaderServer(options: ReaderServerOptions): Promise<FastifyInstance> {
@@ -250,6 +248,9 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       reasoning_mode: z.enum(["native", "template_think", "think", "thinking"]).default("native"),
       reasoning_effort: z.enum(["default", "off", "low", "medium", "high"]).default("default"),
       ongoing_instructions: z.array(z.string().trim().min(1)).default([]),
+      reviewer_model: z.string().trim().min(1).max(500).optional(),
+      reviewer_reasoning_mode: z.enum(["native", "template_think", "think", "thinking"]).optional(),
+      reviewer_reasoning_effort: z.enum(["default", "off", "low", "medium", "high"]).optional(),
     }).safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "A valid story_path and model are required." });
     try {
@@ -261,7 +262,12 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         parsed.data.prose_window,
         parsed.data.reasoning_mode,
         parsed.data.reasoning_effort,
-        parsed.data.ongoing_instructions
+        parsed.data.ongoing_instructions,
+        {
+          model: parsed.data.reviewer_model,
+          reasoningMode: parsed.data.reviewer_reasoning_mode,
+          reasoningEffort: parsed.data.reviewer_reasoning_effort,
+        }
       );
     } catch (error) {
       return reply.code(400).send({ error: message(error) });

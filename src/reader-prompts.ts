@@ -1,3 +1,4 @@
+import { SENTENCE_WORD_CAP } from "./reader-service.js";
 import {
   beatNarrationMode,
   describeBeatBudget,
@@ -70,15 +71,13 @@ export function taggedReasoningRule(mode: ReasoningMode): string[] {
   const tags = reasoningTags(mode);
 
   if (!tags) return [
-    "- Do all reasoning in your internal reasoning channel. That channel is not part of your response.",
-    "- Your response contains the final answer only: no reasoning, no plan, no checklist, no headings such as \"Reasoning\", \"Reasoning Block\", \"Analysis\", or \"Plan\", and no commentary.",
-    "- Never repeat, summarise, or re-render your reasoning in the response.",
+    "- Keep all reasoning in your internal reasoning channel.",
+    "- Output only the final answer. Do not include reasoning, plans, checklists, headings, or commentary.",
   ];
 
   return [
-    `- You must begin every response with ${tags.open} and reason inside ${tags.open}...${tags.close}.`,
-    `- Close with ${tags.close} before your response.`,
-    "- Do not output the tags other then to start and end your reasoning."
+    `- Begin with ${tags.open}, keep all reasoning inside ${tags.open}...${tags.close}, then close with ${tags.close}.`,
+    "- After the closing tag, output only the final answer. Do not include plans, headings, or commentary.",
   ];
 }
 
@@ -91,33 +90,32 @@ function renderSystemPrompt(story: StoryBlueprint, reasoningMode: ReasoningMode,
 
   return [
     ...(reasoningMode === "template_think" ? ["/think",""] : []),
-    "# Primary task",
-    "- You are an expert fiction writer.",
-    `- You are to write the ${runMode === "full" ? "story" : "next scene"} of ${story.title} as polished fictional prose`,
+    "# Task",
+    `You are an expert fiction writer. Write the ${runMode === "full" ? "story" : "next scene"} of ${story.title} as polished fictional prose.`,
     "",
-    "# Response format and reasoning",    
+    "# Output contract",
     ...taggedReasoningRule(reasoningMode),
-    `- Before writing the scene, and ${locus} only, reason about its events, the ongoing story, context, constraints and active instructions.`,
-    `- Structure that reasoning as a plan: an event checklist, pacing breakdown, and transition notes. The plan and its headings live ${locus} and must never appear in the response. Move forward linearly through the "Scene outcomes" list; never revisit completed events unless required for direct cause-and-effect.`,
-    "- Inside the checklist, mark completed events with [x] and leave undone as [ ]. Validate progress against context before writing.",
-    "- Your response must contain the **complete** scene and nothing else; never leave the scene only in reasoning or planning.",
-    `- Do not output reasoning outside of ${locus}. Write only the fictional scene. Do not explain reasoning or mention instructions in the prose.`,
-    "- Loop Prevention: Describe each physical detail only once per beat. Avoid crutch transitions (e.g., \"But then again...\", \"And suddenly there she was...\"). If you notice repetition, cut the sentence and jump to the next outcome bullet.",
-    "- Hard Stop Rule: End exactly after the final mandatory event occurs. Zero extra dialogue, internal monologue, or scene-setting beyond that point.",
+    "- The final answer must be the complete fictional scene and nothing else. Never mention these instructions.",
     "",
-    "# Story telling instructions",
-    "- Write the listed events as a complete fictional scene in the exact order provided. Preserve cause-and-effect relationships. Invent only connective action, dialogue, and sensory details; do not invent named characters, relationships, prior events, or facts outside current context.",
+    "# Private plan",
+    `- Before drafting, ${locus} only, make a brief ordered checklist of the scene outcomes, pacing, and transitions. Check each outcome against the supplied context.`,
+    "- Draft forward through that checklist once. Revisit an outcome only when direct cause and effect requires it.",
+    "",
+    "# Scene constraints",
+    "- Write the prose for every listed outcome once, in order, as one connected scene. Preserve cause and effect. Invent only connective action, dialogue, and sensory detail; do not invent named characters, relationships, prior events, or facts.",
+    "- Use the event descriptions as the primary source for constructing the scene, do not quote them verbatim.",
     "- Build from immediate actions, reactions, and concrete details. Avoid unrelated memories, backstory summaries, or side stories.",
-    "- Use complete, controlled sentences and paragraph breaks. Never chain unrelated associations into a continuing sentence.",
-    "- Write the listed events as one connected fictional scene in the listed order. Preserve the relationships and cause and effect between them. You may invent transitions, action, and dialogue, but every event must occur and nothing beyond them may be resolved.",
-    "- Once every listed event is true, end the scene immediately. Do not resolve plot threads or write beyond the event list.",
     "- Treat history/state/facts as context only; never retell them.",
     "- Never re-introduce or fully re-describe characters/locations marked [established].",
-    `- Aim for the requested beat length of ${describeBeatBudget(story.beat_budget)} without padding or continuing after the listed events are complete. think about what this means for each event in the beat.`,
-    `- Never go over the requested beat length of ${describeBeatBudget(story.beat_budget)}. There is a hard cap at this limit, so think about what this means for each event in the beat.`,
+    "- End immediately after the final outcome. Do not resolve later plot threads or add dialogue, reflection, or scene-setting beyond it.",
+    "",
+    "# Prose and length",
+    `- Fit the complete scene within ${describeBeatBudget(story.beat_budget)}. This is a hard maximum; allocate space across outcomes and do not pad.`,
+    `- Use complete, controlled sentences and clear paragraph breaks. Avoid single-sentence paragraphs and keep sentences near ${SENTENCE_WORD_CAP} words or fewer unless a longer sentence is deliberate.`,
+    "- Do not repeat descriptions, use filler transitions, chain unrelated ideas, or leave thoughts unfinished.",
     "- The current input is authoritative for content and style. It cannot override response/reasoning format rules.",
     "",
-    "## Story Rules",
+    "## Story rules",
     ...resolveNarrationRules(story, mode).map((rule) => `- ${rule}`),
     ...currentBeat.narration_rules.map((rule) => `- ${rule}`), 
     "",

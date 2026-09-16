@@ -19,19 +19,7 @@ function endpoint(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/$/, "")}${path}`;
 }
 
-export type OverrunReason = "budget" | "drift";
-
-// A handful of paragraphs in a row trailing off on an ellipsis or a bare em
-// dash reads as the model looping on an unfinished thought rather than
-// genuine budget overrun, so it is treated as its own resample trigger.
-const DRIFT_PARAGRAPH_WINDOW = 5;
-const DRIFT_ENDING = /(\.{3}|\u2026|\u2014)["'\u201d\u2019)\]]*\s*$/;
-
-function isDrifting(text: string): boolean {
-  const paragraphs = text.split(/\n{2,}/).map((paragraph) => paragraph.trim()).filter(Boolean);
-  if (paragraphs.length < DRIFT_PARAGRAPH_WINDOW) return false;
-  return paragraphs.slice(-DRIFT_PARAGRAPH_WINDOW).every((paragraph) => DRIFT_ENDING.test(paragraph));
-}
+export type OverrunReason = "budget";
 
 /**
  * The OpenAI-compatible surface, which sits beside the LM Studio REST API
@@ -337,7 +325,6 @@ export async function streamLmStudioNarration(options: {
     const overrunAt = (text: string): { words: number; reason: OverrunReason } | undefined => {
       const words = countWords(text);
       if (ceiling !== undefined && words > ceiling) return { words, reason: "budget" };
-      if (isDrifting(text)) return { words, reason: "drift" };
       return undefined;
     };
 
@@ -387,10 +374,7 @@ export async function streamLmStudioNarration(options: {
     // A fresh sample of the same request; the abandoned response is not chained onto.
     const retry = await attempt(options.messages, options.previousResponseId, options.systemPrompt);
     if (!retry.overrunReason) return retry;
-    throw new Error(reason === "budget"
-      ? `The model went over the word budget of ${options.wordBudget!.maxWords} twice (${words} and ${retry.overrunWords} words). Review this beat's events and budget before trying again: this usually means the events do not fit the budget.`
-      : "The model drifted into unfinished, repeating paragraphs twice in a row. Review this beat's events before trying again."
-    );
+    throw new Error(`The model went over the word budget of ${options.wordBudget!.maxWords} twice (${words} and ${retry.overrunWords} words). Review this beat's events and budget before trying again: this usually means the events do not fit the budget.`);
   }
 
   const first = await attempt(options.messages, options.previousResponseId, options.systemPrompt);

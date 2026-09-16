@@ -391,6 +391,28 @@ describe("LM Studio streaming client", () => {
     })).rejects.toThrow(/word budget of 10 twice \(13 and 13 words\)/);
   });
 
+  it("does not resample repeated ellipsis paragraph endings", async () => {
+    const narration = "One...\n\nTwo...\n\nThree...\n\nFour...\n\nFive...";
+    const stream = [
+      `data: ${JSON.stringify({ type: "response.output_text.delta", delta: narration })}\n\n`,
+      'data: {"type":"response.completed","response":{"id":"resp_ellipsis"}}\n\n',
+    ].join("");
+    const fetchMock = vi.fn(async () => new Response(stream));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await streamLmStudioNarration({
+      baseUrl: "http://127.0.0.1:1234/api/v1",
+      model: "test-model",
+      messages: [{ role: "user", content: "Narrate." }],
+      store: false,
+      signal: new AbortController().signal,
+      onDelta: vi.fn(),
+    });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(result.narration).toBe(narration);
+  });
+
   it("sends the reasoning effort only when the run asks for one", async () => {
     const stream = [
       'data: {"type":"response.output_text.delta","delta":"A scene."}\n\n',

@@ -98,7 +98,7 @@ describe("reader run service", () => {
     );
     expect(tagged.reasoning_mode).toBe("thinking");
     expect(taggedRequest.systemPrompt).toContain(
-      "reason inside <thinking>...</thinking>"
+      "keep all reasoning inside <thinking>...</thinking>"
     );
   });
 
@@ -120,7 +120,7 @@ describe("reader run service", () => {
         "regenerate"
       );
 
-      expect(request.systemPrompt).toContain("must begin every response with <think>");
+      expect(request.systemPrompt).toContain("Begin with <think>");
     }
   );
 
@@ -141,8 +141,8 @@ describe("reader run service", () => {
     );
 
     expect(started.reasoning_mode).toBe("template_think");
-    expect(request.systemPrompt).toContain("must begin every response with [THINK]");
-    expect(request.systemPrompt).not.toContain("must begin every response with <think>");
+    expect(request.systemPrompt).toContain("Begin with [THINK]");
+    expect(request.systemPrompt).not.toContain("Begin with <think>");
   });
 
   it("keeps regeneration temporary and next-button directions ongoing", async () => {
@@ -340,6 +340,20 @@ describe("reader run service", () => {
     expect(review.store).toBe(false);
   });
 
+  it("flags repeated trailing-off paragraphs for review without pre-judging them", async () => {
+    const started = await startReaderRun(root, storyPath, "review-model", "blueprint");
+    await saveReaderDraft(root, storyPath, started.run_id, "One...\n\nTwo...\n\nThree...\n\nFour...\n\nFive...", undefined, undefined, {
+      input: "Original beat input",
+      system_prompt: "Original system prompt",
+    });
+
+    const review = await prepareReaderReview(root, storyPath, started.run_id, 0);
+    const reviewInput = review.messages.map((item) => item.content).join("\n");
+
+    expect(reviewInput).toContain("final 5 paragraphs (1-5) all end with an ellipsis or bare em dash");
+    expect(reviewInput).toContain("Decide whether this is deliberate style");
+  });
+
   it("rebuilds regeneration from the current blueprint instead of the saved prompt", async () => {
     const started = await startReaderRun(root, storyPath, "review-model", "blueprint");
     await mutateReaderRun(root, storyPath, started.run_id, (run) => {
@@ -426,8 +440,8 @@ describe("reader run service", () => {
 
     const review = await prepareReaderReview(root, storyPath, started.run_id, 0);
 
-    expect(review.systemPrompt).toContain(`reason inside ${startTag}...${endTag}`);
-    expect(review.systemPrompt).toContain(`Close with ${endTag} before your response`);
+    expect(review.systemPrompt).toContain(`keep all reasoning inside ${startTag}...${endTag}`);
+    expect(review.systemPrompt).toContain(`then close with ${endTag}`);
   });
 
   it("replaces a reviewed blueprint beat without discarding later beats", async () => {

@@ -93,6 +93,10 @@ export const readerRunSchema = z.object({
   reasoning_mode: z.enum(["native", "template_think", "think", "thinking"]).default("native"),
   /** "default" sends no reasoning parameter; a model that cannot reason rejects the others. */
   reasoning_effort: z.enum(["default", "off", "low", "medium", "high"]).default("default"),
+  /** When unset, review requests reuse the prose model and reasoning settings. */
+  reviewer_model: z.string().trim().min(1).max(500).optional(),
+  reviewer_reasoning_mode: z.enum(["native", "template_think", "think", "thinking"]).optional(),
+  reviewer_reasoning_effort: z.enum(["default", "off", "low", "medium", "high"]).optional(),
   /** Hybrid mode only: how many recent beats are carried as verbatim prose. */
   prose_window: z.number().int().min(0).max(20).default(1),
   beat_index: z.number().int().nonnegative(),
@@ -145,6 +149,12 @@ async function writeRun(file: string, run: ReaderRun): Promise<void> {
   }
 }
 
+export interface ReviewerOptions {
+  model?: string;
+  reasoningMode?: NonNullable<ReaderRun["reviewer_reasoning_mode"]>;
+  reasoningEffort?: NonNullable<ReaderRun["reviewer_reasoning_effort"]>;
+}
+
 export async function createReaderRun(
   root: string,
   storyPath: string,
@@ -153,7 +163,8 @@ export async function createReaderRun(
   proseWindow = 1,
   reasoningMode: ReaderRun["reasoning_mode"] = "native",
   reasoningEffort: ReaderRun["reasoning_effort"] = "default",
-  ongoingInstructions: string[] = []
+  ongoingInstructions: string[] = [],
+  reviewer: ReviewerOptions = {}
 ): Promise<ReaderRun> {
   const story = await readStoryFile(root, storyPath);
   if (story.status !== "final") throw new Error("Story must be finalized before reading.");
@@ -167,6 +178,9 @@ export async function createReaderRun(
     context_mode: contextMode,
     reasoning_mode: reasoningMode,
     reasoning_effort: reasoningEffort,
+    reviewer_model: reviewer.model,
+    reviewer_reasoning_mode: reviewer.reasoningMode,
+    reviewer_reasoning_effort: reviewer.reasoningEffort,
     prose_window: proseWindow,
     beat_index: 0,
     accepted: [],

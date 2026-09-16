@@ -15,6 +15,7 @@ import {
   readReaderRun,
   type NarrationPrompt,
   type ReaderRun,
+  type ReviewerOptions,
 } from "./reader-store.js";
 import { readStoryFile } from "./story-store.js";
 import { beatBudgetCeiling, type StoryBlueprint } from "./story-model.js";
@@ -26,6 +27,9 @@ export interface ReaderState {
   context_mode: ReaderRun["context_mode"];
   reasoning_mode: ReaderRun["reasoning_mode"];
   reasoning_effort: ReaderRun["reasoning_effort"];
+  reviewer_model?: string;
+  reviewer_reasoning_mode: ReaderRun["reviewer_reasoning_mode"];
+  reviewer_reasoning_effort: ReaderRun["reviewer_reasoning_effort"];
   prose_window: number;
   title: string;
   premise: string;
@@ -52,9 +56,12 @@ function narrationAt(run: ReaderRun, beatIndex: number): ReviewableNarration | u
   return run.accepted.find((item) => item.beat_index === beatIndex);
 }
 
-const SENTENCE_WORD_CAP = 30;
+export const SENTENCE_WORD_CAP = 30;
+const SENTENCE_LENIENCY = 5; // Allowable leeway above the soft word cap for single-sentence paragraphs.
 // Splits on sentence-ending punctuation followed by whitespace; good enough to count sentences per paragraph.
 const SENTENCE_SPLIT_PATTERN = /(?<=[.!?])\s+(?=[A-Z"'\u201C(])/;
+const TRAILING_OFF_PARAGRAPH_WINDOW = 5;
+const TRAILING_OFF_ENDING = /(\.{3}|\u2026|\u2014)["'\u201d\u2019)\]]*\s*$/;
 
 /** Flags paragraphs made of a single sentence over the soft word cap, so the reviewer can be pointed at them directly. */
 function findOverlongSingleSentenceParagraphs(narration: string): Array<{ index: number; words: number }> {
@@ -66,7 +73,7 @@ function findOverlongSingleSentenceParagraphs(narration: string): Array<{ index:
     const sentences = trimmed.split(SENTENCE_SPLIT_PATTERN).filter((sentence) => sentence.trim());
     if (sentences.length !== 1) return;
     const words = trimmed.split(/\s+/).filter(Boolean).length;
-    if (words > SENTENCE_WORD_CAP) flagged.push({ index: index + 1, words });
+    if (words > SENTENCE_WORD_CAP + SENTENCE_LENIENCY) flagged.push({ index: index + 1, words });
   });
   return flagged;
 }
@@ -80,6 +87,20 @@ function flaggedParagraphNote(flagged: Array<{ index: number; words: number }>):
     "# Automated flag",
     `Deterministic scan found single-sentence paragraph(s) over the ${SENTENCE_WORD_CAP}-word soft cap: ${list}.`,
     "Pay extra attention to these; confirm whether they should be split into multiple sentences or shortened before deciding your verdict.",
+  ];
+}
+
+function trailingOffParagraphNote(narration: string): string[] {
+  const paragraphs = narration.split(/\n{2,}/).map((paragraph) => paragraph.trim()).filter(Boolean);
+  if (paragraphs.length < TRAILING_OFF_PARAGRAPH_WINDOW) return [];
+  const trailing = paragraphs.slice(-TRAILING_OFF_PARAGRAPH_WINDOW);
+  if (!trailing.every((paragraph) => TRAILING_OFF_ENDING.test(paragraph))) return [];
+  const first = paragraphs.length - TRAILING_OFF_PARAGRAPH_WINDOW + 1;
+  return [
+    "",
+    "# Automated flag",
+    `The final ${TRAILING_OFF_PARAGRAPH_WINDOW} paragraphs (${first}-${paragraphs.length}) all end with an ellipsis or bare em dash.`,
+    "Decide whether this is deliberate style or repeated unfinished thoughts; revise only if it harms completeness or coherence.",
   ];
 }
 
@@ -249,7 +270,7 @@ export async function prepareReaderReview(
       "You are a strict fiction editor reviewing one generated story beat.",
       "",
       "# Response format and reasoning",
-      ...taggedReasoningRule(run.reasoning_mode),      
+      ...taggedReasoningRule(run.reviewer_reasoning_mode ?? run.reasoning_mode),      
       "",
       "# Review instructions",      
       "Validate the prose against the original instructions:",
@@ -263,8 +284,9 @@ export async function prepareReaderReview(
       "| Are all sentences well defined as in not stopping abruptly or ending with incomplete thoughts | Revise sentences to ensure they are complete and coherent |",
       "| Are there no sentence fragments, run-on sentences, repetitive phrasing, filler, word-list padding, nonsensical escalation, abrupt topic shifts, meta-commentary, or irrelevant material | Edit the prose to remove any of these issues |",
       "| Do sentences end with appropriate punctuation; reject an unexplained trailing em dash that leaves a sentence unfinished | Correct punctuation errors and remove any inappropriate trailing em dashes |",
-      "| Are sentences kept to roughly 30 words or fewer as a soft cap; longer sentences are acceptable only when the length is clearly deliberate (e.g. a rhythmic list or a run of clauses), not when it is just an unbroken clause chain | Break up overly long sentences, restructure them for clarity or shorten them |",
-      "| Is any paragraph a single sentence longer than about 30 words | Determine the essence of the paragraph and rewrite it in multiple sentences or paragraphs as necessary |",
+      `| Are sentences kept to roughly ${SENTENCE_WORD_CAP} words or fewer as a soft cap; longer sentences are acceptable only when the length is clearly deliberate (e.g. a rhythmic list or a run of clauses), not when it is just an unbroken clause chain | Break up overly long sentences, restructure them for clarity or shorten them |`,
+      `| Is any paragraph a single sentence longer than about ${SENTENCE_WORD_CAP} words | Determine the essence of the paragraph and rewrite it in multiple sentences or paragraphs as necessary |`,
+      `| Are the paragraphs not quoted, or near quoted from the event descriptions | Ensure that the prose is original and not directly lifted from the event descriptions |`,      
       "",
       "## Result",
       "If the prose meets all these criteria, reply with [VALID]. Output nothing else after the tag.",
@@ -287,6 +309,7 @@ export async function prepareReaderReview(
         promptInput(narration.prompt),
         ...(instruction?.trim() ? ["", "# Specific review focus", instruction.trim()] : []),
         ...flaggedParagraphNote(findOverlongSingleSentenceParagraphs(narration.narration)),
+        ...trailingOffParagraphNote(narration.narration),
         "",
         "# Result to review",
         narration.narration,
@@ -295,7 +318,7 @@ export async function prepareReaderReview(
     previousResponseId: run.context_mode === "full"
       ? narration.prompt.previous_response_id
       : undefined,
-    reasoningEffort: run.reasoning_effort,
+    reasoningEffort: run.reviewer_reasoning_effort ?? run.reasoning_effort,
     store: run.context_mode === "full",
     narration: narration.narration,
   };
@@ -436,7 +459,7 @@ export async function applyReaderReview(
 
     target.revisions = [...(target.revisions ?? []), archiveCurrentVersion(target)];
     target.narration = target.review.narration;
-    target.reasoning = target.review.reasoning;
+    // Keep the original beat's reasoning: it reasoned through the correct events, only the prose needed the reviewer's fix.
     if (target.review.prompt) target.prompt = target.review.prompt;
     if (current.context_mode === "full") {
       branchFullContext(current, target, beatIndex, story.beats.length, target.review.response_id);
@@ -486,6 +509,9 @@ async function toState(root: string, run: ReaderRun): Promise<ReaderState> {
     context_mode: run.context_mode,
     reasoning_mode: run.reasoning_mode,
     reasoning_effort: run.reasoning_effort,
+    reviewer_model: run.reviewer_model,
+    reviewer_reasoning_mode: run.reviewer_reasoning_mode,
+    reviewer_reasoning_effort: run.reviewer_reasoning_effort,
     prose_window: run.prose_window,
     title: story.title,
     premise: story.premise,
@@ -508,7 +534,8 @@ export async function startReaderRun(
   proseWindow = 1,
   reasoningMode: ReaderRun["reasoning_mode"] = "native",
   reasoningEffort: ReaderRun["reasoning_effort"] = "default",
-  ongoingInstructions: string[] = []
+  ongoingInstructions: string[] = [],
+  reviewer?: ReviewerOptions
 ): Promise<ReaderState> {
   return toState(root, await createReaderRun(
     root,
@@ -518,7 +545,8 @@ export async function startReaderRun(
     proseWindow,
     reasoningMode,
     reasoningEffort,
-    ongoingInstructions
+    ongoingInstructions,
+    reviewer
   ));
 }
 

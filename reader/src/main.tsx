@@ -61,6 +61,9 @@ interface ReaderState {
   context_mode: ContextMode;
   reasoning_mode: ReasoningMode;
   reasoning_effort?: ReasoningEffort;
+  reviewer_model?: string;
+  reviewer_reasoning_mode?: ReasoningMode;
+  reviewer_reasoning_effort?: ReasoningEffort;
   prose_window: number;
   title: string;
   premise: string;
@@ -95,6 +98,10 @@ function App() {
   const [contextMode, setContextMode] = useState<ContextMode>("full");
   const [reasoningMode, setReasoningMode] = useState<ReasoningMode>("native");
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("default");
+  const [differentReviewer, setDifferentReviewer] = useState(false);
+  const [reviewerModel, setReviewerModel] = useState("");
+  const [reviewerReasoningMode, setReviewerReasoningMode] = useState<ReasoningMode>("native");
+  const [reviewerReasoningEffort, setReviewerReasoningEffort] = useState<ReasoningEffort>("default");
   const [proseWindow, setProseWindow] = useState(1);
   const [ongoingInstructions, setOngoingInstructions] = useState<string[]>([]);
   const [ongoingInstructionInput, setOngoingInstructionInput] = useState("");
@@ -152,6 +159,7 @@ function App() {
       setModels(modelResult.models);
       setStoryPath(storyResult.stories[0]?.path ?? "");
       setModel(modelResult.models[0] ?? "");
+      setReviewerModel(modelResult.models[0] ?? "");
     }).catch((reason) => setError(reason.message));
   }, []);
 
@@ -216,7 +224,7 @@ function App() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         story_path: run.story_path,
-        model,
+        model: run.reviewer_model || model,
         beat_index: beatIndex,
         instruction: instruction?.trim() || undefined,
       }),
@@ -532,6 +540,9 @@ function App() {
           reasoning_mode: reasoningMode,
           reasoning_effort: reasoningEffort,
           ongoing_instructions: ongoingInstructions,
+          reviewer_model: differentReviewer ? reviewerModel : undefined,
+          reviewer_reasoning_mode: differentReviewer ? reviewerReasoningMode : undefined,
+          reviewer_reasoning_effort: differentReviewer ? reviewerReasoningEffort : undefined,
         }),
       });
       setState(run);
@@ -556,6 +567,10 @@ function App() {
       setReasoningMode(resumed.reasoning_mode);
       setReasoningEffort(resumed.reasoning_effort ?? "default");
       setProseWindow(resumed.prose_window);
+      setDifferentReviewer(Boolean(resumed.reviewer_model));
+      setReviewerModel(resumed.reviewer_model ?? resumed.model ?? "");
+      setReviewerReasoningMode(resumed.reviewer_reasoning_mode ?? resumed.reasoning_mode);
+      setReviewerReasoningEffort(resumed.reviewer_reasoning_effort ?? resumed.reasoning_effort ?? "default");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -650,12 +665,74 @@ function App() {
                 onClick={() => setModelOptionsOpen(false)}
               >×</button>
             </div>
-            <label className="modal-field">
-              <span>Model</span>
-              <select aria-label="Model" value={model} onChange={(event) => setModel(event.target.value)}>
-                {models.map((item) => <option key={item}>{item}</option>)}
-              </select>
+            <label className="modal-field checkbox-field">
+              <input
+                type="checkbox"
+                checked={differentReviewer}
+                onChange={(event) => setDifferentReviewer(event.target.checked)}
+              />
+              <span>Different reviewer</span>
             </label>
+            <div className={differentReviewer ? "model-columns" : undefined}>
+              <div className="model-column">
+                {differentReviewer && <h3>Prose</h3>}
+                <label className="modal-field">
+                  <span>Model</span>
+                  <select aria-label="Model" value={model} onChange={(event) => setModel(event.target.value)}>
+                    {models.map((item) => <option key={item}>{item}</option>)}
+                  </select>
+                </label>
+                <label className="modal-field">
+                  <span>Reasoning mode</span>
+                  <select aria-label="Reasoning mode" value={reasoningMode} onChange={(event) => setReasoningMode(event.target.value as ReasoningMode)}>
+                    <option value="native">Native reasoning</option>
+                    <option value="template_think">Template /think ([THINK])</option>
+                    <option value="think">XML &lt;think&gt;</option>
+                    <option value="thinking">XML &lt;thinking&gt;</option>
+                  </select>
+                </label>
+                <label className="modal-field">
+                  <span>Reasoning effort</span>
+                  <select aria-label="Reasoning effort" value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort)}>
+                    <option value="default">Model default effort</option>
+                    <option value="off">Reasoning off</option>
+                    <option value="low">Low effort</option>
+                    <option value="medium">Medium effort</option>
+                    <option value="high">High effort</option>
+                  </select>
+                </label>
+              </div>
+              {differentReviewer && (
+                <div className="model-column">
+                  <h3>Reviewer</h3>
+                  <label className="modal-field">
+                    <span>Model</span>
+                    <select aria-label="Reviewer model" value={reviewerModel} onChange={(event) => setReviewerModel(event.target.value)}>
+                      {models.map((item) => <option key={item}>{item}</option>)}
+                    </select>
+                  </label>
+                  <label className="modal-field">
+                    <span>Reasoning mode</span>
+                    <select aria-label="Reviewer reasoning mode" value={reviewerReasoningMode} onChange={(event) => setReviewerReasoningMode(event.target.value as ReasoningMode)}>
+                      <option value="native">Native reasoning</option>
+                      <option value="template_think">Template /think ([THINK])</option>
+                      <option value="think">XML &lt;think&gt;</option>
+                      <option value="thinking">XML &lt;thinking&gt;</option>
+                    </select>
+                  </label>
+                  <label className="modal-field">
+                    <span>Reasoning effort</span>
+                    <select aria-label="Reviewer reasoning effort" value={reviewerReasoningEffort} onChange={(event) => setReviewerReasoningEffort(event.target.value as ReasoningEffort)}>
+                      <option value="default">Model default effort</option>
+                      <option value="off">Reasoning off</option>
+                      <option value="low">Low effort</option>
+                      <option value="medium">Medium effort</option>
+                      <option value="high">High effort</option>
+                    </select>
+                  </label>
+                </div>
+              )}
+            </div>
             <label className="modal-field">
               <span>Narration context</span>
               <select aria-label="Narration context" value={contextMode} onChange={(event) => setContextMode(event.target.value as ContextMode)}>
@@ -677,25 +754,6 @@ function App() {
                 />
               </label>
             )}
-            <label className="modal-field">
-              <span>Reasoning mode</span>
-              <select aria-label="Reasoning mode" value={reasoningMode} onChange={(event) => setReasoningMode(event.target.value as ReasoningMode)}>
-                <option value="native">Native reasoning</option>
-                <option value="template_think">Template /think ([THINK])</option>
-                <option value="think">XML &lt;think&gt;</option>
-                <option value="thinking">XML &lt;thinking&gt;</option>
-              </select>
-            </label>
-            <label className="modal-field">
-              <span>Reasoning effort</span>
-              <select aria-label="Reasoning effort" value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort)}>
-                <option value="default">Model default effort</option>
-                <option value="off">Reasoning off</option>
-                <option value="low">Low effort</option>
-                <option value="medium">Medium effort</option>
-                <option value="high">High effort</option>
-              </select>
-            </label>
             <div className="modal-field">
               <span>Ongoing instructions</span>
               {ongoingInstructions.length > 0 && (

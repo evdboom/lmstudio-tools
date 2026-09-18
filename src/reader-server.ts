@@ -26,20 +26,21 @@ import {
   dismissReaderReview,
   getReaderState,
   prepareReaderBeatRegeneration,
+  prepareReaderGenerationPass,
   prepareReaderGeneration,
-  prepareReaderIteration,
   prepareReaderReview,
   resolveReviewNarration,
   saveReaderDraft,
+  saveReaderIteration,
   saveReaderReview,
   startReaderRun,
 } from "./reader-service.js";
-import { DISTINCT_ITERATION_FOCUSES, type ReaderChatMessage } from "./reader-prompts.js";
+import { iterationFocuses, type ReaderChatMessage } from "./reader-prompts.js";
 import { buildBeatDesignPrompt, parseBeatDraft } from "./reader-beat-design.js";
 import { buildCharacterDesignPrompt, parseCharacterDraft } from "./reader-character-design.js";
 import { buildLocationDesignPrompt, parseLocationDraft } from "./reader-location-design.js";
 import { storyBlueprintSchema } from "./story-model.js";
-import { deleteReaderRun, GenerationMode, listFinalStories, listReaderRuns, RunRequest } from "./reader-store.js";
+import { deleteReaderRun, GenerationMode, listFinalStories, listReaderRuns, RunRequest, type ReaderIteration } from "./reader-store.js";
 import {
   listEditableStories,
   readEditableStory,
@@ -97,6 +98,8 @@ interface ReaderGenerationPlan {
   generationMode: GenerationMode;
   iterationCount: number;
   iterationSeed?: string;
+  includeIterations: "none" | "last" | "full";
+  iterations?: ReaderIteration[];
   storeResponse: boolean;
 }
 
@@ -120,15 +123,9 @@ async function streamReaderGeneration(options: {
   prompt: { messages: ReaderChatMessage[]; system_prompt?: string; previous_response_id?: string };
   storeResponse: boolean;
 }> {
-  let passFocuses: readonly string[] = [];
-  if (options.plan.generationMode === "distinct") {
-    passFocuses = DISTINCT_ITERATION_FOCUSES;
-  } else if (options.plan.generationMode === "recurring") {
-    passFocuses = Array.from({ length: options.plan.iterationCount }, () => "Improve this story.");
-  }
+  const passFocuses = iterationFocuses(options.plan.generationMode, options.plan.iterationCount);
   let messages = options.plan.messages;
   let systemPrompt = options.plan.systemPrompt;
-  let candidate = options.plan.iterationSeed;
   let generated: Awaited<ReturnType<typeof streamLmStudioNarration>> | undefined;
 
   const runPass = async (store: boolean) => streamLmStudioNarration({
@@ -145,6 +142,7 @@ async function streamReaderGeneration(options: {
     onDelta: (delta) => options.reply.raw.write(`event: delta\ndata: ${JSON.stringify(delta)}\n\n`),
     onReasoning: () => {
       const status = `The model is reasoning about beat ${options.beatNumber}...`;
+      options.reply.raw.write(`event: phase\ndata: ${JSON.stringify({ name: "reasoning", beat: options.beatNumber })}\n\n`);
       options.reply.raw.write(`event: status\ndata: ${JSON.stringify(status)}\n\n`);
     },
     onReasoningDelta: (delta) => options.reply.raw.write(`event: reasoning\ndata: ${JSON.stringify(delta)}\n\n`),
@@ -154,28 +152,45 @@ async function streamReaderGeneration(options: {
 
   if (passFocuses.length === 0) {
     generated = await runPass(options.plan.storeResponse);
+    options.reply.raw.write(`event: phase\ndata: ${JSON.stringify({ name: "parsing", beat: options.beatNumber })}\n\n`);
+    options.reply.raw.write(`event: draft\ndata: ${JSON.stringify(generated.narration)}\n\n`);
   } else {
-    if (!candidate) throw new Error("Iterative generation has no event scaffold.");
     for (let index = 0; index < passFocuses.length; index += 1) {
       const passNumber = index + 1;
-      const label = options.plan.generationMode === "distinct"
-        ? ["Building the rough scene", "Improving causality and pacing", "Polishing the prose"][index]
-        : `Improving the story (${passNumber}/${passFocuses.length})`;
-      const status = `${label}...`;
+      const focus = passFocuses[index];
+      const status = `Improving beat ${options.beatNumber} (${passNumber}/${passFocuses.length})${focus ? `: ${focus}` : ""}...`;
+      options.reply.raw.write(`event: phase\ndata: ${JSON.stringify({ name: "drafting", beat: options.beatNumber, pass: passNumber, total: passFocuses.length, focus })}\n\n`);
       options.reply.raw.write(`event: restart\ndata: ${JSON.stringify(status)}\n\n`);
-      const prompt = await prepareReaderIteration(
-        options.root,
-        options.storyPath,
-        options.runId,
-        options.beatIndex,
-        { messages: options.plan.messages, systemPrompt: options.plan.systemPrompt ?? "" },
-        candidate,
-        passFocuses[index]
-      );
+      const prompt = index === 0
+        ? { messages, systemPrompt }
+        : await prepareReaderGenerationPass(
+          options.root,
+          options.storyPath,
+          options.runId,
+          options.beatIndex,
+          passNumber,
+          passFocuses.length,
+          focus,
+          passFocuses.slice(index + 1)
+        );
       messages = prompt.messages;
       systemPrompt = prompt.systemPrompt;
       generated = await runPass(index === passFocuses.length - 1 && options.plan.storeResponse);
-      candidate = generated.narration;
+      options.reply.raw.write(`event: phase\ndata: ${JSON.stringify({ name: "parsing", beat: options.beatNumber, pass: passNumber, total: passFocuses.length })}\n\n`);
+      options.reply.raw.write(`event: draft\ndata: ${JSON.stringify(generated.narration)}\n\n`);
+      await saveReaderIteration(options.root, options.storyPath, options.runId, {
+        pass: passNumber,
+        total: passFocuses.length,
+        focus,
+        narration: generated.narration,
+        reasoning: generated.reasoning || undefined,
+        prompt: {
+          messages,
+          system_prompt: systemPrompt,
+          previous_response_id: options.plan.previousResponseId,
+        },
+        created_at: new Date().toISOString(),
+      });
     }
   }
 
@@ -349,6 +364,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       generation_mode: z.enum(["direct", "distinct", "recurring"]).default("direct"),
       iteration_count: z.number().int().min(1).max(20).default(3),
       prose_window: z.number().int().min(0).max(20).default(1),
+      include_iterations: z.enum(["none", "last", "full"]).default("none"),
       reasoning_mode: z.enum(["native", "template_think", "think", "thinking"]).default("native"),
       reasoning_effort: z.enum(["default", "off", "low", "medium", "high"]).default("default"),
       ongoing_instructions: z.array(z.string().trim().min(1)).default([]),
@@ -363,6 +379,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         story_path: parsed.data.story_path,
         model: parsed.data.model,
         prose_window: parsed.data.prose_window,
+        include_iterations: parsed.data.include_iterations,
         reasoning_mode: parsed.data.reasoning_mode,
         reasoning_effort: parsed.data.reasoning_effort,
         ongoing_instructions: parsed.data.ongoing_instructions,
@@ -467,6 +484,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
     try {
       reply.raw.write(`event: state\ndata: ${JSON.stringify(prepared.generationState)}\n\n`);
       const beatNumber = prepared.generationState!.beat_index + 1;
+      reply.raw.write(`event: phase\ndata: ${JSON.stringify({ name: "preparing", beat: beatNumber })}\n\n`);
       reply.raw.write(`event: status\ndata: ${JSON.stringify(`Preparing beat ${beatNumber}...`)}\n\n`);
       const storeResponse = false;
       const generated = await streamReaderGeneration({
@@ -487,6 +505,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
           generationMode: prepared.generationState!.generation_mode,
           iterationCount: prepared.generationState!.iteration_count,
           iterationSeed: prepared.iterationSeed,
+          includeIterations: prepared.generationState!.include_iterations,
           storeResponse,
         },
         reply,
@@ -565,6 +584,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
     let reviewVerdictHandled = false;
     try {
       const beatNumber = body.data.beat_index + 1;
+      reply.raw.write(`event: phase\ndata: ${JSON.stringify({ name: "preparing", beat: beatNumber })}\n\n`);
       reply.raw.write(`event: status\ndata: ${JSON.stringify(`Reviewing beat ${beatNumber}...`)}\n\n`);
       const generated = await streamLmStudioNarration({
         baseUrl: options.lmStudioUrl,
@@ -589,6 +609,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
           reply.raw.write(`event: delta\ndata: ${JSON.stringify(delta)}\n\n`);
         },
         onReasoning: () => {
+          reply.raw.write(`event: phase\ndata: ${JSON.stringify({ name: "reasoning", beat: beatNumber })}\n\n`);
           reply.raw.write(`event: status\ndata: ${JSON.stringify(`The model is reasoning about beat ${beatNumber}...`)}\n\n`);
         },
         onReasoningDelta: (delta) => {
@@ -599,6 +620,8 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         },
       });
       const resolved = resolveReviewNarration(review.narration, generated.narration);
+      reply.raw.write(`event: phase\ndata: ${JSON.stringify({ name: "parsing", beat: beatNumber })}\n\n`);
+      reply.raw.write(`event: draft\ndata: ${JSON.stringify(resolved.narration)}\n\n`);
       const state = await saveReaderReview(
         options.root,
         body.data.story_path,
@@ -668,6 +691,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
     });
     try {
       const beatNumber = body.data.beat_index + 1;
+      reply.raw.write(`event: phase\ndata: ${JSON.stringify({ name: "preparing", beat: beatNumber })}\n\n`);
       reply.raw.write(`event: status\ndata: ${JSON.stringify(`Regenerating beat ${beatNumber}...`)}\n\n`);
       const generated = await streamReaderGeneration({
         root: options.root,
@@ -687,6 +711,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
           generationMode: regeneration.generationMode,
           iterationCount: regeneration.iterationCount,
           iterationSeed: regeneration.iterationSeed,
+          includeIterations: (await getReaderState(options.root, body.data.story_path, params.data.runId)).include_iterations,
           storeResponse: regeneration.store,
         },
         reply,

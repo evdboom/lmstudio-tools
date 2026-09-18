@@ -392,3 +392,12 @@ Fact selection carries over exactly — a v2 `beat.facts` listing becomes the fa
 npm run build
 npm test
 ```
+
+For real browser interaction tests, install the Playwright browser once and run:
+
+```bash
+npx playwright install chromium
+npm run test:browser
+```
+
+The browser suite builds the reader, starts the real Fastify reader server against a temporary finalized story, and uses a local HTTP mock for LM Studio streaming responses. It therefore exercises UI clicks, SSE updates, iterative draft replacement, and persisted run behavior without requiring LM Studio.

@@ -24,6 +24,7 @@
     "dev:reader": "npm run build:reader && tsx src/reader-server.ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:browser": "npm run build:all && playwright test",
     "migrate:stories": "node dist/migrate-cli.js"
   },
   "dependencies": {
@@ -37,6 +38,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/node": "^22.10.2",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",

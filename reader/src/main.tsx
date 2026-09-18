@@ -32,6 +32,7 @@ function App() {
   const [model, setModel] = useState("");
   const [generationMode, setGenerationMode] = useState<GenerationMode>("direct");
   const [iterationCount, setIterationCount] = useState(3);
+  const [includeIterations, setIncludeIterations] = useState<"none" | "last" | "full">("none");
   const [reasoningMode, setReasoningMode] = useState<ReasoningMode>("native");
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("default");
   const [differentReviewer, setDifferentReviewer] = useState(false);
@@ -118,6 +119,8 @@ function App() {
     onDelta?: (value: string) => void;
     onState?: (value: ReaderState) => void;
     onRestart?: (value: string) => void;
+    onDraft?: (value: string) => void;
+    onPhase?: (value: { name: string; beat?: number; pass?: number; total?: number; focus?: string }) => void;
   }): Promise<ReaderState> {
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
@@ -137,6 +140,8 @@ function App() {
         if (type === "reasoning") handlers.onReasoning?.(JSON.parse(data));
         if (type === "delta") handlers.onDelta?.(JSON.parse(data));
         if (type === "restart") handlers.onRestart?.(JSON.parse(data));
+        if (type === "draft") handlers.onDraft?.(JSON.parse(data));
+        if (type === "phase") handlers.onPhase?.(JSON.parse(data));
         if (type === "done") result = JSON.parse(data);
         if (type === "error") throw new Error(JSON.parse(data));
       }
@@ -172,8 +177,10 @@ function App() {
     }
     const reviewed = await readEventStream(response, {
       onStatus: setActionStatus,
+      onPhase: (phase) => setActionStatus(`${phase.name} beat ${phase.beat ?? beatIndex}`),
       onReasoning: (value) => setActionReasoning((current) => current + value),
       onDelta: (value) => setActionStreamed((current) => current + value),
+      onDraft: (value) => setActionStreamed(value),
     });
     setState(reviewed);
     setVisibleReviews((current) => new Set(current).add(beatIndex));
@@ -290,8 +297,14 @@ function App() {
       }
       let regenerated = await readEventStream(response, {
         onStatus: setActionStatus,
+        onPhase: (phase) => setActionStatus(
+          phase.pass && phase.total
+            ? `${phase.name} beat ${phase.beat ?? beatIndex + 1} (${phase.pass}/${phase.total})${phase.focus ? `: ${phase.focus}` : ""}`
+            : `${phase.name} beat ${phase.beat ?? beatIndex + 1}`
+        ),
         onReasoning: (value) => setActionReasoning((current) => current + value),
         onDelta: (value) => setActionStreamed((current) => current + value),
+        onDraft: (value) => setActionStreamed(value),
         onRestart: (value) => {
           setActionStreamed("");
           setActionReasoning("");
@@ -352,11 +365,17 @@ function App() {
       completedState = await readEventStream(response, {
         onState: setState,
         onStatus: setGenerationStatus,
+        onPhase: (phase) => setGenerationStatus(
+          phase.pass && phase.total
+            ? `${phase.name} beat ${phase.beat ?? completedState?.beat_index ?? ""} (${phase.pass}/${phase.total})${phase.focus ? `: ${phase.focus}` : ""}`
+            : `${phase.name} beat ${phase.beat ?? ""}`
+        ),
         onReasoning: (value) => setReasoning((current) => current + value),
         onDelta: (value) => {
           setGenerationStatus("Writing the beat...");
           setStreamed((current) => current + value);
         },
+        onDraft: (value) => setStreamed(value),
         onRestart: (value) => {
           setStreamed("");
           setReasoning("");
@@ -466,6 +485,7 @@ function App() {
           model,
           generation_mode: generationMode,
           iteration_count: iterationCount,
+          include_iterations: includeIterations,
           prose_window: proseWindow,
           reasoning_mode: reasoningMode,
           reasoning_effort: reasoningEffort,
@@ -495,6 +515,7 @@ function App() {
       if (resumed.model) setModel(resumed.model);
       setGenerationMode(resumed.generation_mode);
       setIterationCount(resumed.iteration_count);
+      setIncludeIterations(resumed.include_iterations);
       setReasoningMode(resumed.reasoning_mode);
       setReasoningEffort(resumed.reasoning_effort ?? "default");
       setProseWindow(resumed.prose_window);
@@ -660,6 +681,16 @@ function App() {
                   value={iterationCount}
                   onChange={(event) => setIterationCount(Math.max(1, Math.min(20, Number(event.target.value) || 1)))}
                 />
+              </label>
+            )}
+            {generationMode !== "direct" && (
+              <label className="modal-field">
+                <span>Include earlier iterations</span>
+                <select aria-label="Include earlier iterations" value={includeIterations} onChange={(event) => setIncludeIterations(event.target.value as "none" | "last" | "full")}>
+                  <option value="none">None</option>
+                  <option value="last">Last iteration</option>
+                  <option value="full">All iterations</option>
+                </select>
               </label>
             )}
             <label className="modal-field" title="Higher values give more context and consistency, but can cause more instruction drift.">

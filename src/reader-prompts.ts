@@ -1,4 +1,4 @@
-import { SENTENCE_WORD_CAP } from "./reader-service.js";
+import { SENTENCE_WORD_CAP, TRAILING_OFF_PARAGRAPH_WINDOW } from "./reader-store.js";
 import {
   beatNarrationMode,
   describeBeatBudget,
@@ -37,11 +37,42 @@ export const DISTINCT_ITERATION_FOCUSES = [
   "Polish the complete scene for voice, clarity, sentence and paragraph quality, narration-rule compliance, and the word budget. Preserve every event and its order.",
 ] as const;
 
+export function iterationFocuses(mode: "direct" | "distinct" | "recurring", count: number): string[] {
+  if (mode === "direct") return [];
+  if (mode === "distinct") return [...DISTINCT_ITERATION_FOCUSES].slice(0, count);
+  return Array.from({ length: count }, () => "Improve the story.");
+}
+
 export interface AcceptedNarration {
   beatIndex: number;
   narration: string;
   instruction?: string;
   reasoning?: string;
+}
+
+export interface IterationNarration {
+  pass: number;
+  total: number;
+  focus?: string;
+  narration: string;
+  reasoning?: string;
+}
+
+export interface NarrationBuildOptions {
+  story: StoryBlueprint;
+  beatIndex: number;
+  proseBeats: number;
+  accepted: AcceptedNarration[];
+  instruction?: string;
+  reasoningMode?: ReasoningMode;
+  iterative?: {
+    pass: number;
+    total: number;
+    focus?: string;
+    remainingFocuses: string[];
+    includeIterations: "none" | "last" | "full";
+    iterations?: IterationNarration[];
+  };
 }
 
 /** The beat request itself, which is always the closing turn. */
@@ -87,21 +118,88 @@ export function taggedReasoningRule(mode: ReasoningMode): string[] {
   ];
 }
 
-function renderSystemPrompt(story: StoryBlueprint, reasoningMode: ReasoningMode, beatIndex: number, runMode: string): string[] {
+export function renderAutomatedFlags(flaggedForLength: Array<{ index: number; words: number }>, trailingParagraphs: { first: number; count: number } | null): string[] {
+  if (!flaggedForLength.length && !trailingParagraphs) return [];
+  const list = flaggedForLength.map(({ index, words }) => `- paragraph ${index} (${words} words)`);
+  
+  if (list.length && trailingParagraphs) {
+    list.push("");
+  }
+  if (!list.length && !trailingParagraphs) return [];
+
+  return [
+    "# Automated flags",
+    ...(list.length ? [
+      `Deterministic scan found single-sentence paragraph(s) over the ${SENTENCE_WORD_CAP}-word soft cap.`,
+       "Pay extra attention to these; confirm whether they should be split into multiple sentences or shortened before deciding your verdict."
+    ] : []),
+    ...list,
+    ...(trailingParagraphs ? [    
+        `The final ${TRAILING_OFF_PARAGRAPH_WINDOW} paragraphs (${trailingParagraphs.first}-${trailingParagraphs.first + trailingParagraphs.count - 1}) all end with an ellipsis or bare em dash.`,
+        "Decide whether this is deliberate style or repeated unfinished thoughts; revise only if it harms completeness or coherence.",    
+    ] : []),
+    ""
+  ];
+}
+
+export function renderReviewerSystemPrompt(reasoningMode: ReasoningMode): string[] {
+  return [
+      "# Task",
+      "You are a strict fiction editor reviewing one generated story beat.",
+      "",
+      "# Response format and reasoning",
+      ...taggedReasoningRule(reasoningMode),      
+      "",
+      "# Review instructions",      
+      "Validate the prose against the original instructions:",
+      "| Criterion | Fix if not met |",
+      "|-----------|----------------|",
+      "| Does every event occur and occur in order | Add missing events, or reorder them as necessary while making sure transitions are correct |",
+      "| Does the prose end before the future beat begins | Ensure the prose concludes appropriately before the next beat starts |",
+      "| Is the prose within the word budget | Adjust the prose to fit within the specified word limit, trimming or expanding as necessary |",
+      "| Are viewpoint, tense, and established canon maintained | Correct any inconsistencies in viewpoint, tense, or established canon |",
+      "| Is the prose coherent with well defined paragraphs and sentences | Restructure paragraphs and sentences to improve clarity and flow |",
+      "| Are all sentences well defined as in not stopping abruptly or ending with incomplete thoughts | Revise sentences to ensure they are complete and coherent |",
+      "| Are there no sentence fragments, run-on sentences, repetitive phrasing, filler, word-list padding, nonsensical escalation, abrupt topic shifts, meta-commentary, or irrelevant material | Edit the prose to remove any of these issues |",
+      "| Do sentences end with appropriate punctuation; reject an unexplained trailing em dash that leaves a sentence unfinished | Correct punctuation errors and remove any inappropriate trailing em dashes |",
+      `| Are sentences kept to roughly ${SENTENCE_WORD_CAP} words or fewer as a soft cap; longer sentences are acceptable only when the length is clearly deliberate (e.g. a rhythmic list or a run of clauses) or only a little over, not when it is just an unbroken clause chain | Break up overly long sentences, restructure them for clarity or shorten them |`,
+      `| Are the paragraphs not quoted, or near quoted from the event descriptions | Ensure that the prose is original and not directly lifted from the event descriptions |`,      
+      "",
+      "## Result",
+      "If the prose meets all these criteria, reply with [VALID]. Output nothing else after the tag.",
+      "",
+      "If the prose so far is correct but incomplete, think carefully about what is missing and how to continue it appropriately.",
+      "Start your reply with the [APPEND] tag on its own line. Follow it with the missing continuation of the prose.",
+      "",
+      "Otherwise, if the prose contains errors or deviates from the instructions, think carefully about what fixes need to be applied. This can require just a corrected paragraph, sentence but also a complete rewrite.",
+      "Start your reply with the [REPLACE] tag on its own line. Follow it with the complete corrected prose for the entire beat.",
+      "",
+      "Do not add other tags, headings, verdicts, or code fences.",
+    ]
+}
+
+function renderSystemPrompt(story: StoryBlueprint, reasoningMode: ReasoningMode, beatIndex: number, iterative: boolean): string[] {
 
   const currentBeat = story.beats[beatIndex];
   const mode = beatNarrationMode(story, currentBeat);
   if (!mode) throw new Error(`Beat ${beatIndex} references an unknown narration mode.`);
   const locus = reasoningLocus(reasoningMode);
 
+  const task = iterative ? [
+      `You are an expert fiction writer and are working on a scene of the story: '${story.title}'.`,
+      "You are passing over your previous iterations of the scene: improve the supplied story draft.",
+  ]  : [
+    `You are an expert fiction writer. Write the next scene of the story: '${story.title}' as polished fictional prose.`
+  ];
+
   return [
     ...(reasoningMode === "template_think" ? ["/think",""] : []),
     "# Task",
-    `You are an expert fiction writer. Write the ${runMode === "full" ? "story" : "next scene"} of ${story.title} as polished fictional prose.`,
+    ...task,
     "",
     "# Output contract",
     ...taggedReasoningRule(reasoningMode),
-    "- The final answer must be the complete fictional scene and nothing else. Never mention these instructions.",
+    `- The final answer must be the complete ${iterative ? "revised" : "fictional"} scene and nothing else. Never mention these instructions.`,
     "",
     "# Private plan",
     `- Before drafting, ${locus} only, make a brief ordered checklist of the scene outcomes, pacing, and transitions. Check each outcome against the supplied context.`,
@@ -141,57 +239,6 @@ export function buildIterationSeed(story: StoryBlueprint, beatIndex: number): st
   return assertBeat(story, beatIndex).events
     .map((event, index) => `${index + 1}. ${event}`)
     .join("\n");
-}
-
-/** A compact full-rewrite pass over a scaffold or the previous pass's complete prose. */
-export function buildIterativeNarrationInput(
-  story: StoryBlueprint,
-  beatIndex: number,
-  context: NarrationRequest,
-  candidate: string,
-  focus: string,
-  reasoningMode: ReasoningMode = "native"
-): NarrationRequest {
-  const beat = assertBeat(story, beatIndex);
-  const mode = beatNarrationMode(story, beat);
-  if (!mode) throw new Error(`Beat ${beatIndex} references an unknown narration mode.`);
-  const closing = context.messages.at(-1);
-  if (closing?.role !== "user") throw new Error("Iterative context must end with a user turn.");
-
-  return {
-    systemPrompt: [
-      ...(reasoningMode === "template_think" ? ["/think", ""] : []),
-      "# Task",
-      "Improve the supplied story draft as one complete fictional scene.",
-      "",
-      "# Output contract",
-      ...taggedReasoningRule(reasoningMode),
-      "- Output the complete revised scene and nothing else. Never output a critique, plan, heading, or partial patch.",
-      "- Preserve every listed event, its order, established canon, and the next-beat boundary.",
-      `- Use ${mode.perspective} perspective and ${mode.tense} tense.`,
-      `- Keep the complete scene within ${describeBeatBudget(story.beat_budget)}.`,
-      "",
-      "# Pass focus",
-      focus,
-      "",
-      "# Narration rules",
-      ...resolveNarrationRules(story, mode).map((rule) => `- ${rule}`),
-      ...beat.narration_rules.map((rule) => `- ${rule}`),
-    ].join("\n"),
-    messages: context.messages.map((message, index) => index === context.messages.length - 1
-      ? {
-        ...message,
-        content: [
-          message.content,
-          "",
-          "# Draft to improve",
-          candidate,
-          "",
-          "Return the complete revised scene only.",
-        ].join("\n"),
-      }
-      : message),
-  };
 }
 
 /**
@@ -384,42 +431,6 @@ function stopLine(beatIndex: number): string {
 }
 
 /**
- * `full` context mode: the whole story stays in the model's own context, so
- * only the beat block goes on the wire once the response chain is established.
- */
-export function buildStatefulNarrationInput(
-  story: StoryBlueprint,
-  beatIndex: number,
-  instruction?: string,
-  isFirstPrompt = false,
-  reasoningMode: ReasoningMode = "native"
-): NarrationRequest {
-  assertBeat(story, beatIndex);
-
-  const storyPremise = isFirstPrompt 
-    ? [
-      "# Write the story",
-      ...renderAssignment(story),
-      "",
-    ]
-    : [];
-
-  return {
-    // `instructions` is not inherited across previous_response_id, so it is resent every turn.
-    systemPrompt: renderSystemPrompt(story, reasoningMode, beatIndex, "full").join("\n"),
-    messages: [{
-      role: "user",
-      content: [
-        ...storyPremise,
-        ...renderBeatPrompt(story, beatIndex, instruction),
-        ...renderFacts(story, beatIndex),
-        stopLine(beatIndex),
-      ].join("\n"),
-    }],
-  };
-}
-
-/**
  *
  * Cost per beat stays flat — the history grows by roughly one line per accepted
  * beat while the prose window is fixed — so a long story never reaches the
@@ -436,29 +447,50 @@ export function buildStatefulNarrationInput(
  * them, so their prose arrives as the model's own assistant output rather than
  * as quoted text inside an instruction.
  */
-export function buildNarrationInput(
-  story: StoryBlueprint,
-  beatIndex: number,
-  proseBeats: number,
-  accepted: AcceptedNarration[],
-  instruction?: string,  
-  reasoningMode: ReasoningMode = "native"
-): NarrationRequest {
+export function buildNarrationInput(options: NarrationBuildOptions): NarrationRequest {
+  const {
+    story,
+    beatIndex,
+    proseBeats,
+    accepted,
+    instruction,
+    reasoningMode = "native",
+    iterative,
+  } = options;
   assertBeat(story, beatIndex);
   if (proseBeats > 0) assertAcceptedHistory(accepted, beatIndex);
 
   const windowSize = Math.max(0, Math.min(proseBeats, accepted.length));
   const windowStart = beatIndex - windowSize;
-  const prose = accepted.slice(windowStart);
+  const prose = accepted.slice(windowStart);  
 
   const head = [
-    "# Write the following scene",
+    iterative ? "# Improve the following scene" : "# Write the following scene",
     ...renderAssignment(story),
     ...renderHistory(story, 0, windowStart),
   ];
+  const iterationHistory = iterative?.includeIterations === "full"
+    ? iterative.iterations ?? []
+    : iterative?.includeIterations === "last"
+      ? (iterative.iterations ?? []).slice(-1)
+      : [];
+    const draftToImprove = iterative?.includeIterations === "none"
+      ? iterative.iterations?.at(-1)
+      : undefined;
+    const iterationInstruction = iterative ? [
+    `## Iteration ${iterative.pass}/${iterative.total}`,
+    ...(iterative.focus ? [`**Current focus**: ${iterative.focus}`] : []),
+    ...(iterative.remainingFocuses.length > 0
+      ? [`**Still to come**: ${iterative.remainingFocuses.join("; ")}`]
+      : []),
+    "Improve the supplied draft while preserving the authored events and their order.",
+  ] : [];
   const tail = [  
     ...renderFacts(story, beatIndex),
-    ...renderBeatPrompt(story, beatIndex, instruction),
+    ...(iterationHistory.length === 0 && !draftToImprove
+      ? renderBeatPrompt(story, beatIndex, instruction)
+      : ["# Current draft is supplied in the preceding assistant turn."]),
+    ...iterationInstruction,
     stopLine(beatIndex),
   ];
 
@@ -475,13 +507,36 @@ export function buildNarrationInput(
     },
     { role: "assistant" as const, content: `${parseReasoning(item.reasoning, reasoningMode)}${item.narration}` },
   ]);
+  if (iterationHistory.length > 0) {
+    for (const [index, item] of iterationHistory.entries()) {
+      messages.push({
+        role: "user",
+        content: [
+          ...(index === 0 && prose.length === 0 ? head : []),
+          `## Earlier iteration ${item.pass}/${item.total}`,
+          ...(item.focus ? [`**Focus**: ${item.focus}`] : []),
+        ].join("\n"),
+      });
+      messages.push({
+        role: "assistant",
+        content: `${parseReasoning(item.reasoning, reasoningMode)}${item.narration}`,
+      });
+    }
+  }
+  if (draftToImprove) {
+    messages.push({ role: "user", content: "## Draft to improve" });
+    messages.push({
+      role: "assistant",
+      content: `${parseReasoning(draftToImprove.reasoning, reasoningMode)}${draftToImprove.narration}`,
+    });
+  }
   messages.push({
     role: "user",
-    content: [...(prose.length === 0 ? head : [ "# Now write the next scene" ]), ...tail].join("\n"),
+    content: [...(prose.length === 0 && iterationHistory.length === 0 && !draftToImprove ? head : [iterative ? "# Improve the current scene" : "# Now write the next scene"]), ...tail].join("\n"),
   });
 
   return {
-    systemPrompt: renderSystemPrompt(story, reasoningMode, beatIndex, "blueprint").join("\n"),
+    systemPrompt: renderSystemPrompt(story, reasoningMode, beatIndex, !!iterative).join("\n"),
     messages,
   };
 }
@@ -528,7 +583,7 @@ function characterCard(story: StoryBlueprint, characterId: string, established: 
         :" [established]"
       }`,
       character.description,
-      `${character.appearance ? `*Appearance*: ${character.appearance}` : ""}`,
+      ...(character.appearance ? [`*Appearance*: ${character.appearance}`] : []),
       hasDetails ? "*Details*:" : "",
       ...character.attributes.map((attr) => `  - ${attr}`),
       ...activeState

@@ -38,6 +38,16 @@ const narrationRevisionSchema = z.object({
   replaced_at: z.string().datetime(),
 });
 
+const readerIterationSchema = z.object({
+  pass: z.number().int().positive(),
+  total: z.number().int().positive(),
+  focus: z.string().optional(),
+  narration: z.string().min(1),
+  reasoning: z.string().optional(),
+  prompt: narrationPromptSchema.optional(),
+  created_at: z.string().datetime(),
+});
+
 const acceptedNarrationSchema = z.object({
   beat_index: z.number().int().nonnegative(),
   narration: z.string().min(1),
@@ -48,6 +58,7 @@ const acceptedNarrationSchema = z.object({
   prompt: narrationPromptSchema.optional(),
   review: narrationReviewSchema.optional(),
   revisions: z.array(narrationRevisionSchema).optional(),
+  iterations: z.array(readerIterationSchema).optional(),
 });
 
 const draftNarrationSchema = z.object({
@@ -59,6 +70,7 @@ const draftNarrationSchema = z.object({
   prompt: narrationPromptSchema.optional(),
   review: narrationReviewSchema.optional(),
   revisions: z.array(narrationRevisionSchema).optional(),
+  iterations: z.array(readerIterationSchema).optional(),
 });
 
 export const readerRunSchema = z.object({
@@ -78,6 +90,7 @@ export const readerRunSchema = z.object({
   reviewer_reasoning_effort: z.enum(["default", "off", "low", "medium", "high"]).optional(),
   /** How many recent beats are carried as verbatim prose. */
   prose_window: z.number().int().min(0).max(20).default(1),
+  include_iterations: z.enum(["none", "last", "full"]).default("none"),
   beat_index: z.number().int().nonnegative(),
   accepted: z.array(acceptedNarrationSchema),
   ongoing_instructions: z.array(z.string().min(1)),
@@ -87,8 +100,12 @@ export const readerRunSchema = z.object({
   status: z.enum(["active", "completed"]),
 });
 
+export const SENTENCE_WORD_CAP = 30;
+export const TRAILING_OFF_PARAGRAPH_WINDOW = 5;
+
 export type ReaderRun = z.infer<typeof readerRunSchema>;
 export type NarrationPrompt = z.infer<typeof narrationPromptSchema>;
+export type ReaderIteration = z.infer<typeof readerIterationSchema>;
 
 const mutationQueues = new Map<string, Promise<void>>();
 
@@ -147,6 +164,7 @@ export async function createReaderRun(request: RunRequest): Promise<ReaderRun> {
     reviewer_reasoning_mode: request.reviewer?.reasoningMode,
     reviewer_reasoning_effort: request.reviewer?.reasoningEffort,
     prose_window: request.prose_window,
+    include_iterations: request.include_iterations,
     beat_index: 0,
     accepted: [],
     ongoing_instructions: request.ongoing_instructions,
@@ -328,6 +346,7 @@ export interface RunRequest {
   story_path: string;
   model?: string;
   prose_window: number;
+  include_iterations: "none" | "last" | "full";
   reasoning_mode: ReasoningMode;
   reasoning_effort: ReasoningEffort;
   ongoing_instructions: string[];
@@ -351,7 +370,7 @@ export interface NarrationReview {
   model: string;
   reviewed_at: string;
 }
-export interface Narration { beat_index: number; narration: string; incomplete_reason?: string; review?: NarrationReview }
+export interface Narration { beat_index: number; narration: string; incomplete_reason?: string; review?: NarrationReview; iterations?: ReaderIteration[] }
 
 export interface ReaderState {
   run_id: string;
@@ -365,13 +384,14 @@ export interface ReaderState {
   reviewer_reasoning_mode?: ReasoningMode;
   reviewer_reasoning_effort?: ReasoningEffort;
   prose_window: number;
+  include_iterations: "none" | "last" | "full";
   title: string;
   premise: string;
   beat_index: number;
   total_beats: number;
   beat_titles: string[];
   accepted: Narration[];
-  current_draft?: { narration: string; incomplete_reason?: string; review?: NarrationReview };
+  current_draft?: { narration: string; incomplete_reason?: string; review?: NarrationReview; iterations?: ReaderIteration[] };
   ongoing_instructions: string[];
   status: "active" | "completed";
 }

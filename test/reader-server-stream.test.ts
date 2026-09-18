@@ -137,14 +137,21 @@ describe("reader generation stream", () => {
     expect(vi.mocked(streamLmStudioNarration).mock.calls.map(([options]) => options.store))
       .toEqual([false, false, false]);
     expect(vi.mocked(streamLmStudioNarration).mock.calls.map(([options]) => options.systemPrompt))
-      .toEqual(Array(3).fill(expect.stringContaining("Improve this story.")));
+      .toEqual(Array(3).fill(expect.stringContaining("improve the supplied story draft")));
+    expect(vi.mocked(streamLmStudioNarration).mock.calls.map(([options]) => options.messages.at(-1)?.content))
+      .toEqual(Array(3).fill(expect.stringContaining("Improve the story.")));
     expect(vi.mocked(streamLmStudioNarration).mock.calls[0]?.[0].messages.at(-1)?.content)
       .toContain("1. Mara enters.");
-    expect(vi.mocked(streamLmStudioNarration).mock.calls[1]?.[0].messages.at(-1)?.content)
-      .toContain("Improved draft 1.");
+    expect(vi.mocked(streamLmStudioNarration).mock.calls[1]?.[0].messages)
+      .toEqual(expect.arrayContaining([{ role: "assistant", content: "Improved draft 1." }]));
     expect(saved.current_draft).toMatchObject({
       narration: "Improved draft 3.",
     });
+    expect(saved.current_draft?.iterations?.map((iteration) => iteration.narration)).toEqual([
+      "Improved draft 1.",
+      "Improved draft 2.",
+      "Improved draft 3.",
+    ]);
   });
 
   it("regenerates an older blueprint beat without discarding later prose", async () => {

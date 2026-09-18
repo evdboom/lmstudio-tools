@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildNarrationInput as blueprintRequest,
-  buildNarrationInput as hybridRequest,
+  buildNarrationInput,
   type AcceptedNarration,
+  type NarrationBuildOptions,
   type NarrationRequest,
 } from "../src/reader-prompts.js";
 import { tidewrack } from "./fixtures/tidewrack.js";
@@ -12,19 +12,37 @@ function flat(request: NarrationRequest) {
   return { ...request, input: request.messages.map((item) => item.content).join("\n") };
 }
 
+const blueprintRequest = (
+  story: NarrationBuildOptions["story"],
+  beatIndex: number,
+  _proseBeats: number,
+  accepted: AcceptedNarration[],
+  instruction?: string,
+  reasoningMode?: NarrationBuildOptions["reasoningMode"],
+  iterative?: NarrationBuildOptions["iterative"]
+) => buildNarrationInput({ story, beatIndex, proseBeats: 0, accepted, instruction, reasoningMode, iterative });
+const hybridRequest = (
+  story: NarrationBuildOptions["story"],
+  beatIndex: number,
+  proseBeats: number,
+  accepted: AcceptedNarration[],
+  instruction?: string,
+  reasoningMode?: NarrationBuildOptions["reasoningMode"],
+  iterative?: NarrationBuildOptions["iterative"]
+) => buildNarrationInput({ story, beatIndex, proseBeats, accepted, instruction, reasoningMode, iterative });
 const buildBlueprintHistoryNarrationInput = (
-  story: Parameters<typeof blueprintRequest>[0],
+  story: NarrationBuildOptions["story"],
   beatIndex: number,
   instruction?: string,
-  reasoningMode?: Parameters<typeof blueprintRequest>[5]
+  reasoningMode?: NarrationBuildOptions["reasoningMode"]
 ) => flat(blueprintRequest(story, beatIndex, 0, [], instruction, reasoningMode));
 const buildHybridNarrationInput = (
-  story: Parameters<typeof hybridRequest>[0],
+  story: NarrationBuildOptions["story"],
   beatIndex: number,
-  acceptedHistory: Parameters<typeof hybridRequest>[3],
+  acceptedHistory: AcceptedNarration[],
   instruction?: string,
   proseBeats = 1,
-  reasoningMode?: Parameters<typeof hybridRequest>[5]
+  reasoningMode?: NarrationBuildOptions["reasoningMode"]
 ) => flat(hybridRequest(story, beatIndex, proseBeats, acceptedHistory, instruction, reasoningMode));
 const hybridRequestWithReadableArgs = (
   story: Parameters<typeof hybridRequest>[0],
@@ -198,7 +216,7 @@ describe("blueprint context mode", () => {
 
   it("recaps every earlier beat without prose", () => {
     expect(systemPrompt).toContain("You are an expert fiction writer.");
-    expect(systemPrompt).toContain("Write the next scene of Tidewrack as polished fictional prose.");
+    expect(systemPrompt).toContain("Write the next scene of the story: 'Tidewrack' as polished fictional prose.");
     expect(input).toContain("## Story so far");
     expect(input).toContain("### Beat 1 — The Drowned Mare · Joris Vandel");
     expect(input).toContain("### Beat 5 — The Lamp Room · Joris Vandel, Mara Kest, Bailiff Kest");

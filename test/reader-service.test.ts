@@ -14,7 +14,7 @@ import {
   getReaderState,
   prepareReaderBeatRegeneration,
   prepareReaderGeneration,
-  prepareReaderIteration,
+  prepareReaderGenerationPass,
   prepareReaderReview,
   resolveReviewNarration,
   saveReaderDraft,
@@ -116,22 +116,24 @@ describe("reader run service", () => {
     expect(prepared.iterationSeed).toBe(
       "1. Mara enters.\n2. She finds a passenger, who looks up."
     );
-    const prompts = await Promise.all(DISTINCT_ITERATION_FOCUSES.map((focus) =>
-      prepareReaderIteration(
+    const prompts = await Promise.all(DISTINCT_ITERATION_FOCUSES.map((focus, index) =>
+      prepareReaderGenerationPass(
         root,
         storyPath,
         started.run_id,
         0,
-        { messages: prepared.messages!, systemPrompt: prepared.systemPrompt! },
-        prepared.iterationSeed!,
-        focus
+        index + 1,
+        DISTINCT_ITERATION_FOCUSES.length,
+        focus,
+        DISTINCT_ITERATION_FOCUSES.slice(index + 1)
       )));
     expect(prompts.map((prompt) => prompt.systemPrompt)).toEqual([
-      expect.stringContaining("complete rough scene"),
-      expect.stringContaining("cause and effect"),
-      expect.stringContaining("Polish the complete scene"),
+      expect.stringContaining("improve the supplied story draft"),
+      expect.stringContaining("improve the supplied story draft"),
+      expect.stringContaining("improve the supplied story draft"),
     ]);
-    expect(prompts[0].messages.at(-1)?.content).toContain(prepared.iterationSeed);
+    expect(prompts[0].messages.at(-1)?.content).toContain("Iteration 1/3");
+    expect(prompts[0].messages.at(-1)?.content).toContain("Turn the event scaffold");
     expect(prompts[0].systemPrompt).toContain("Stay close to Mara.");
   });
 

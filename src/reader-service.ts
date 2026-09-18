@@ -1,11 +1,12 @@
 import {
   buildNarrationInput,
   buildIterationSeed,
-  buildIterativeNarrationInput,
+  iterationFocuses,
   narrationRequestInput,
-  taggedReasoningRule,
   type NarrationRequest,
   type ReaderChatMessage,
+  renderAutomatedFlags,
+  renderReviewerSystemPrompt,
 } from "./reader-prompts.js";
 import {
   createReaderRun,
@@ -13,7 +14,10 @@ import {
   ReaderState,
   readReaderRun,
   RunRequest,
+  SENTENCE_WORD_CAP,
+  TRAILING_OFF_PARAGRAPH_WINDOW,
   type NarrationPrompt,
+  type ReaderIteration,
   type ReaderRun,
 } from "./reader-store.js";
 import { readStoryFile } from "./story-store.js";
@@ -36,7 +40,6 @@ export function jsonObject(text: string): unknown {
   }
 }
 
-
 type ReviewableNarration = ReaderRun["accepted"][number] | NonNullable<ReaderRun["current_draft"]>;
 
 // Matches control/tracking tags so they never reach stored prose.
@@ -48,12 +51,9 @@ function narrationAt(run: ReaderRun, beatIndex: number): ReviewableNarration | u
   if (run.beat_index === beatIndex && run.current_draft) return run.current_draft;
   return run.accepted.find((item) => item.beat_index === beatIndex);
 }
-
-export const SENTENCE_WORD_CAP = 30;
 const SENTENCE_LENIENCY = 5; // Allowable leeway above the soft word cap for single-sentence paragraphs.
 // Splits on sentence-ending punctuation followed by whitespace; good enough to count sentences per paragraph.
 const SENTENCE_SPLIT_PATTERN = /(?<=[.!?])\s+(?=[A-Z"'\u201C(])/;
-const TRAILING_OFF_PARAGRAPH_WINDOW = 5;
 const TRAILING_OFF_ENDING = /(\.{3}|\u2026|\u2014)["'\u201d\u2019)\]]*\s*$/;
 
 /** Flags paragraphs made of a single sentence over the soft word cap, so the reviewer can be pointed at them directly. */
@@ -71,30 +71,13 @@ function findOverlongSingleSentenceParagraphs(narration: string): Array<{ index:
   return flagged;
 }
 
-/** Renders a deterministic flag block for the reviewer when overlong single-sentence paragraphs are detected. */
-function flaggedParagraphNote(flagged: Array<{ index: number; words: number }>): string[] {
-  if (!flagged.length) return [];
-  const list = flagged.map(({ index, words }) => `paragraph ${index} (${words} words)`).join(", ");
-  return [
-    "",
-    "# Automated flag",
-    `Deterministic scan found single-sentence paragraph(s) over the ${SENTENCE_WORD_CAP}-word soft cap: ${list}.`,
-    "Pay extra attention to these; confirm whether they should be split into multiple sentences or shortened before deciding your verdict.",
-  ];
-}
-
-function trailingOffParagraphNote(narration: string): string[] {
+function findTrailingOffParagraphs(narration: string): { first: number; count: number } | null {
   const paragraphs = narration.split(/\n{2,}/).map((paragraph) => paragraph.trim()).filter(Boolean);
-  if (paragraphs.length < TRAILING_OFF_PARAGRAPH_WINDOW) return [];
+  if (paragraphs.length < TRAILING_OFF_PARAGRAPH_WINDOW) return null;
   const trailing = paragraphs.slice(-TRAILING_OFF_PARAGRAPH_WINDOW);
-  if (!trailing.every((paragraph) => TRAILING_OFF_ENDING.test(paragraph))) return [];
+  if (!trailing.every((paragraph) => TRAILING_OFF_ENDING.test(paragraph))) return null;
   const first = paragraphs.length - TRAILING_OFF_PARAGRAPH_WINDOW + 1;
-  return [
-    "",
-    "# Automated flag",
-    `The final ${TRAILING_OFF_PARAGRAPH_WINDOW} paragraphs (${first}-${paragraphs.length}) all end with an ellipsis or bare em dash.`,
-    "Decide whether this is deliberate style or repeated unfinished thoughts; revise only if it harms completeness or coherence.",
-  ];
+  return { first, count: TRAILING_OFF_PARAGRAPH_WINDOW };
 }
 
 export function stripNarrationTags(text: string): string {
@@ -205,39 +188,7 @@ export async function prepareReaderReview(
   if (!narration.prompt) throw new Error(`Beat ${beatIndex + 1} has no saved prompt to review.`);
 
   return {
-    systemPrompt: [
-      "# Primary task",
-      "You are a strict fiction editor reviewing one generated story beat.",
-      "",
-      "# Response format and reasoning",
-      ...taggedReasoningRule(run.reviewer_reasoning_mode ?? run.reasoning_mode),      
-      "",
-      "# Review instructions",      
-      "Validate the prose against the original instructions:",
-      "| Criterion | Fix if not met |",
-      "|-----------|----------------|",
-      "| Does every event occur and occur in order | Add missing events, or reorder them as necessary while making sure transitions are correct |",
-      "| Does the prose end before the future beat begins | Ensure the prose concludes appropriately before the next beat starts |",
-      "| Is the prose within the word budget | Adjust the prose to fit within the specified word limit, trimming or expanding as necessary |",
-      "| Are viewpoint, tense, and established canon maintained | Correct any inconsistencies in viewpoint, tense, or established canon |",
-      "| Is the prose coherent with well defined paragraphs and sentences | Restructure paragraphs and sentences to improve clarity and flow |",
-      "| Are all sentences well defined as in not stopping abruptly or ending with incomplete thoughts | Revise sentences to ensure they are complete and coherent |",
-      "| Are there no sentence fragments, run-on sentences, repetitive phrasing, filler, word-list padding, nonsensical escalation, abrupt topic shifts, meta-commentary, or irrelevant material | Edit the prose to remove any of these issues |",
-      "| Do sentences end with appropriate punctuation; reject an unexplained trailing em dash that leaves a sentence unfinished | Correct punctuation errors and remove any inappropriate trailing em dashes |",
-      `| Are sentences kept to roughly ${SENTENCE_WORD_CAP} words or fewer as a soft cap; longer sentences are acceptable only when the length is clearly deliberate (e.g. a rhythmic list or a run of clauses) or only a little over, not when it is just an unbroken clause chain | Break up overly long sentences, restructure them for clarity or shorten them |`,
-      `| Are the paragraphs not quoted, or near quoted from the event descriptions | Ensure that the prose is original and not directly lifted from the event descriptions |`,      
-      "",
-      "## Result",
-      "If the prose meets all these criteria, reply with [VALID]. Output nothing else after the tag.",
-      "",
-      "If the prose so far is correct but incomplete, think carefully about what is missing and how to continue it appropriately.",
-      "Start your reply with the [APPEND] tag on its own line. Follow it with the missing continuation of the prose.",
-      "",
-      "Otherwise, if the prose contains errors or deviates from the instructions, think carefully about what fixes need to be applied. This can require just a corrected paragraph, sentence but also a complete rewrite.",
-      "Start your reply with the [REPLACE] tag on its own line. Follow it with the complete corrected prose for the entire beat.",
-      "",
-      "Do not add other tags, headings, verdicts, or code fences.",
-    ].join("\n"),
+    systemPrompt: renderReviewerSystemPrompt(run.reviewer_reasoning_mode ?? run.reasoning_mode).join("\n"),      
     messages: [{
       role: "user",
       content: [
@@ -247,8 +198,7 @@ export async function prepareReaderReview(
         "# Original beat request",
         promptInput(narration.prompt),
         ...(instruction?.trim() ? ["", "# Specific review focus", instruction.trim()] : []),
-        ...flaggedParagraphNote(findOverlongSingleSentenceParagraphs(narration.narration)),
-        ...trailingOffParagraphNote(narration.narration),
+        ...renderAutomatedFlags(findOverlongSingleSentenceParagraphs(narration.narration), findTrailingOffParagraphs(narration.narration)),        
         "",
         "# Result to review",
         narration.narration,
@@ -293,14 +243,23 @@ export async function prepareReaderBeatRegeneration(
     reasoning: item.reasoning
   }));
   const instruction = narration.prompt_instruction;
-  const prompt = buildNarrationInput(
+  const focuses = iterationFocuses(run.generation_mode, run.iteration_count);
+  const prompt = buildNarrationInput({
     story,
     beatIndex,
-    run.prose_window,
-    acceptedHistory,
-    instruction,    
-    run.reasoning_mode
-  );
+    proseBeats: run.prose_window,
+    accepted: acceptedHistory,
+    instruction,
+    reasoningMode: run.reasoning_mode,
+    iterative: focuses.length > 0 ? {
+      pass: 1,
+      total: focuses.length,
+      focus: focuses[0],
+      remainingFocuses: focuses.slice(1),
+      includeIterations: run.include_iterations,
+      iterations: (narration as ReaderRun["current_draft"])?.iterations,
+    } : undefined,
+  });
 
   return {
     systemPrompt: prompt.systemPrompt,
@@ -428,6 +387,7 @@ async function toState(root: string, run: ReaderRun): Promise<ReaderState> {
     reviewer_reasoning_mode: run.reviewer_reasoning_mode,
     reviewer_reasoning_effort: run.reviewer_reasoning_effort,
     prose_window: run.prose_window,
+    include_iterations: run.include_iterations,
     title: story.title,
     premise: story.premise,
     beat_index: run.beat_index,
@@ -513,6 +473,7 @@ export async function prepareReaderGeneration(
           prompt: run.current_draft.prompt,
           review: run.current_draft.review,
           revisions: run.current_draft.revisions,
+          iterations: run.current_draft.iterations,
         });
         run.current_draft = undefined;
         run.beat_index += 1;
@@ -534,14 +495,23 @@ export async function prepareReaderGeneration(
       instruction: item.prompt_instruction,
       reasoning: item.reasoning,
     }));
-    const prompt = buildNarrationInput(
+    const focuses = iterationFocuses(run.generation_mode, run.iteration_count);
+    const prompt = buildNarrationInput({
       story,
-      run.beat_index,
-      run.prose_window,
-      acceptedHistory,
-      activeInstruction,      
-      run.reasoning_mode
-    );
+      beatIndex: run.beat_index,
+      proseBeats: run.prose_window,
+      accepted: acceptedHistory,
+      instruction: activeInstruction,
+      reasoningMode: run.reasoning_mode,
+      iterative: focuses.length > 0 ? {
+        pass: 1,
+        total: focuses.length,
+        focus: focuses[0],
+        remainingFocuses: focuses.slice(1),
+        includeIterations: run.include_iterations,
+        iterations: run.current_draft?.iterations,
+      } : undefined,
+    });
     return {
       complete: false as const,
       run,
@@ -569,27 +539,59 @@ export async function prepareReaderGeneration(
   };
 }
 
-export async function prepareReaderIteration(
+export async function prepareReaderGenerationPass(
   root: string,
   storyPath: string,
   runId: string,
   beatIndex: number,
-  context: NarrationRequest,
-  candidate: string,
-  focus: string
+  pass: number,
+  total: number,
+  focus: string | undefined,
+  remainingFocuses: string[]
 ): Promise<NarrationRequest> {
   const [story, run] = await Promise.all([
     readStoryFile(root, storyPath),
     readReaderRun(root, storyPath, runId),
   ]);
-  return buildIterativeNarrationInput(
+  const acceptedHistory = run.accepted.map((item) => ({
+    beatIndex: item.beat_index,
+    narration: item.narration,
+    instruction: item.prompt_instruction,
+    reasoning: item.reasoning,
+  }));
+  return buildNarrationInput({
     story,
     beatIndex,
-    context,
-    candidate,
-    focus,
-    run.reasoning_mode
-  );
+    proseBeats: run.prose_window,
+    accepted: acceptedHistory,
+    reasoningMode: run.reasoning_mode,
+    iterative: {
+      pass,
+      total,
+      focus,
+      remainingFocuses,
+      includeIterations: run.include_iterations,
+      iterations: run.current_draft?.iterations,
+    },
+  });
+}
+
+export async function saveReaderIteration(
+  root: string,
+  storyPath: string,
+  runId: string,
+  iteration: ReaderIteration
+): Promise<void> {
+  await mutateReaderRun(root, storyPath, runId, (current) => {
+    const existing = current.current_draft?.iterations ?? [];
+    current.current_draft = {
+      ...(current.current_draft ?? { narration: iteration.narration }),
+      narration: iteration.narration,
+      reasoning: iteration.reasoning,
+      prompt: iteration.prompt,
+      iterations: [...existing.filter((item) => item.pass !== iteration.pass), iteration],
+    };
+  });
 }
 
 export async function saveReaderDraft(
@@ -611,6 +613,7 @@ export async function saveReaderDraft(
       incomplete_reason: incompleteReason,
       response_id: responseId,
       prompt: prompt ? requestPrompt as NarrationPrompt : undefined,
+      iterations: current.current_draft?.iterations,
     };
     return current;
   });

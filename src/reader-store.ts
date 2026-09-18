@@ -43,6 +43,7 @@ const acceptedNarrationSchema = z.object({
   narration: z.string().min(1),
   reasoning: z.string().optional(),
   prompt_instruction: z.string().optional(),
+  incomplete_reason: z.string().optional(),
   response_id: z.string().startsWith("resp_").optional(),
   prompt: narrationPromptSchema.optional(),
   review: narrationReviewSchema.optional(),
@@ -53,43 +54,21 @@ const draftNarrationSchema = z.object({
   narration: z.string().min(1),
   reasoning: z.string().optional(),
   prompt_instruction: z.string().optional(),
+  incomplete_reason: z.string().optional(),
   response_id: z.string().startsWith("resp_").optional(),
   prompt: narrationPromptSchema.optional(),
   review: narrationReviewSchema.optional(),
   revisions: z.array(narrationRevisionSchema).optional(),
 });
 
-export const readerImagePlanSchema = z.object({
-  schema: z.literal("story-image-plan-v1"),
-  generated_at: z.string().datetime(),
-  planner_model: z.string().trim().min(1),
-  checkpoint_id: z.string().trim().min(1),
-  width: z.number().int().positive().multipleOf(8),
-  height: z.number().int().positive().multipleOf(8),
-  beats: z.array(z.object({
-    beat_index: z.number().int().nonnegative(),
-    prompt: z.string().trim().min(1),
-    negative_prompt: z.string(),
-    framing: z.string().trim().min(1),
-    loras: z.array(z.object({
-      id: z.string().trim().min(1),
-      strength: z.number().min(0).max(2),
-    })),
-    pose: z.object({
-      source_id: z.string().trim().min(1).optional(),
-      prompt: z.string().trim().min(1),
-    }),
-  })),
-});
-
-export type ReaderImagePlan = z.infer<typeof readerImagePlanSchema>;
-
 export const readerRunSchema = z.object({
   schema: z.literal("story-reader-run-v1"),
   run_id: z.string().uuid(),
   story_path: z.string().min(1),
   model: z.string().trim().min(1).max(500).optional(),
-  context_mode: z.enum(["full", "blueprint", "hybrid"]).default("full"),
+  generation_mode: z.enum(["direct", "distinct", "recurring"]).default("direct"),
+  /** Recurring mode only: number of identical improvement passes. */
+  iteration_count: z.number().int().min(1).max(20).default(3),
   reasoning_mode: z.enum(["native", "template_think", "think", "thinking"]).default("native"),
   /** "default" sends no reasoning parameter; a model that cannot reason rejects the others. */
   reasoning_effort: z.enum(["default", "off", "low", "medium", "high"]).default("default"),
@@ -97,13 +76,12 @@ export const readerRunSchema = z.object({
   reviewer_model: z.string().trim().min(1).max(500).optional(),
   reviewer_reasoning_mode: z.enum(["native", "template_think", "think", "thinking"]).optional(),
   reviewer_reasoning_effort: z.enum(["default", "off", "low", "medium", "high"]).optional(),
-  /** Hybrid mode only: how many recent beats are carried as verbatim prose. */
+  /** How many recent beats are carried as verbatim prose. */
   prose_window: z.number().int().min(0).max(20).default(1),
   beat_index: z.number().int().nonnegative(),
   accepted: z.array(acceptedNarrationSchema),
   ongoing_instructions: z.array(z.string().min(1)),
   current_draft: draftNarrationSchema.optional(),
-  image_plan: readerImagePlanSchema.optional(),
   started_at: z.string().datetime(),
   updated_at: z.string().datetime(),
   status: z.enum(["active", "completed"]),
@@ -149,47 +127,34 @@ async function writeRun(file: string, run: ReaderRun): Promise<void> {
   }
 }
 
-export interface ReviewerOptions {
-  model?: string;
-  reasoningMode?: NonNullable<ReaderRun["reviewer_reasoning_mode"]>;
-  reasoningEffort?: NonNullable<ReaderRun["reviewer_reasoning_effort"]>;
-}
 
-export async function createReaderRun(
-  root: string,
-  storyPath: string,
-  model?: string,
-  contextMode: ReaderRun["context_mode"] = "full",
-  proseWindow = 1,
-  reasoningMode: ReaderRun["reasoning_mode"] = "native",
-  reasoningEffort: ReaderRun["reasoning_effort"] = "default",
-  ongoingInstructions: string[] = [],
-  reviewer: ReviewerOptions = {}
-): Promise<ReaderRun> {
-  const story = await readStoryFile(root, storyPath);
+
+export async function createReaderRun(request: RunRequest): Promise<ReaderRun> {
+  const story = await readStoryFile(request.root, request.story_path);
   if (story.status !== "final") throw new Error("Story must be finalized before reading.");
   if (story.beats.length === 0) throw new Error("Story has no beats.");
   const now = new Date().toISOString();
   const run: ReaderRun = {
     schema: "story-reader-run-v1",
     run_id: randomUUID(),
-    story_path: storyPath,
-    model,
-    context_mode: contextMode,
-    reasoning_mode: reasoningMode,
-    reasoning_effort: reasoningEffort,
-    reviewer_model: reviewer.model,
-    reviewer_reasoning_mode: reviewer.reasoningMode,
-    reviewer_reasoning_effort: reviewer.reasoningEffort,
-    prose_window: proseWindow,
+    story_path: request.story_path,
+    model: request.model,
+    generation_mode: request.generationMode,
+    iteration_count: request.iterationCount,
+    reasoning_mode: request.reasoning_mode,
+    reasoning_effort: request.reasoning_effort,
+    reviewer_model: request.reviewer?.model,
+    reviewer_reasoning_mode: request.reviewer?.reasoningMode,
+    reviewer_reasoning_effort: request.reviewer?.reasoningEffort,
+    prose_window: request.prose_window,
     beat_index: 0,
     accepted: [],
-    ongoing_instructions: ongoingInstructions,
+    ongoing_instructions: request.ongoing_instructions,
     started_at: now,
     updated_at: now,
     status: "active",
   };
-  const file = await runFile(root, storyPath, run.run_id);
+  const file = await runFile(request.root, request.story_path, run.run_id);
   await writeRun(file, run);
   return run;
 }
@@ -256,7 +221,8 @@ export interface ReaderRunListItem {
   run_id: string;
   story_path: string;
   model?: string;
-  context_mode: ReaderRun["context_mode"];
+  generation_mode: ReaderRun["generation_mode"];
+  iteration_count: number;
   reasoning_mode: ReaderRun["reasoning_mode"];
   prose_window: number;
   beat_index: number;
@@ -288,7 +254,8 @@ export async function listReaderRuns(
         run_id: run.run_id,
         story_path: run.story_path,
         model: run.model,
-        context_mode: run.context_mode,
+        generation_mode: run.generation_mode,
+        iteration_count: run.iteration_count,
         reasoning_mode: run.reasoning_mode,
         prose_window: run.prose_window,
         beat_index: run.beat_index,
@@ -336,4 +303,75 @@ export async function listFinalStories(root: string): Promise<StoryListItem[]> {
 
   await walk(root, "");
   return found.sort((left, right) => left.title.localeCompare(right.title));
+}
+
+export type GenerationMode = "direct" | "distinct" | "recurring";
+export type ReasoningMode = "native" | "template_think" | "think" | "thinking";
+export type ReasoningEffort = "default" | "off" | "low" | "medium" | "high";
+
+export interface RunItem {
+  run_id: string;
+  story_path: string;
+  model?: string;
+  generation_mode: GenerationMode;
+  iteration_count: number;
+  reasoning_mode: ReasoningMode;
+  beat_index: number;
+  accepted_beats: number;
+  has_current_draft: boolean;
+  updated_at: string;
+  status: "active" | "completed";
+}
+
+export interface RunRequest {
+  root: string;
+  story_path: string;
+  model?: string;
+  prose_window: number;
+  reasoning_mode: ReasoningMode;
+  reasoning_effort: ReasoningEffort;
+  ongoing_instructions: string[];
+  reviewer: ReviewerOptions | null;
+  generationMode: GenerationMode;
+  iterationCount: number;
+}
+
+export interface ReviewerOptions {
+  model: string;
+  reasoningMode: ReasoningMode;
+  reasoningEffort: ReasoningEffort;
+}
+
+export interface StoryItem { path: string; title: string; premise: string; beats: number }
+
+export interface NarrationReview {
+  narration: string;
+  verdict?: "valid" | "replace" | "append";
+  reasoning?: string;
+  model: string;
+  reviewed_at: string;
+}
+export interface Narration { beat_index: number; narration: string; incomplete_reason?: string; review?: NarrationReview }
+
+export interface ReaderState {
+  run_id: string;
+  story_path: string;
+  model?: string;
+  generation_mode: GenerationMode;
+  iteration_count: number;
+  reasoning_mode: ReasoningMode;
+  reasoning_effort?: ReasoningEffort;
+  reviewer_model?: string;
+  reviewer_reasoning_mode?: ReasoningMode;
+  reviewer_reasoning_effort?: ReasoningEffort;
+  prose_window: number;
+  title: string;
+  premise: string;
+  beat_index: number;
+  total_beats: number;
+  beat_titles: string[];
+  accepted: Narration[];
+  current_draft?: { narration: string; incomplete_reason?: string; review?: NarrationReview };
+  ongoing_instructions: string[];
+  status: "active" | "completed";
 }

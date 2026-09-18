@@ -170,16 +170,6 @@ npm run dev:story
 
 The reader uses the same finalized `story.json` blueprints, but it does not ask the model to call MCP tools. The app owns beat progression and builds each beat's prompt itself.
 
-Pick a context mode when a run starts. All three send the same beat block; they differ only in how earlier beats are remembered:
-
-| Mode | Earlier beats | Cost at beat 20 | Trade-off |
-| --- | --- | --- | --- |
-| `hybrid` | Derived history for the older beats, verbatim prose for the most recent (`prose_window`, default 1) | Flat, roughly 4k tokens | Keeps voice continuity without the context growing |
-| `full` | The whole transcript, via LM Studio's stateful chat API — only the current beat request goes on the wire | Roughly 33k tokens | Best continuity, but local models slow down and start making mistakes past about 32k |
-| `blueprint` | Derived history only, no prose | Roughly 2k tokens | Cheapest and fastest, but nothing to call back to |
-
-`hybrid` is the default choice for a long run: the derived history grows by about one line per accepted beat while the prose window stays fixed, so a sixty-beat story never reaches the size where a local model degrades.
-
 1. Start LM Studio's local server and load a model. The default API URL is `http://127.0.0.1:1234/api/v1`.
 2. Build and start the reader:
 
@@ -220,7 +210,6 @@ The reader provides:
 - **Auto continue:** after a draft finishes, accepts it and generates the next beat until the final beat is reached. The preference is stored in the browser.
 - **Review:** sends the exact saved system prompt, beat request, and resulting prose to a stateless editor pass. The reviewer opens its answer with one tag: `[VALID]` keeps the prose as-is, `[REPLACE]` supplies a full corrected beat, and `[APPEND]` supplies only the missing continuation when the prose stopped short of every required event. Folio shows the resulting change for approval; tags never appear in stored or displayed prose.
 - **Review after generation:** immediately starts that review when generation finishes. Auto continue proceeds after an unchanged result and pauses when the reviewer suggests a revision.
-- Applying an older review in `blueprint` or `hybrid` mode replaces only that beat. Applying one in `full` mode uses LM Studio's reviewed response as a new branch point and discards later beats so narration can continue from the revised history.
 - Applied replacements retain every displaced version in the beat's `revisions` array inside its `<story>/reader-runs/<run-id>.json` session file. Generated prose is not written into the authored `story.json` blueprint.
 - A context selector when starting a narration: **Full narration context** retains LM Studio response IDs and the complete accepted prose, while **Previous beat events only** starts a stateless request for every beat and supplies compact prior `story.json` events instead.
 - Story beats store an `events` array. Narration prompts list the current beat's events alongside story context and reader instructions.
@@ -239,8 +228,6 @@ node dist/reader-server.js --root C:\tmp\stories
 The structured editor remains available when LM Studio is offline.
 
 Reader sessions are stored separately under `<story>/reader-runs/`. Existing MCP telling sessions remain under `<story>/runs/` and the `telling_start`, `next_beat`, and `telling_status` tools are unchanged.
-
-Completed reader sessions can also generate a separate ComfyUI image plan. Add the optional `image_generation` resource catalog documented in `comfyui/README.md` to the story blueprint, then select **Plan images** after accepting the final narration beat. The result is validated against that catalog and saved under `image_plan` in the reader-run JSON; Folio does not submit it to ComfyUI yet.
 
 ## File Tools
 

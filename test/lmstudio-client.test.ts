@@ -376,11 +376,15 @@ describe("LM Studio streaming client", () => {
     expect(result.narration).toBe("A short scene.");
   });
 
-  it("stops and names the budget when narration overruns twice", async () => {
-    const overrun = 'data: {"type":"response.output_text.delta","delta":"one two three four five six seven eight nine ten eleven twelve thirteen"}\n\n';
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(overrun)));
+  it("returns the second partial narration when it overruns twice", async () => {
+    const responses = [
+      'data: {"type":"response.output_text.delta","delta":"first one two three four five six seven eight nine ten eleven twelve thirteen"}\n\n',
+      'data: {"type":"response.output_text.delta","delta":"second one two three four five six seven eight nine ten eleven twelve thirteen"}\n\n',
+    ];
+    const fetchMock = vi.fn(async () => new Response(responses.shift()));
+    vi.stubGlobal("fetch", fetchMock);
 
-    await expect(streamLmStudioNarration({
+    const result = await streamLmStudioNarration({
       baseUrl: "http://127.0.0.1:1234/api/v1",
       model: "test-model",
       messages: [{ role: "user", content: "Narrate." }],
@@ -388,7 +392,11 @@ describe("LM Studio streaming client", () => {
       wordBudget: { maxWords: 10, ceilingWords: 12 },
       signal: new AbortController().signal,
       onDelta: vi.fn(),
-    })).rejects.toThrow(/word budget of 10 twice \(13 and 13 words\)/);
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.narration).toBe("second one two three four five six seven eight nine ten eleven twelve thirteen");
+    expect(result.incompleteReason).toContain("exceeded the word budget twice");
   });
 
   it("does not resample repeated ellipsis paragraph endings", async () => {

@@ -1,48 +1,41 @@
 import {
-  buildBlueprintHistoryNarrationInput,
-  buildHybridNarrationInput,
-  buildStatefulNarrationInput,
+  buildNarrationInput,
+  buildIterationSeed,
+  buildIterativeNarrationInput,
   narrationRequestInput,
-  parseReasoning,
   taggedReasoningRule,
   type NarrationRequest,
   type ReaderChatMessage,
 } from "./reader-prompts.js";
-import { buildImagePlanPrompt, parseImagePlan } from "./reader-image-prompts.js";
 import {
   createReaderRun,
   mutateReaderRun,
+  ReaderState,
   readReaderRun,
+  RunRequest,
   type NarrationPrompt,
   type ReaderRun,
-  type ReviewerOptions,
 } from "./reader-store.js";
 import { readStoryFile } from "./story-store.js";
 import { beatBudgetCeiling, type StoryBlueprint } from "./story-model.js";
 
-export interface ReaderState {
-  run_id: string;
-  story_path: string;
-  model?: string;
-  context_mode: ReaderRun["context_mode"];
-  reasoning_mode: ReaderRun["reasoning_mode"];
-  reasoning_effort: ReaderRun["reasoning_effort"];
-  reviewer_model?: string;
-  reviewer_reasoning_mode: ReaderRun["reviewer_reasoning_mode"];
-  reviewer_reasoning_effort: ReaderRun["reviewer_reasoning_effort"];
-  prose_window: number;
-  title: string;
-  premise: string;
-  beat_index: number;
-  total_beats: number;
-  /** Navigation labels for every beat, falling back to the beat id. */
-  beat_titles: string[];
-  accepted: ReaderRun["accepted"];
-  current_draft?: ReaderRun["current_draft"];
-  ongoing_instructions: string[];
-  status: ReaderRun["status"];
-  image_plan: ReaderRun["image_plan"];
+export function jsonObject(text: string): unknown {
+  const trimmed = text.trim();
+  const fenceStart = trimmed.startsWith("```") ? trimmed.indexOf("\n") : -1;
+  const fenceEnd = fenceStart >= 0 ? trimmed.lastIndexOf("```") : -1;
+  const candidate = fenceEnd > fenceStart
+    ? trimmed.slice(fenceStart + 1, fenceEnd).trim()
+    : trimmed;
+  const start = candidate.indexOf("{");
+  const end = candidate.lastIndexOf("}");
+  if (start < 0 || end < start) throw new Error("No JSON object returned.");
+  try {
+    return JSON.parse(candidate.slice(start, end + 1));
+  } catch {
+    throw new Error("Invalid JSON returned.");
+  }
 }
+
 
 type ReviewableNarration = ReaderRun["accepted"][number] | NonNullable<ReaderRun["current_draft"]>;
 
@@ -142,22 +135,6 @@ function archiveCurrentVersion(target: ReviewableNarration) {
   };
 }
 
-function branchFullContext(
-  current: ReaderRun,
-  target: ReviewableNarration,
-  beatIndex: number,
-  totalBeats: number,
-  responseId: string | undefined
-): void {
-  target.response_id = responseId;
-  if (current.current_draft !== target) {
-    current.accepted = current.accepted.filter((item) => item.beat_index <= beatIndex);
-    current.current_draft = undefined;
-    current.beat_index = beatIndex + 1;
-    current.status = current.beat_index >= totalBeats ? "completed" : "active";
-  }
-}
-
 /** The closing beat request, whether the prompt was recorded as turns or as legacy text. */
 export function promptInput(prompt: NarrationPrompt): string {
   const content = prompt.messages?.at(-1)?.content ?? prompt.input;
@@ -174,7 +151,6 @@ function wordBudget(story: StoryBlueprint): { maxWords: number; ceilingWords: nu
 
 export interface NarrationAudit {
   beat_index: number;
-  context_mode: ReaderRun["context_mode"];
   system_prompt?: string;
   messages: ReaderChatMessage[];
   previous_response_id?: string;
@@ -186,10 +162,8 @@ export interface NarrationAudit {
 /**
  * The exact request that produced one beat.
  *
- * Stateless modes put the whole transcript on the wire, so it is stored as sent.
- * `full` mode sends one turn per beat and leaves the rest to LM Studio, which
- * offers no way to read a stored response back, so the earlier turns are
- * rebuilt from the run's own record of the chain instead.
+ * Hybrid mode puts the complete reconstructed request on the wire, so it is
+ * stored as sent.
  */
 export async function auditReaderBeat(
   root: string,
@@ -203,45 +177,11 @@ export async function auditReaderBeat(
   if (!target.prompt) throw new Error(`Beat ${beatIndex + 1} has no saved prompt.`);
   const prompt = target.prompt;
 
-  if (run.context_mode !== "full") {
-    return {
-      beat_index: beatIndex,
-      context_mode: run.context_mode,
-      system_prompt: prompt.system_prompt,
-      messages: prompt.messages ?? [{ role: "user", content: promptInput(prompt) }],
-      response_id: target.response_id,
-    };
-  }
-
-  const earlier = run.accepted.filter((item) => item.beat_index < beatIndex);
-  const unrecorded = earlier.filter((item) => !item.prompt).map((item) => item.beat_index + 1);
-  const messages: ReaderChatMessage[] = earlier.flatMap((item) => [
-    ...(item.prompt ? [{ role: "user" as const, content: promptInput(item.prompt) }] : []),
-    { role: "assistant" as const, content: `${parseReasoning(item.reasoning, run.reasoning_mode)}${item.narration}` },
-  ]);
-  messages.push({ role: "user", content: promptInput(prompt) });
-
-  const continued = earlier.at(-1)?.response_id;
-  const broken = prompt.previous_response_id !== continued;
   return {
     beat_index: beatIndex,
-    context_mode: run.context_mode,
     system_prompt: prompt.system_prompt,
-    messages,
-    previous_response_id: prompt.previous_response_id,
+    messages: prompt.messages ?? [{ role: "user", content: promptInput(prompt) }],
     response_id: target.response_id,
-    ...(broken || unrecorded.length > 0
-      ? {
-        gap: [
-          ...(broken
-            ? [`Beat ${beatIndex + 1} continued ${prompt.previous_response_id ?? "no response"}, but beat ${beatIndex} ended at ${continued ?? "no response"}.`]
-            : []),
-          ...(unrecorded.length > 0
-            ? [`No prompt was recorded for beat ${unrecorded.join(", ")}.`]
-            : []),
-        ].join(" "),
-      }
-      : {}),
   };
 }
 
@@ -284,8 +224,7 @@ export async function prepareReaderReview(
       "| Are all sentences well defined as in not stopping abruptly or ending with incomplete thoughts | Revise sentences to ensure they are complete and coherent |",
       "| Are there no sentence fragments, run-on sentences, repetitive phrasing, filler, word-list padding, nonsensical escalation, abrupt topic shifts, meta-commentary, or irrelevant material | Edit the prose to remove any of these issues |",
       "| Do sentences end with appropriate punctuation; reject an unexplained trailing em dash that leaves a sentence unfinished | Correct punctuation errors and remove any inappropriate trailing em dashes |",
-      `| Are sentences kept to roughly ${SENTENCE_WORD_CAP} words or fewer as a soft cap; longer sentences are acceptable only when the length is clearly deliberate (e.g. a rhythmic list or a run of clauses), not when it is just an unbroken clause chain | Break up overly long sentences, restructure them for clarity or shorten them |`,
-      `| Is any paragraph a single sentence longer than about ${SENTENCE_WORD_CAP} words | Determine the essence of the paragraph and rewrite it in multiple sentences or paragraphs as necessary |`,
+      `| Are sentences kept to roughly ${SENTENCE_WORD_CAP} words or fewer as a soft cap; longer sentences are acceptable only when the length is clearly deliberate (e.g. a rhythmic list or a run of clauses) or only a little over, not when it is just an unbroken clause chain | Break up overly long sentences, restructure them for clarity or shorten them |`,
       `| Are the paragraphs not quoted, or near quoted from the event descriptions | Ensure that the prose is original and not directly lifted from the event descriptions |`,      
       "",
       "## Result",
@@ -315,11 +254,9 @@ export async function prepareReaderReview(
         narration.narration,
       ].join("\n"),
     }],
-    previousResponseId: run.context_mode === "full"
-      ? narration.prompt.previous_response_id
-      : undefined,
+    previousResponseId: undefined,
     reasoningEffort: run.reviewer_reasoning_effort ?? run.reasoning_effort,
-    store: run.context_mode === "full",
+    store: false,
     narration: narration.narration,
   };
 }
@@ -338,6 +275,9 @@ export async function prepareReaderBeatRegeneration(
   previousResponseId?: string;
   promptInstruction?: string;
   store: boolean;
+  generationMode: ReaderRun["generation_mode"];
+  iterationCount: number;
+  iterationSeed?: string;
 }> {
   const [story, run] = await Promise.all([
     readStoryFile(root, storyPath),
@@ -352,40 +292,15 @@ export async function prepareReaderBeatRegeneration(
     instruction: item.prompt_instruction,
     reasoning: item.reasoning
   }));
-  const previousResponseId = run.context_mode === "full"
-    ? acceptedBefore.at(-1)?.response_id
-    : undefined;
   const instruction = narration.prompt_instruction;
-  let prompt: NarrationRequest;
-  switch (run.context_mode) {
-    case "full":
-      prompt = buildStatefulNarrationInput(
-        story,
-        beatIndex,
-        instruction,
-        !previousResponseId,
-        run.reasoning_mode
-      );
-      break;
-    case "hybrid":
-      prompt = buildHybridNarrationInput(
-        story,
-        beatIndex,
-        acceptedHistory,
-        instruction,
-        run.prose_window,
-        run.reasoning_mode
-      );
-      break;
-    case "blueprint":
-      prompt = buildBlueprintHistoryNarrationInput(
-        story,
-        beatIndex,
-        instruction,
-        run.reasoning_mode
-      );
-      break;
-  }
+  const prompt = buildNarrationInput(
+    story,
+    beatIndex,
+    run.prose_window,
+    acceptedHistory,
+    instruction,    
+    run.reasoning_mode
+  );
 
   return {
     systemPrompt: prompt.systemPrompt,
@@ -393,9 +308,14 @@ export async function prepareReaderBeatRegeneration(
     input: narrationRequestInput(prompt.messages),
     wordBudget: wordBudget(story),
     reasoningEffort: run.reasoning_effort,
-    previousResponseId,
+    previousResponseId: undefined,
     promptInstruction: instruction,
-    store: run.context_mode === "full",
+    store: false,
+    generationMode: run.generation_mode,
+    iterationCount: run.iteration_count,
+    iterationSeed: run.generation_mode === "direct"
+      ? undefined
+      : buildIterationSeed(story, beatIndex),
   };
 }
 
@@ -451,7 +371,6 @@ export async function applyReaderReview(
   runId: string,
   beatIndex: number
 ): Promise<ReaderState> {
-  const story = await readStoryFile(root, storyPath);
   const run = await mutateReaderRun(root, storyPath, runId, (current) => {
     const target = narrationAt(current, beatIndex);
     if (!target?.review) throw new Error(`Beat ${beatIndex + 1} has no review to apply.`);
@@ -461,9 +380,6 @@ export async function applyReaderReview(
     target.narration = target.review.narration;
     // Keep the original beat's reasoning: it reasoned through the correct events, only the prose needed the reviewer's fix.
     if (target.review.prompt) target.prompt = target.review.prompt;
-    if (current.context_mode === "full") {
-      branchFullContext(current, target, beatIndex, story.beats.length, target.review.response_id);
-    }
     return current;
   });
   return toState(root, run);
@@ -480,9 +396,9 @@ export async function applyReaderRegeneration(
     reasoning?: string;
     responseId?: string;
     prompt?: NarrationPrompt;
+    incompleteReason?: string;
   }
 ): Promise<ReaderState> {
-  const story = await readStoryFile(root, storyPath);
   const run = await mutateReaderRun(root, storyPath, runId, (current) => {
     const target = narrationAt(current, beatIndex);
     if (!target) throw new Error(`Beat ${beatIndex + 1} has no narration to regenerate.`);
@@ -490,11 +406,9 @@ export async function applyReaderRegeneration(
     target.revisions = [...(target.revisions ?? []), archiveCurrentVersion(target)];
     target.narration = stripNarrationTags(regenerated.narration);
     target.reasoning = regenerated.reasoning;
+    target.incomplete_reason = regenerated.incompleteReason;
     target.prompt = regenerated.prompt;
     target.review = undefined;
-    if (current.context_mode === "full") {
-      branchFullContext(current, target, beatIndex, story.beats.length, regenerated.responseId);
-    }
     return current;
   });
   return toState(root, run);
@@ -506,7 +420,8 @@ async function toState(root: string, run: ReaderRun): Promise<ReaderState> {
     run_id: run.run_id,
     story_path: run.story_path,
     model: run.model,
-    context_mode: run.context_mode,
+    generation_mode: run.generation_mode,
+    iteration_count: run.iteration_count,
     reasoning_mode: run.reasoning_mode,
     reasoning_effort: run.reasoning_effort,
     reviewer_model: run.reviewer_model,
@@ -522,32 +437,11 @@ async function toState(root: string, run: ReaderRun): Promise<ReaderState> {
     current_draft: run.current_draft,
     ongoing_instructions: run.ongoing_instructions,
     status: run.status,
-    image_plan: run.image_plan,
   };
 }
 
-export async function startReaderRun(
-  root: string,
-  storyPath: string,
-  model?: string,
-  contextMode: ReaderRun["context_mode"] = "full",
-  proseWindow = 1,
-  reasoningMode: ReaderRun["reasoning_mode"] = "native",
-  reasoningEffort: ReaderRun["reasoning_effort"] = "default",
-  ongoingInstructions: string[] = [],
-  reviewer?: ReviewerOptions
-): Promise<ReaderState> {
-  return toState(root, await createReaderRun(
-    root,
-    storyPath,
-    model,
-    contextMode,
-    proseWindow,
-    reasoningMode,
-    reasoningEffort,
-    ongoingInstructions,
-    reviewer
-  ));
+export async function startReaderRun(request: RunRequest): Promise<ReaderState> {
+    return toState(request.root, await createReaderRun(request));
 }
 
 export async function getReaderState(
@@ -585,6 +479,7 @@ export async function prepareReaderGeneration(
   promptInstruction?: string;
   state?: ReaderState;
   generationState?: ReaderState;
+  iterationSeed?: string;
 }> {
   const story = await readStoryFile(root, storyPath);
   const prepared = await mutateReaderRun(root, storyPath, runId, (run) => {
@@ -613,6 +508,7 @@ export async function prepareReaderGeneration(
           narration: run.current_draft.narration.replace("```", "\n"),
           reasoning: run.current_draft.reasoning,
           prompt_instruction: run.current_draft.prompt_instruction,
+          incomplete_reason: run.current_draft.incomplete_reason,
           response_id: run.current_draft.response_id,
           prompt: run.current_draft.prompt,
           review: run.current_draft.review,
@@ -632,53 +528,27 @@ export async function prepareReaderGeneration(
       run.ongoing_instructions,
       action === "regenerate" || action === "regenerate_previous" ? instruction : undefined
     );
-    const previousResponseId = run.context_mode === "full"
-      ? run.accepted.at(-1)?.response_id
-      : undefined;
-
     const acceptedHistory = run.accepted.map((item) => ({
       beatIndex: item.beat_index,
       narration: item.narration,
       instruction: item.prompt_instruction,
       reasoning: item.reasoning,
     }));
-    let prompt: NarrationRequest;
-    switch (run.context_mode) {
-      case "full":
-        prompt = buildStatefulNarrationInput(
-          story,
-          run.beat_index,
-          activeInstruction,
-          !previousResponseId,
-          run.reasoning_mode
-        );
-        break;
-      case "hybrid":
-        prompt = buildHybridNarrationInput(
-          story,
-          run.beat_index,
-          acceptedHistory,
-          activeInstruction,
-          run.prose_window,
-          run.reasoning_mode
-        );
-        break;
-      case "blueprint":
-        prompt = buildBlueprintHistoryNarrationInput(
-          story,
-          run.beat_index,
-          activeInstruction,
-          run.reasoning_mode
-        );
-        break;
-    }
+    const prompt = buildNarrationInput(
+      story,
+      run.beat_index,
+      run.prose_window,
+      acceptedHistory,
+      activeInstruction,      
+      run.reasoning_mode
+    );
     return {
       complete: false as const,
       run,
       messages: prompt.messages,
       systemPrompt: prompt.systemPrompt,
       reasoningEffort: run.reasoning_effort,
-      previousResponseId,
+      previousResponseId: undefined,
       activeInstruction,
     };
   });
@@ -693,7 +563,33 @@ export async function prepareReaderGeneration(
     previousResponseId: prepared.previousResponseId,
     promptInstruction: prepared.activeInstruction,
     generationState: await toState(root, prepared.run),
+    iterationSeed: prepared.run.generation_mode === "direct"
+      ? undefined
+      : buildIterationSeed(story, prepared.run.beat_index),
   };
+}
+
+export async function prepareReaderIteration(
+  root: string,
+  storyPath: string,
+  runId: string,
+  beatIndex: number,
+  context: NarrationRequest,
+  candidate: string,
+  focus: string
+): Promise<NarrationRequest> {
+  const [story, run] = await Promise.all([
+    readStoryFile(root, storyPath),
+    readReaderRun(root, storyPath, runId),
+  ]);
+  return buildIterativeNarrationInput(
+    story,
+    beatIndex,
+    context,
+    candidate,
+    focus,
+    run.reasoning_mode
+  );
 }
 
 export async function saveReaderDraft(
@@ -703,7 +599,8 @@ export async function saveReaderDraft(
   narration: string,
   instruction?: string,
   responseId?: string,
-  prompt?: NarrationPrompt & { reasoning?: string }
+  prompt?: NarrationPrompt & { reasoning?: string },
+  incompleteReason?: string
 ): Promise<ReaderState> {
   const { reasoning, ...requestPrompt } = prompt ?? {};
   const run = await mutateReaderRun(root, storyPath, runId, (current) => {
@@ -711,41 +608,10 @@ export async function saveReaderDraft(
       narration: stripNarrationTags(narration),
       reasoning,
       prompt_instruction: instruction,
+      incomplete_reason: incompleteReason,
       response_id: responseId,
       prompt: prompt ? requestPrompt as NarrationPrompt : undefined,
     };
-    return current;
-  });
-  return toState(root, run);
-}
-
-export async function prepareReaderImagePlan(
-  root: string,
-  storyPath: string,
-  runId: string
-): Promise<{ systemPrompt: string; input: string }> {
-  const [story, run] = await Promise.all([
-    readStoryFile(root, storyPath),
-    readReaderRun(root, storyPath, runId),
-  ]);
-  if (run.story_path !== storyPath) throw new Error("Reader run does not belong to this story.");
-  return buildImagePlanPrompt(story, run);
-}
-
-export async function saveReaderImagePlan(
-  root: string,
-  storyPath: string,
-  runId: string,
-  plannerModel: string,
-  output: string
-): Promise<ReaderState> {
-  const story = await readStoryFile(root, storyPath);
-  const imagePlan = parseImagePlan(output, story, plannerModel);
-  const run = await mutateReaderRun(root, storyPath, runId, (current) => {
-    if (current.status !== "completed") {
-      throw new Error("Finish and accept every narrated beat before saving an image plan.");
-    }
-    current.image_plan = imagePlan;
     return current;
   });
   return toState(root, run);

@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildBlueprintHistoryNarrationInput as blueprintRequest,
-  buildHybridNarrationInput as hybridRequest,
-  buildStatefulNarrationInput as statefulRequest,
+  buildNarrationInput as blueprintRequest,
+  buildNarrationInput as hybridRequest,
   type AcceptedNarration,
   type NarrationRequest,
 } from "../src/reader-prompts.js";
@@ -14,14 +13,27 @@ function flat(request: NarrationRequest) {
 }
 
 const buildBlueprintHistoryNarrationInput = (
-  ...args: Parameters<typeof blueprintRequest>
-) => flat(blueprintRequest(...args));
+  story: Parameters<typeof blueprintRequest>[0],
+  beatIndex: number,
+  instruction?: string,
+  reasoningMode?: Parameters<typeof blueprintRequest>[5]
+) => flat(blueprintRequest(story, beatIndex, 0, [], instruction, reasoningMode));
 const buildHybridNarrationInput = (
-  ...args: Parameters<typeof hybridRequest>
-) => flat(hybridRequest(...args));
-const buildStatefulNarrationInput = (
-  ...args: Parameters<typeof statefulRequest>
-) => flat(statefulRequest(...args));
+  story: Parameters<typeof hybridRequest>[0],
+  beatIndex: number,
+  acceptedHistory: Parameters<typeof hybridRequest>[3],
+  instruction?: string,
+  proseBeats = 1,
+  reasoningMode?: Parameters<typeof hybridRequest>[5]
+) => flat(hybridRequest(story, beatIndex, proseBeats, acceptedHistory, instruction, reasoningMode));
+const hybridRequestWithReadableArgs = (
+  story: Parameters<typeof hybridRequest>[0],
+  beatIndex: number,
+  acceptedHistory: Parameters<typeof hybridRequest>[3],
+  instruction?: string,
+  proseBeats = 1,
+  reasoningMode?: Parameters<typeof hybridRequest>[5]
+) => hybridRequest(story, beatIndex, proseBeats, acceptedHistory, instruction, reasoningMode);
 
 /** Accepted prose for beats 0..count-1, distinguishable in assertions. */
 function accepted(count: number): AcceptedNarration[] {
@@ -38,7 +50,7 @@ describe("beat block", () => {
     expect(input).toContain("### Scene outcomes");
     expect(input).toContain("All of the following events must have occured before the beat ends");
     expect(input).toContain("1. Mara has scrubbed the grating clean.");
-    expect(systemPrompt).toContain("Write every listed outcome once, in order, as one connected scene.");
+    expect(systemPrompt).toContain("Write the prose for every listed outcome once, in order, as one connected scene.");
   });
 
   it("sets explicit boundaries against runaway narration", () => {
@@ -228,7 +240,7 @@ describe("hybrid context mode", () => {
   });
 
   it("replays the prose window as alternating user and assistant turns", () => {
-    const { messages } = hybridRequest(tidewrack(), 5, accepted(5), undefined, 2);
+    const { messages } = hybridRequestWithReadableArgs(tidewrack(), 5, accepted(5), undefined, 2);
 
     expect(messages.map((item) => item.role)).toEqual([
       "user",
@@ -247,7 +259,7 @@ describe("hybrid context mode", () => {
   });
 
   it("orders the closing turn so the current beat lands last", () => {
-    const { messages } = hybridRequest(tidewrack(), 5, accepted(5), undefined, 1);
+    const { messages } = hybridRequestWithReadableArgs(tidewrack(), 5, accepted(5), undefined, 1);
     const closing = messages.at(-1)!.content;
 
     expect(closing.indexOf("## Established facts"))
@@ -264,7 +276,7 @@ describe("hybrid context mode", () => {
   });
 
   it("omits the prose section on the opening beat", () => {
-    const request = hybridRequest(tidewrack(), 0, []);
+    const request = hybridRequestWithReadableArgs(tidewrack(), 0, []);
     expect(request.messages).toHaveLength(1);
     expect(request.messages[0].content).not.toContain("## Story so far");
     expect(request.messages[0].content).toContain("## Current beat 1 of 6");
@@ -284,54 +296,3 @@ describe("hybrid context mode", () => {
   });
 });
 
-describe("full context mode", () => {
-  it("sends only the beat block once the response chain is established", () => {
-    const prompt = buildStatefulNarrationInput(tidewrack(), 5);
-    // `instructions` is not inherited across a stored chain, so it is always present.
-    expect(prompt.systemPrompt).toContain("# Task");
-    expect(prompt.messages).toHaveLength(1);
-    expect(prompt.input).toContain("## Current beat 6 of 6");
-    expect(prompt.input).not.toContain("# Write the story");
-    expect(prompt.input).not.toContain("## Story so far");
-    expect(prompt.input).not.toContain("Prose of beat 5.");
-  });
-
-  it("bootstraps the story assignment when there is no chain to resume", () => {
-    const prompt = buildStatefulNarrationInput(tidewrack(), 5, undefined, true);
-    expect(prompt.systemPrompt).toContain("# Task");
-    expect(prompt.input).toContain("# Write the story");
-    expect(prompt.input).toContain("**Title**: Tidewrack");
-    expect(prompt.input).toContain("## Current beat 6 of 6");
-  });
-
-  it("still gets the derived state and established markers", () => {
-    const prompt = buildStatefulNarrationInput(tidewrack(), 5);
-    expect(prompt.input).toContain("- Shoulder bandaged, arm in a sling.");
-    expect(prompt.input).toContain("[established]");
-  });
-
-  it("only adds explicit tags for tagged reasoning modes", () => {
-    const native = buildStatefulNarrationInput(tidewrack(), 0, undefined, true);
-    const think = buildStatefulNarrationInput(tidewrack(), 0, undefined, true, "think");
-    const thinking = buildStatefulNarrationInput(tidewrack(), 0, undefined, true, "thinking");
-
-    expect(native.systemPrompt).not.toContain("<think");
-    expect(think.systemPrompt).toContain("Begin with <think>");
-    expect(thinking.systemPrompt).toContain("Begin with <thinking>");
-  });
-
-  it("activates slash-think templates and requires their native tag format", () => {
-    const prompt = buildStatefulNarrationInput(
-      tidewrack(),
-      0,
-      undefined,
-      true,
-      "template_think"
-    );
-
-    expect(prompt.systemPrompt).toContain("Begin with [THINK]");
-    expect(prompt.systemPrompt).toContain("keep all reasoning inside [THINK]...[/THINK]");
-    expect(prompt.systemPrompt).not.toContain("Begin with <think>");
-    expect(prompt.systemPrompt).not.toContain("Begin with <thinking>");
-  });
-});

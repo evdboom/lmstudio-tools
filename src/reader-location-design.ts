@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { jsonObject } from "./reader-image-prompts.js";
 import { designSuggestionSchema, normalizeSuggestedId } from "./reader-design-shared.js";
 import type { StoryBlueprint } from "./story-model.js";
+import { jsonObject } from "./reader-service.js";
 
 export const locationDraftSchema = z.object({
   /** Suggested id, freeform text. Dropped rather than rejected if malformed or already taken; the caller falls back to its own scheme. */

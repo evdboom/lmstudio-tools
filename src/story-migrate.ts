@@ -28,7 +28,6 @@ interface LegacyStory {
   narration_modes: Array<{ id: string; perspective: string; tense: string; rules: string[]; positive_examples?: string[]; negative_examples?: string[]; kind?: "replace" | "supplemental" }>;
   facts: Array<{ id: string; fact: string; subjects: string[] }>;
   beats: Array<{ location: LegacyReference; characters: LegacyReference[]; events: string[]; narration_mode?: string; facts: string[]; keywords: Array<{ type: string; word: string }>; narration_rules: string[] }>;
-  image_generation?: unknown;
 }
 
 export interface MigrationReport {

@@ -2,80 +2,15 @@ import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AuthoringApp } from "./authoring";
 import { useScreenWakeLock } from "./wake-lock";
+import type { GenerationMode, ReasoningMode, ReasoningEffort, RunItem, ReaderState, StoryItem } from "../../src/reader-store";
 import "./styles.css";
 
-type ContextMode = "full" | "blueprint" | "hybrid";
-type ReasoningMode = "native" | "template_think" | "think" | "thinking";
-type ReasoningEffort = "default" | "off" | "low" | "medium" | "high";
-
-const CONTEXT_MODE_LABELS: Record<ContextMode, string> = {
-  full: "full context",
-  blueprint: "beat events",
-  hybrid: "recent prose + history",
-};
 const REVISION_VERDICT_LABELS: Record<"replace" | "append", string> = {
   replace: "replacement",
   append: "addition",
 };
 
-interface StoryItem { path: string; title: string; premise: string; beats: number }
-interface RunItem {
-  run_id: string;
-  story_path: string;
-  model?: string;
-  context_mode: ContextMode;
-  reasoning_mode: ReasoningMode;
-  beat_index: number;
-  accepted_beats: number;
-  has_current_draft: boolean;
-  updated_at: string;
-  status: "active" | "completed";
-}
-interface NarrationReview {
-  narration: string;
-  verdict?: "valid" | "replace" | "append";
-  reasoning?: string;
-  model: string;
-  reviewed_at: string;
-}
-interface Narration { beat_index: number; narration: string; review?: NarrationReview }
-interface ImagePlan {
-  generated_at: string;
-  planner_model: string;
-  checkpoint_id: string;
-  width: number;
-  height: number;
-  beats: Array<{
-    beat_index: number;
-    prompt: string;
-    negative_prompt: string;
-    framing: string;
-    loras: Array<{ id: string; strength: number }>;
-    pose: { source_id?: string; prompt: string };
-  }>;
-}
-interface ReaderState {
-  run_id: string;
-  story_path: string;
-  model?: string;
-  context_mode: ContextMode;
-  reasoning_mode: ReasoningMode;
-  reasoning_effort?: ReasoningEffort;
-  reviewer_model?: string;
-  reviewer_reasoning_mode?: ReasoningMode;
-  reviewer_reasoning_effort?: ReasoningEffort;
-  prose_window: number;
-  title: string;
-  premise: string;
-  beat_index: number;
-  total_beats: number;
-  beat_titles: string[];
-  accepted: Narration[];
-  current_draft?: { narration: string; review?: NarrationReview };
-  ongoing_instructions: string[];
-  status: "active" | "completed";
-  image_plan?: ImagePlan;
-}
+type GenerationAction = "next" | "regenerate" | "regenerate_previous";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -95,7 +30,8 @@ function App() {
   const [runs, setRuns] = useState<RunItem[]>([]);
   const [storyPath, setStoryPath] = useState("");
   const [model, setModel] = useState("");
-  const [contextMode, setContextMode] = useState<ContextMode>("full");
+  const [generationMode, setGenerationMode] = useState<GenerationMode>("direct");
+  const [iterationCount, setIterationCount] = useState(3);
   const [reasoningMode, setReasoningMode] = useState<ReasoningMode>("native");
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("default");
   const [differentReviewer, setDifferentReviewer] = useState(false);
@@ -111,9 +47,7 @@ function App() {
   const [instruction, setInstruction] = useState("");
   const [busy, setBusy] = useState(false);
   useScreenWakeLock(busy);
-  const [generationAction, setGenerationAction] = useState<
-    "next" | "regenerate" | "regenerate_previous"
-  >();
+  const [generationAction, setGenerationAction] = useState<GenerationAction>();
   const [generationStatus, setGenerationStatus] = useState("");
   const [reasoning, setReasoning] = useState("");
   const [actionBeatIndex, setActionBeatIndex] = useState<number>();
@@ -133,7 +67,7 @@ function App() {
   );
   const autoContinueRef = useRef(autoContinue);
   const reviewAfterGenerationRef = useRef(reviewAfterGeneration);
-  const generationAbort = useRef<AbortController>();
+  const generationAbort = useRef<AbortController | null>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -219,6 +153,8 @@ function App() {
     setActionStreamed("");
     setActionReasoning("");
     setActionStatus(`Reviewing beat ${beatIndex + 1}...`);
+    const incompleteReason = narrationAt(run, beatIndex)?.incomplete_reason;
+    const reviewInstruction = [instruction?.trim(), incompleteReason].filter(Boolean).join("\n\n");
     const response = await fetch(`/api/runs/${run.run_id}/review`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -226,7 +162,7 @@ function App() {
         story_path: run.story_path,
         model: run.reviewer_model || model,
         beat_index: beatIndex,
-        instruction: instruction?.trim() || undefined,
+        instruction: reviewInstruction || undefined,
       }),
       signal,
     });
@@ -326,13 +262,6 @@ function App() {
   }
 
   async function regenerateBeat(run: ReaderState, beatIndex: number) {
-    const hasLaterNarration = run.accepted.some((item) => item.beat_index > beatIndex)
-      || Boolean(run.current_draft && run.beat_index > beatIndex);
-    if (run.context_mode === "full" && hasLaterNarration &&
-        !confirm("Regenerating this beat will discard every later beat so the story can continue from the new LM Studio branch. Continue?")) {
-      return;
-    }
-
     const abort = new AbortController();
     generationAbort.current = abort;
     setBusy(true);
@@ -379,7 +308,7 @@ function App() {
         setError(reason instanceof Error ? reason.message : String(reason));
       }
     } finally {
-      if (generationAbort.current === abort) generationAbort.current = undefined;
+      if (generationAbort.current === abort) generationAbort.current = null;
       setBusy(false);
       setActionBeatIndex(undefined);
       setActionKind(undefined);
@@ -455,7 +384,7 @@ function App() {
         setError(reason instanceof Error ? reason.message : String(reason));
       }
     } finally {
-      if (generationAbort.current === abort) generationAbort.current = undefined;
+      if (generationAbort.current === abort) generationAbort.current = null;
       setBusy(false);
       setGenerationAction(undefined);
       setGenerationStatus("");
@@ -535,7 +464,8 @@ function App() {
         body: JSON.stringify({
           story_path: storyPath,
           model,
-          context_mode: contextMode,
+          generation_mode: generationMode,
+          iteration_count: iterationCount,
           prose_window: proseWindow,
           reasoning_mode: reasoningMode,
           reasoning_effort: reasoningEffort,
@@ -563,7 +493,8 @@ function App() {
       );
       setState(resumed);
       if (resumed.model) setModel(resumed.model);
-      setContextMode(resumed.context_mode);
+      setGenerationMode(resumed.generation_mode);
+      setIterationCount(resumed.iteration_count);
       setReasoningMode(resumed.reasoning_mode);
       setReasoningEffort(resumed.reasoning_effort ?? "default");
       setProseWindow(resumed.prose_window);
@@ -575,26 +506,6 @@ function App() {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setBusy(false);
-    }
-  }
-
-  async function planImages() {
-    if (state?.status !== "completed" || !model) return;
-    setBusy(true);
-    setGenerationStatus("Planning images from the completed narration...");
-    setError("");
-    try {
-      const planned = await json<ReaderState>(`/api/runs/${state.run_id}/plan-images`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ story_path: state.story_path, model }),
-      });
-      setState(planned);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setBusy(false);
-      setGenerationStatus("");
     }
   }
 
@@ -615,9 +526,6 @@ function App() {
       ? state.beat_index
       : Math.max(state.beat_index, state.accepted.length)
     : 0;
-  let imagePlanActionLabel = "Plan images";
-  if (busy) imagePlanActionLabel = "Planning...";
-  else if (state?.image_plan) imagePlanActionLabel = "Regenerate plan";
 
   return (
     <main className={state ? "reader active" : "reader"}>
@@ -734,16 +642,29 @@ function App() {
               )}
             </div>
             <label className="modal-field">
-              <span>Narration context</span>
-              <select aria-label="Narration context" value={contextMode} onChange={(event) => setContextMode(event.target.value as ContextMode)}>
-                <option value="hybrid">Recent prose + derived history</option>
-                <option value="full">Full narration context</option>
-                <option value="blueprint">Beat events only</option>
+              <span>Drafting mode</span>
+              <select aria-label="Drafting mode" value={generationMode} onChange={(event) => setGenerationMode(event.target.value as GenerationMode)}>
+                <option value="direct">Direct</option>
+                <option value="distinct">Distinct: rough, causality, polish</option>
+                <option value="recurring">Recurring improvement</option>
               </select>
             </label>
-            {contextMode === "hybrid" && (
+            {generationMode === "recurring" && (
               <label className="modal-field">
+                <span>Improvement passes</span>
+                <input
+                  aria-label="Improvement passes"
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={iterationCount}
+                  onChange={(event) => setIterationCount(Math.max(1, Math.min(20, Number(event.target.value) || 1)))}
+                />
+              </label>
+            )}
+            <label className="modal-field" title="Higher values give more context and consistency, but can cause more instruction drift.">
                 <span>Recent beats carried as prose</span>
+                <small>Higher gives more context and consistency, but can cause more instruction drift.</small>
                 <input
                   aria-label="Recent beats carried as prose"
                   type="number"
@@ -752,8 +673,7 @@ function App() {
                   value={proseWindow}
                   onChange={(event) => setProseWindow(Math.max(0, Math.min(20, Number(event.target.value) || 0)))}
                 />
-              </label>
-            )}
+            </label>
             <div className="modal-field">
               <span>Ongoing instructions</span>
               {ongoingInstructions.length > 0 && (
@@ -806,7 +726,7 @@ function App() {
                 <div className="saved-run" key={run.run_id}>
                   <div className="saved-run-summary">
                     <strong>{run.status === "completed" ? "Completed" : `Beat ${run.beat_index + 1}`}</strong>
-                    <span title={run.model}>{run.model ?? "Unknown model"} · {CONTEXT_MODE_LABELS[run.context_mode]} · {run.accepted_beats} accepted · {new Date(run.updated_at).toLocaleString()}</span>
+                    <span title={run.model}>{run.model ?? "Unknown model"} · {run.accepted_beats} accepted · {new Date(run.updated_at).toLocaleString()}</span>
                   </div>
                   <div className="saved-run-actions">
                     <button className="secondary" disabled={busy} onClick={() => void resume(run)}>
@@ -974,46 +894,7 @@ function App() {
                 <pre>{reasoning || actionReasoning}</pre>
               </details>
             )}
-            {state.status === "completed" && <div className="fin">End</div>}
-            {state.status === "completed" && (
-              <section className="image-planning">
-                <div className="image-planning-heading">
-                  <div>
-                    <p className="eyebrow">ComfyUI</p>
-                    <h2>Image plan</h2>
-                  </div>
-                  <button type="button" className="primary" disabled={busy || !model} onClick={() => void planImages()}>
-                    {imagePlanActionLabel}
-                  </button>
-                </div>
-                {busy && generationStatus && <p className="image-planning-status">{generationStatus}</p>}
-                {state.image_plan && (
-                  <>
-                    <p className="image-plan-meta">
-                      {state.image_plan.checkpoint_id} · {state.image_plan.width} × {state.image_plan.height} · {state.image_plan.planner_model}
-                    </p>
-                    {state.image_plan.beats.map((beat) => (
-                      <article className="image-beat" key={beat.beat_index}>
-                        <header>
-                          <strong>Beat {beat.beat_index + 1}</strong>
-                          <span>{beat.framing}</span>
-                        </header>
-                        <label>Prompt<textarea readOnly value={beat.prompt} /></label>
-                        <label>Negative<textarea readOnly value={beat.negative_prompt} /></label>
-                        <dl>
-                          <dt>LoRAs</dt>
-                          <dd>{beat.loras.length > 0
-                            ? beat.loras.map((lora) => `${lora.id} @ ${lora.strength}`).join(", ")
-                            : "None"}</dd>
-                          <dt>Pose</dt>
-                          <dd>{beat.pose.source_id ? `${beat.pose.source_id}: ` : ""}{beat.pose.prompt}</dd>
-                        </dl>
-                      </article>
-                    ))}
-                  </>
-                )}
-              </section>
-            )}
+            {state.status === "completed" && <div className="fin">End</div>}          
             {error && <div className="error" role="alert">{error}</div>}
           </article>
 

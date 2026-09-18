@@ -2,7 +2,7 @@
 import { execFile } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import fastifyStatic from "@fastify/static";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { promises as fs } from "node:fs";
 import { networkInterfaces, type NetworkInterfaceInfo } from "node:os";
@@ -26,20 +26,20 @@ import {
   dismissReaderReview,
   getReaderState,
   prepareReaderBeatRegeneration,
-  prepareReaderImagePlan,
   prepareReaderGeneration,
+  prepareReaderIteration,
   prepareReaderReview,
   resolveReviewNarration,
   saveReaderDraft,
-  saveReaderImagePlan,
   saveReaderReview,
   startReaderRun,
 } from "./reader-service.js";
+import { DISTINCT_ITERATION_FOCUSES, type ReaderChatMessage } from "./reader-prompts.js";
 import { buildBeatDesignPrompt, parseBeatDraft } from "./reader-beat-design.js";
 import { buildCharacterDesignPrompt, parseCharacterDraft } from "./reader-character-design.js";
 import { buildLocationDesignPrompt, parseLocationDraft } from "./reader-location-design.js";
 import { storyBlueprintSchema } from "./story-model.js";
-import { deleteReaderRun, listFinalStories, listReaderRuns } from "./reader-store.js";
+import { deleteReaderRun, GenerationMode, listFinalStories, listReaderRuns, RunRequest } from "./reader-store.js";
 import {
   listEditableStories,
   readEditableStory,
@@ -86,6 +86,109 @@ function message(error: unknown): string {
 
 function overrunMessage(beatNumber: number, words: number, reason: OverrunReason): string {
   return `Beat ${beatNumber} ran to ${words} words, past its budget. Starting over...`;
+}
+
+interface ReaderGenerationPlan {
+  messages: ReaderChatMessage[];
+  systemPrompt?: string;
+  previousResponseId?: string;
+  reasoningEffort?: "default" | "off" | "low" | "medium" | "high";
+  wordBudget?: { maxWords: number; ceilingWords: number };
+  generationMode: GenerationMode;
+  iterationCount: number;
+  iterationSeed?: string;
+  storeResponse: boolean;
+}
+
+async function streamReaderGeneration(options: {
+  root: string;
+  storyPath: string;
+  runId: string;
+  beatIndex: number;
+  beatNumber: number;
+  model: string;
+  apiToken?: string;
+  lmStudioUrl: string;
+  plan: ReaderGenerationPlan;
+  reply: FastifyReply;
+  signal: AbortSignal;
+}): Promise<{
+  narration: string;
+  reasoning: string;
+  responseId?: string;
+  incompleteReason?: string;
+  prompt: { messages: ReaderChatMessage[]; system_prompt?: string; previous_response_id?: string };
+  storeResponse: boolean;
+}> {
+  let passFocuses: readonly string[] = [];
+  if (options.plan.generationMode === "distinct") {
+    passFocuses = DISTINCT_ITERATION_FOCUSES;
+  } else if (options.plan.generationMode === "recurring") {
+    passFocuses = Array.from({ length: options.plan.iterationCount }, () => "Improve this story.");
+  }
+  let messages = options.plan.messages;
+  let systemPrompt = options.plan.systemPrompt;
+  let candidate = options.plan.iterationSeed;
+  let generated: Awaited<ReturnType<typeof streamLmStudioNarration>> | undefined;
+
+  const runPass = async (store: boolean) => streamLmStudioNarration({
+    baseUrl: options.lmStudioUrl,
+    model: options.model,
+    messages,
+    apiToken: options.apiToken,
+    systemPrompt,
+    previousResponseId: options.plan.previousResponseId,
+    store,
+    reasoningEffort: options.plan.reasoningEffort,
+    wordBudget: options.plan.wordBudget,
+    signal: options.signal,
+    onDelta: (delta) => options.reply.raw.write(`event: delta\ndata: ${JSON.stringify(delta)}\n\n`),
+    onReasoning: () => {
+      const status = `The model is reasoning about beat ${options.beatNumber}...`;
+      options.reply.raw.write(`event: status\ndata: ${JSON.stringify(status)}\n\n`);
+    },
+    onReasoningDelta: (delta) => options.reply.raw.write(`event: reasoning\ndata: ${JSON.stringify(delta)}\n\n`),
+    onOverrun: (words, reason) => options.reply.raw.write(`event: restart\ndata: ${JSON.stringify(overrunMessage(options.beatNumber, words, reason))}\n\n`),
+    onRecovery: () => options.reply.raw.write(`event: status\ndata: ${JSON.stringify("Reasoning finished without narration. Asking the model to output the beat...")}\n\n`),
+  });
+
+  if (passFocuses.length === 0) {
+    generated = await runPass(options.plan.storeResponse);
+  } else {
+    if (!candidate) throw new Error("Iterative generation has no event scaffold.");
+    for (let index = 0; index < passFocuses.length; index += 1) {
+      const passNumber = index + 1;
+      const label = options.plan.generationMode === "distinct"
+        ? ["Building the rough scene", "Improving causality and pacing", "Polishing the prose"][index]
+        : `Improving the story (${passNumber}/${passFocuses.length})`;
+      const status = `${label}...`;
+      options.reply.raw.write(`event: restart\ndata: ${JSON.stringify(status)}\n\n`);
+      const prompt = await prepareReaderIteration(
+        options.root,
+        options.storyPath,
+        options.runId,
+        options.beatIndex,
+        { messages: options.plan.messages, systemPrompt: options.plan.systemPrompt ?? "" },
+        candidate,
+        passFocuses[index]
+      );
+      messages = prompt.messages;
+      systemPrompt = prompt.systemPrompt;
+      generated = await runPass(index === passFocuses.length - 1 && options.plan.storeResponse);
+      candidate = generated.narration;
+    }
+  }
+
+  if (!generated) throw new Error("Generation produced no result.");
+  return {
+    ...generated,
+    prompt: {
+      messages,
+      system_prompt: systemPrompt,
+      previous_response_id: options.plan.previousResponseId,
+    },
+    storeResponse: options.plan.storeResponse,
+  };
 }
 
 export async function createReaderServer(options: ReaderServerOptions): Promise<FastifyInstance> {
@@ -243,7 +346,8 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
     const parsed = z.object({
       story_path: storyPathSchema,
       model: z.string().trim().min(1).max(500),
-      context_mode: z.enum(["full", "blueprint", "hybrid"]).default("full"),
+      generation_mode: z.enum(["direct", "distinct", "recurring"]).default("direct"),
+      iteration_count: z.number().int().min(1).max(20).default(3),
       prose_window: z.number().int().min(0).max(20).default(1),
       reasoning_mode: z.enum(["native", "template_think", "think", "thinking"]).default("native"),
       reasoning_effort: z.enum(["default", "off", "low", "medium", "high"]).default("default"),
@@ -254,21 +358,24 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
     }).safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "A valid story_path and model are required." });
     try {
-      return await startReaderRun(
-        options.root,
-        parsed.data.story_path,
-        parsed.data.model,
-        parsed.data.context_mode,
-        parsed.data.prose_window,
-        parsed.data.reasoning_mode,
-        parsed.data.reasoning_effort,
-        parsed.data.ongoing_instructions,
-        {
+      const requestData: RunRequest = {
+        root: options.root,
+        story_path: parsed.data.story_path,
+        model: parsed.data.model,
+        prose_window: parsed.data.prose_window,
+        reasoning_mode: parsed.data.reasoning_mode,
+        reasoning_effort: parsed.data.reasoning_effort,
+        ongoing_instructions: parsed.data.ongoing_instructions,
+        generationMode: parsed.data.generation_mode,
+        iterationCount: parsed.data.iteration_count,
+        reviewer: parsed.data.reviewer_model ? {
           model: parsed.data.reviewer_model,
-          reasoningMode: parsed.data.reviewer_reasoning_mode,
-          reasoningEffort: parsed.data.reviewer_reasoning_effort,
-        }
-      );
+          reasoningMode: parsed.data.reviewer_reasoning_mode!,
+          reasoningEffort: parsed.data.reviewer_reasoning_effort!,
+        } : null,
+      };
+
+      return await startReaderRun(requestData);
     } catch (error) {
       return reply.code(400).send({ error: message(error) });
     }
@@ -361,33 +468,29 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       reply.raw.write(`event: state\ndata: ${JSON.stringify(prepared.generationState)}\n\n`);
       const beatNumber = prepared.generationState!.beat_index + 1;
       reply.raw.write(`event: status\ndata: ${JSON.stringify(`Preparing beat ${beatNumber}...`)}\n\n`);
-      const storeResponse = prepared.generationState!.context_mode === "full";
-      const generated = await streamLmStudioNarration({
-        baseUrl: options.lmStudioUrl,
+      const storeResponse = false;
+      const generated = await streamReaderGeneration({
+        root: options.root,
+        storyPath: body.data.story_path,
+        runId: params.data.runId,
+        beatIndex: prepared.generationState!.beat_index,
+        beatNumber,
         model: body.data.model,
-        messages: prepared.messages!,
+        lmStudioUrl: options.lmStudioUrl,
         apiToken: options.lmStudioApiToken,
-        systemPrompt: prepared.systemPrompt,
-        previousResponseId: prepared.previousResponseId,
-        store: storeResponse,
-        reasoningEffort: prepared.reasoningEffort,
-        wordBudget: prepared.wordBudget,
+        plan: {
+          messages: prepared.messages!,
+          systemPrompt: prepared.systemPrompt,
+          previousResponseId: prepared.previousResponseId,
+          reasoningEffort: prepared.reasoningEffort,
+          wordBudget: prepared.wordBudget,
+          generationMode: prepared.generationState!.generation_mode,
+          iterationCount: prepared.generationState!.iteration_count,
+          iterationSeed: prepared.iterationSeed,
+          storeResponse,
+        },
+        reply,
         signal: abort.signal,
-        onDelta: (delta) => {
-          reply.raw.write(`event: delta\ndata: ${JSON.stringify(delta)}\n\n`);
-        },
-        onReasoning: () => {
-          reply.raw.write(`event: status\ndata: ${JSON.stringify(`The model is reasoning about beat ${beatNumber}...`)}\n\n`);
-        },
-        onReasoningDelta: (delta) => {
-          reply.raw.write(`event: reasoning\ndata: ${JSON.stringify(delta)}\n\n`);
-        },
-        onOverrun: (words, reason) => {
-          reply.raw.write(`event: restart\ndata: ${JSON.stringify(overrunMessage(beatNumber, words, reason))}\n\n`);
-        },
-        onRecovery: () => {
-          reply.raw.write(`event: status\ndata: ${JSON.stringify("Reasoning finished without narration. Asking the model to output the beat...")}\n\n`);
-        },
       });
       const state = await saveReaderDraft(
         options.root,
@@ -395,13 +498,12 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         params.data.runId,
         generated.narration,
         prepared.promptInstruction,
-        storeResponse ? generated.responseId : undefined,
+        generated.storeResponse ? generated.responseId : undefined,
         {
-          messages: prepared.messages,
-          system_prompt: prepared.systemPrompt,
-          previous_response_id: prepared.previousResponseId,
+          ...generated.prompt,
           reasoning: generated.reasoning || undefined,
-        }
+        },
+        generated.incompleteReason
       );
       reply.raw.write(`event: done\ndata: ${JSON.stringify(state)}\n\n`);
     } catch (error) {
@@ -567,32 +669,28 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
     try {
       const beatNumber = body.data.beat_index + 1;
       reply.raw.write(`event: status\ndata: ${JSON.stringify(`Regenerating beat ${beatNumber}...`)}\n\n`);
-      const generated = await streamLmStudioNarration({
-        baseUrl: options.lmStudioUrl,
+      const generated = await streamReaderGeneration({
+        root: options.root,
+        storyPath: body.data.story_path,
+        runId: params.data.runId,
+        beatIndex: body.data.beat_index,
+        beatNumber,
         model: body.data.model,
-        messages: regeneration.messages,
+        lmStudioUrl: options.lmStudioUrl,
         apiToken: options.lmStudioApiToken,
-        systemPrompt: regeneration.systemPrompt,
-        previousResponseId: regeneration.previousResponseId,
-        store: regeneration.store,
-        reasoningEffort: regeneration.reasoningEffort,
-        wordBudget: regeneration.wordBudget,
+        plan: {
+          messages: regeneration.messages,
+          systemPrompt: regeneration.systemPrompt,
+          previousResponseId: regeneration.previousResponseId,
+          reasoningEffort: regeneration.reasoningEffort,
+          wordBudget: regeneration.wordBudget,
+          generationMode: regeneration.generationMode,
+          iterationCount: regeneration.iterationCount,
+          iterationSeed: regeneration.iterationSeed,
+          storeResponse: regeneration.store,
+        },
+        reply,
         signal: abort.signal,
-        onDelta: (delta) => {
-          reply.raw.write(`event: delta\ndata: ${JSON.stringify(delta)}\n\n`);
-        },
-        onReasoning: () => {
-          reply.raw.write(`event: status\ndata: ${JSON.stringify(`The model is reasoning about beat ${beatNumber}...`)}\n\n`);
-        },
-        onReasoningDelta: (delta) => {
-          reply.raw.write(`event: reasoning\ndata: ${JSON.stringify(delta)}\n\n`);
-        },
-        onOverrun: (words, reason) => {
-          reply.raw.write(`event: restart\ndata: ${JSON.stringify(overrunMessage(beatNumber, words, reason))}\n\n`);
-        },
-        onRecovery: () => {
-          reply.raw.write(`event: status\ndata: ${JSON.stringify("Reasoning finished without narration. Asking the model to output the beat...")}\n\n`);
-        },
       });
       const state = await applyReaderRegeneration(
         options.root,
@@ -602,12 +700,9 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         {
           narration: generated.narration,
           reasoning: generated.reasoning || undefined,
-          responseId: regeneration.store ? generated.responseId : undefined,
-          prompt: {
-            messages: regeneration.messages,
-            system_prompt: regeneration.systemPrompt,
-            previous_response_id: regeneration.previousResponseId,
-          },
+          responseId: generated.storeResponse ? generated.responseId : undefined,
+          prompt: generated.prompt,
+          incompleteReason: generated.incompleteReason,
         }
       );
       reply.raw.write(`event: done\ndata: ${JSON.stringify(state)}\n\n`);
@@ -755,54 +850,6 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       return reply.code(400).send({ error: message(error) });
     } finally {
       releaseWakeLock();
-    }
-  });
-
-  app.post("/api/runs/:runId/plan-images", async (request, reply) => {
-    const params = z.object({ runId: runIdSchema }).safeParse(request.params);
-    const body = z.object({
-      story_path: storyPathSchema,
-      model: z.string().trim().min(1).max(500),
-    }).safeParse(request.body);
-    if (!params.success || !body.success) {
-      return reply.code(400).send({ error: "Invalid image planning request." });
-    }
-
-    const key = `${body.data.story_path}\0${params.data.runId}`;
-    if (activeGenerations.has(key)) {
-      return reply.code(409).send({ error: "A generation is already active for this run." });
-    }
-
-    activeGenerations.add(key);
-    await acquireWakeLock();
-    const abort = new AbortController();
-    request.raw.on("aborted", () => abort.abort());
-    try {
-      const prompt = await prepareReaderImagePlan(
-        options.root,
-        body.data.story_path,
-        params.data.runId
-      );
-      const output = await generateLmStudioText({
-        baseUrl: options.lmStudioUrl,
-        model: body.data.model,
-        input: prompt.input,
-        systemPrompt: prompt.systemPrompt,
-        apiToken: options.lmStudioApiToken,
-        signal: abort.signal,
-      });
-      return await saveReaderImagePlan(
-        options.root,
-        body.data.story_path,
-        params.data.runId,
-        body.data.model,
-        output
-      );
-    } catch (error) {
-      return reply.code(400).send({ error: message(error) });
-    } finally {
-      releaseWakeLock();
-      activeGenerations.delete(key);
     }
   });
 

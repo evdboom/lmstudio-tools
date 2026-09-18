@@ -31,6 +31,12 @@ export interface NarrationRequest {
   messages: ReaderChatMessage[];
 }
 
+export const DISTINCT_ITERATION_FOCUSES = [
+  "Turn the event scaffold into a complete rough scene. Cover every event once and in order, adding only the connective action, dialogue, and concrete detail needed to make it readable.",
+  "Rewrite the complete scene to strengthen cause and effect, transitions, pacing, and character reactions. Preserve every event and its order.",
+  "Polish the complete scene for voice, clarity, sentence and paragraph quality, narration-rule compliance, and the word budget. Preserve every event and its order.",
+] as const;
+
 export interface AcceptedNarration {
   beatIndex: number;
   narration: string;
@@ -128,6 +134,64 @@ function assertBeat(story: StoryBlueprint, beatIndex: number): StoryBeat {
   const beat = story.beats[beatIndex];
   if (!beat) throw new Error(`Beat ${beatIndex} does not exist.`);
   return beat;
+}
+
+/** Minimal first draft for iterative generation: the authored outcomes, in order. */
+export function buildIterationSeed(story: StoryBlueprint, beatIndex: number): string {
+  return assertBeat(story, beatIndex).events
+    .map((event, index) => `${index + 1}. ${event}`)
+    .join("\n");
+}
+
+/** A compact full-rewrite pass over a scaffold or the previous pass's complete prose. */
+export function buildIterativeNarrationInput(
+  story: StoryBlueprint,
+  beatIndex: number,
+  context: NarrationRequest,
+  candidate: string,
+  focus: string,
+  reasoningMode: ReasoningMode = "native"
+): NarrationRequest {
+  const beat = assertBeat(story, beatIndex);
+  const mode = beatNarrationMode(story, beat);
+  if (!mode) throw new Error(`Beat ${beatIndex} references an unknown narration mode.`);
+  const closing = context.messages.at(-1);
+  if (closing?.role !== "user") throw new Error("Iterative context must end with a user turn.");
+
+  return {
+    systemPrompt: [
+      ...(reasoningMode === "template_think" ? ["/think", ""] : []),
+      "# Task",
+      "Improve the supplied story draft as one complete fictional scene.",
+      "",
+      "# Output contract",
+      ...taggedReasoningRule(reasoningMode),
+      "- Output the complete revised scene and nothing else. Never output a critique, plan, heading, or partial patch.",
+      "- Preserve every listed event, its order, established canon, and the next-beat boundary.",
+      `- Use ${mode.perspective} perspective and ${mode.tense} tense.`,
+      `- Keep the complete scene within ${describeBeatBudget(story.beat_budget)}.`,
+      "",
+      "# Pass focus",
+      focus,
+      "",
+      "# Narration rules",
+      ...resolveNarrationRules(story, mode).map((rule) => `- ${rule}`),
+      ...beat.narration_rules.map((rule) => `- ${rule}`),
+    ].join("\n"),
+    messages: context.messages.map((message, index) => index === context.messages.length - 1
+      ? {
+        ...message,
+        content: [
+          message.content,
+          "",
+          "# Draft to improve",
+          candidate,
+          "",
+          "Return the complete revised scene only.",
+        ].join("\n"),
+      }
+      : message),
+  };
 }
 
 /**
@@ -356,23 +420,6 @@ export function buildStatefulNarrationInput(
 }
 
 /**
- * `blueprint` context mode: no prose at all, so the model's only memory of
- * earlier beats is the derived history, the folded state and the fact windows.
- */
-export function buildBlueprintHistoryNarrationInput(
-  story: StoryBlueprint,
-  beatIndex: number,
-  instruction?: string,
-  reasoningMode: ReasoningMode = "native"
-): NarrationRequest {
-  assertBeat(story, beatIndex);
-
-  return buildHybridNarrationInput(story, beatIndex, [], instruction, 0, reasoningMode);
-}
-
-/**
- * `hybrid` context mode: derived history for the older beats, verbatim prose
- * for the most recent ones.
  *
  * Cost per beat stays flat — the history grows by roughly one line per accepted
  * beat while the prose window is fixed — so a long story never reaches the
@@ -389,12 +436,12 @@ export function buildBlueprintHistoryNarrationInput(
  * them, so their prose arrives as the model's own assistant output rather than
  * as quoted text inside an instruction.
  */
-export function buildHybridNarrationInput(
+export function buildNarrationInput(
   story: StoryBlueprint,
   beatIndex: number,
+  proseBeats: number,
   accepted: AcceptedNarration[],
-  instruction?: string,
-  proseBeats = 1,
+  instruction?: string,  
   reasoningMode: ReasoningMode = "native"
 ): NarrationRequest {
   assertBeat(story, beatIndex);

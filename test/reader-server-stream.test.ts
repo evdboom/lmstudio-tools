@@ -102,12 +102,57 @@ function parseDoneEvent<T>(payload: string): T {
 }
 
 describe("reader generation stream", () => {
+  it("runs the requested recurring improvement passes and stores only the final response", async () => {
+    vi.mocked(streamLmStudioNarration).mockClear();
+    for (let pass = 1; pass <= 3; pass += 1) {
+      vi.mocked(streamLmStudioNarration).mockImplementationOnce(async (options) => {
+        const narration = `Improved draft ${pass}.`;
+        options.onDelta(narration);
+        return { narration, reasoning: "", responseId: `resp_pass_${pass}` };
+      });
+    }
+    const app = await createReaderServer({ root, lmStudioUrl: "http://lmstudio.test/api/v1" });
+    const started = await app.inject({
+      method: "POST",
+      url: "/api/runs",
+      payload: {
+        story_path: storyPath,
+        model: "test-model",
+        generation_mode: "recurring",
+        iteration_count: 3,
+      },
+    });
+    const run = started.json<{ run_id: string }>();
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/runs/${run.run_id}/generate`,
+      payload: { story_path: storyPath, model: "test-model", action: "regenerate" },
+    });
+    const saved = await readReaderRun(root, storyPath, run.run_id);
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(streamLmStudioNarration).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(streamLmStudioNarration).mock.calls.map(([options]) => options.store))
+      .toEqual([false, false, false]);
+    expect(vi.mocked(streamLmStudioNarration).mock.calls.map(([options]) => options.systemPrompt))
+      .toEqual(Array(3).fill(expect.stringContaining("Improve this story.")));
+    expect(vi.mocked(streamLmStudioNarration).mock.calls[0]?.[0].messages.at(-1)?.content)
+      .toContain("1. Mara enters.");
+    expect(vi.mocked(streamLmStudioNarration).mock.calls[1]?.[0].messages.at(-1)?.content)
+      .toContain("Improved draft 1.");
+    expect(saved.current_draft).toMatchObject({
+      narration: "Improved draft 3.",
+    });
+  });
+
   it("regenerates an older blueprint beat without discarding later prose", async () => {
     const app = await createReaderServer({ root, lmStudioUrl: "http://lmstudio.test/api/v1" });
     const started = await app.inject({
       method: "POST",
       url: "/api/runs",
-      payload: { story_path: storyPath, model: "test-model", context_mode: "blueprint" },
+      payload: { story_path: storyPath, model: "test-model", prose_window: 0 },
     });
     const run = started.json<{ run_id: string }>();
     await mutateReaderRun(root, storyPath, run.run_id, (current) => {
@@ -152,7 +197,7 @@ describe("reader generation stream", () => {
     const started = await app.inject({
       method: "POST",
       url: "/api/runs",
-      payload: { story_path: storyPath, model: "test-model", context_mode: "blueprint" },
+      payload: { story_path: storyPath, model: "test-model", prose_window: 0 },
     });
     const run = started.json<{ run_id: string }>();
     await app.inject({
@@ -189,7 +234,7 @@ describe("reader generation stream", () => {
     const started = await app.inject({
       method: "POST",
       url: "/api/runs",
-      payload: { story_path: storyPath, model: "test-model", context_mode: "blueprint" },
+      payload: { story_path: storyPath, model: "test-model", prose_window: 0 },
     });
     const run = started.json<{ run_id: string }>();
     await app.inject({
@@ -349,9 +394,9 @@ describe("reader generation stream", () => {
     expect(state).toBeGreaterThanOrEqual(0);
     expect(beatTwo).toBeGreaterThan(state);
     expect(beatTwoNarration).toBeGreaterThan(beatTwo);
-    expect(savedRun.accepted[0]?.response_id).toBe("resp_test");
+    expect(savedRun.accepted[0]?.response_id).toBeUndefined();
     expect(savedRun.accepted[0]?.reasoning).toBe("Checking continuity.");
-    expect(savedRun.current_draft?.response_id).toBe("resp_test");
+    expect(savedRun.current_draft?.response_id).toBeUndefined();
     expect(savedRun.current_draft?.reasoning).toBe("Checking continuity.");
     expect(savedRun.current_draft?.prompt?.messages?.at(-1)?.content).toContain("## Current beat 2 of 2");
     expect(savedRun.current_draft?.prompt?.system_prompt).toContain("You are an expert fiction writer");
@@ -366,7 +411,7 @@ describe("reader generation stream", () => {
       payload: {
         story_path: storyPath,
         model: "test-model",
-        context_mode: "blueprint",
+        prose_window: 0,
       },
     });
     const run = started.json<{ run_id: string }>();
@@ -392,63 +437,4 @@ describe("reader generation stream", () => {
     expect(savedRun.current_draft?.response_id).toBeUndefined();
   });
 
-  it("plans images separately after a completed narration run", async () => {
-    const story = await readEditableStory(root, storyPath);
-    story.image_generation = {
-      checkpoints: [{
-        id: "wai17",
-        name: "WAI Illustrious v17",
-        file: "waiIllustriousSDXL_v170.safetensors",
-        description: "General manga checkpoint.",
-        tags: ["manga"],
-      }],
-      loras: [{
-        id: "mara-character",
-        name: "Mara character",
-        description: "Preserves Mara's identity.",
-        tags: ["character"],
-        trigger_words: ["folio_mara"],
-        default_strength: 0.7,
-      }],
-      poses: [],
-      defaults: {
-        checkpoint_id: "wai17",
-        width: 832,
-        height: 1216,
-        positive_prefix: "safe, monochrome, manga panel",
-        negative_prompt: "text, watermark",
-      },
-    };
-    await saveEditableStory(root, storyPath, story);
-    const app = await createReaderServer({ root, lmStudioUrl: "http://lmstudio.test/api/v1" });
-    const started = await app.inject({
-      method: "POST",
-      url: "/api/runs",
-      payload: { story_path: storyPath, model: "test-model" },
-    });
-    const run = started.json<{ run_id: string }>();
-    await mutateReaderRun(root, storyPath, run.run_id, (current) => {
-      current.accepted = [
-        { beat_index: 0, narration: "Mara entered the dining car." },
-        { beat_index: 1, narration: "She accepted the impossible ticket." },
-      ];
-      current.beat_index = 2;
-      current.status = "completed";
-    });
-
-    const response = await app.inject({
-      method: "POST",
-      url: `/api/runs/${run.run_id}/plan-images`,
-      payload: { story_path: storyPath, model: "test-model" },
-    });
-    const saved = await readReaderRun(root, storyPath, run.run_id);
-    await app.close();
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
-      image_plan: { checkpoint_id: "wai17", beats: [{ beat_index: 0 }, { beat_index: 1 }] },
-    });
-    expect(saved.image_plan?.planner_model).toBe("test-model");
-    expect(saved.image_plan?.beats).toHaveLength(2);
-  });
 });

@@ -176,7 +176,7 @@ export async function generateLmStudioText(options: {
     .map((item) => item.content as string)
     .join("\n\n")
     .trim();
-  if (!message) throw new Error("LM Studio returned no image plan.");
+  if (!message) throw new Error("LM Studio returned no narration.");
   return message;
 }
 
@@ -210,7 +210,7 @@ export async function streamLmStudioNarration(options: {
   onReasoningDelta?: (delta: string) => void;
   onRecovery?: () => void;
   onOverrun?: (words: number, reason: OverrunReason) => void;
-}): Promise<{ narration: string; reasoning: string; responseId?: string }> {
+}): Promise<{ narration: string; reasoning: string; responseId?: string; incompleteReason?: string }> {
   let reasoningReported = false;
   const store = options.store ?? true;
   const ceiling = options.wordBudget?.ceilingWords;
@@ -353,18 +353,20 @@ export async function streamLmStudioNarration(options: {
       responseId,
       overrunWords,
       overrunReason,
+      incompleteReason: undefined as string | undefined,
     };
   }
 
   type Attempt = Awaited<ReturnType<typeof attempt>>;
 
   function complete(result: Attempt) {
-    if (store && !result.responseId) {
+    if (store && !result.responseId && !result.incompleteReason) {
       throw new Error("LM Studio did not return a stateful response_id.");
     }
     return {
       narration: result.narration,
       reasoning: result.reasoning,
+      ...(result.incompleteReason ? { incompleteReason: result.incompleteReason } : {}),
       ...(store && result.responseId ? { responseId: result.responseId } : {}),
     };
   }
@@ -374,7 +376,10 @@ export async function streamLmStudioNarration(options: {
     // A fresh sample of the same request; the abandoned response is not chained onto.
     const retry = await attempt(options.messages, options.previousResponseId, options.systemPrompt);
     if (!retry.overrunReason) return retry;
-    throw new Error(`The model went over the word budget of ${options.wordBudget!.maxWords} twice (${words} and ${retry.overrunWords} words). Review this beat's events and budget before trying again: this usually means the events do not fit the budget.`);
+    return {
+      ...retry,
+      incompleteReason: `The model exceeded the word budget twice (${words} and ${retry.overrunWords} words). The prose below is incomplete; review it for a suitable continuation and verify the beat's events fit the budget.`,
+    };
   }
 
   const first = await attempt(options.messages, options.previousResponseId, options.systemPrompt);

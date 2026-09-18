@@ -14,18 +14,46 @@ import {
   getReaderState,
   prepareReaderBeatRegeneration,
   prepareReaderGeneration,
+  prepareReaderIteration,
   prepareReaderReview,
   resolveReviewNarration,
   saveReaderDraft,
   saveReaderReview,
-  startReaderRun,
+  startReaderRun as startReaderRunRequest,
 } from "../src/reader-service.js";
-import { deleteReaderRun, listReaderRuns, mutateReaderRun, readReaderRun } from "../src/reader-store.js";
+import { DISTINCT_ITERATION_FOCUSES } from "../src/reader-prompts.js";
+import { deleteReaderRun, listReaderRuns, mutateReaderRun, readReaderRun, type RunRequest } from "../src/reader-store.js";
 import { makeSandbox } from "./helpers.js";
 
 let root: string;
 let cleanup: () => Promise<void>;
 const storyPath = "stories/night-train";
+
+async function startReaderRun(
+  requestOrRoot: RunRequest | string,
+  legacyStoryPath?: string,
+  legacyModel?: string,
+  _legacyContextMode?: string,
+  legacyProseWindow = 1,
+  legacyReasoningMode = "native" as RunRequest["reasoning_mode"],
+  legacyReasoningEffort = "default" as RunRequest["reasoning_effort"],
+  legacyInstructions: string[] = [],
+  legacyReviewer?: { generationMode?: RunRequest["generationMode"]; iterationCount?: number }
+) {
+  if (typeof requestOrRoot !== "string") return startReaderRunRequest(requestOrRoot);
+  return startReaderRunRequest({
+    root: requestOrRoot,
+    story_path: legacyStoryPath!,
+    model: legacyModel,
+    prose_window: legacyProseWindow,
+    reasoning_mode: legacyReasoningMode,
+    reasoning_effort: legacyReasoningEffort,
+    ongoing_instructions: legacyInstructions,
+    reviewer: null,
+    generationMode: legacyReviewer?.generationMode ?? "direct",
+    iterationCount: legacyReviewer?.iterationCount ?? 3,
+  });
+}
 
 beforeEach(async () => {
   ({ root, cleanup } = await makeSandbox());
@@ -71,6 +99,42 @@ beforeEach(async () => {
 afterEach(async () => cleanup());
 
 describe("reader run service", () => {
+  it("builds distinct passes from an ordered event scaffold", async () => {
+    const started = await startReaderRun(
+      root,
+      storyPath,
+      "test-model",
+      "blueprint",
+      1,
+      "native",
+      "default",
+      [],
+      { generationMode: "distinct" }
+    );
+    const prepared = await prepareReaderGeneration(root, storyPath, started.run_id, "regenerate");
+
+    expect(prepared.iterationSeed).toBe(
+      "1. Mara enters.\n2. She finds a passenger, who looks up."
+    );
+    const prompts = await Promise.all(DISTINCT_ITERATION_FOCUSES.map((focus) =>
+      prepareReaderIteration(
+        root,
+        storyPath,
+        started.run_id,
+        0,
+        { messages: prepared.messages!, systemPrompt: prepared.systemPrompt! },
+        prepared.iterationSeed!,
+        focus
+      )));
+    expect(prompts.map((prompt) => prompt.systemPrompt)).toEqual([
+      expect.stringContaining("complete rough scene"),
+      expect.stringContaining("cause and effect"),
+      expect.stringContaining("Polish the complete scene"),
+    ]);
+    expect(prompts[0].messages.at(-1)?.content).toContain(prepared.iterationSeed);
+    expect(prompts[0].systemPrompt).toContain("Stay close to Mara.");
+  });
+
   it("only requests tagged reasoning when the run opts in", async () => {
     const native = await startReaderRun(root, storyPath, "native-model");
     const nativeRequest = await prepareReaderGeneration(
@@ -191,16 +255,16 @@ describe("reader run service", () => {
       "The ticket smells of smoke."
     );
 
-    expect(secondRequest.previousResponseId).toBe("resp_first");
-    // `instructions` is not inherited across a stored chain, so every turn resends it.
+    expect(secondRequest.previousResponseId).toBeUndefined();
     expect(secondRequest.systemPrompt).toContain("You are an expert fiction writer");
     expect(secondRequest.input).toContain("Ongoing reader directions");
     expect(secondRequest.input).toContain("The ticket smells of smoke.");
 
     let state = await getReaderState(root, storyPath, started.run_id);
+    let savedRun = await readReaderRun(root, storyPath, started.run_id);
     expect(state.beat_index).toBe(1);
     expect(state.accepted[0].narration).toBe("The accepted first beat.");
-    expect(state.accepted[0].prompt).toEqual({
+    expect(savedRun.accepted[0].prompt).toEqual({
       input: firstRequest.input,
       system_prompt: firstRequest.systemPrompt,
     });
@@ -221,8 +285,8 @@ describe("reader run service", () => {
     expect(state.status).toBe("completed");
   });
 
-  it("rebuilds the stateful chain that produced a beat", async () => {
-    const started = await startReaderRun(root, storyPath, "test-model", "full");
+  it("audits the hybrid request that produced a beat", async () => {
+    const started = await startReaderRun(root, storyPath, "test-model", "hybrid", 0);
     const first = await prepareReaderGeneration(root, storyPath, started.run_id, "regenerate");
     await saveReaderDraft(
       root,
@@ -254,19 +318,14 @@ describe("reader run service", () => {
 
     const audit = await auditReaderBeat(root, storyPath, started.run_id, 1);
 
-    // Only the closing turn went on the wire; the rest is rebuilt from the run.
-    expect(audit.messages).toEqual([
-      { role: "user", content: first.input },
-      { role: "assistant", content: "The first beat." },
-      { role: "user", content: second.input },
-    ]);
-    expect(audit.previous_response_id).toBe("resp_first");
+    expect(audit.messages).toEqual(second.messages);
+    expect(audit.previous_response_id).toBeUndefined();
     expect(audit.system_prompt).toContain("You are an expert fiction writer");
     expect(audit.gap).toBeUndefined();
   });
 
-  it("reports a broken stateful chain rather than inventing one", async () => {
-    const started = await startReaderRun(root, storyPath, "test-model", "full");
+  it("does not report a response chain for hybrid requests", async () => {
+    const started = await startReaderRun(root, storyPath, "test-model", "hybrid", 0);
     await saveReaderDraft(root, storyPath, started.run_id, "The first beat.", undefined, "resp_first", {
       input: "Beat 1 request",
     });
@@ -278,8 +337,7 @@ describe("reader run service", () => {
 
     const audit = await auditReaderBeat(root, storyPath, started.run_id, 1);
 
-    expect(audit.gap).toContain("resp_elsewhere");
-    expect(audit.gap).toContain("resp_first");
+    expect(audit.gap).toBeUndefined();
   });
 
   it("returns the transcript as sent for a stateless beat", async () => {
@@ -416,7 +474,8 @@ describe("reader run service", () => {
 
     expect(state.current_draft?.narration).toBe("Rebuilt prose.");
     expect(state.current_draft?.review).toBeUndefined();
-    expect(state.current_draft?.revisions).toEqual([
+    const savedRun = await readReaderRun(root, storyPath, started.run_id);
+    expect(savedRun.current_draft?.revisions).toEqual([
       expect.objectContaining({ narration: "Original prose." }),
     ]);
   });
@@ -461,12 +520,13 @@ describe("reader run service", () => {
     });
 
     const state = await applyReaderReview(root, storyPath, started.run_id, 0);
+    const savedRun = await readReaderRun(root, storyPath, started.run_id);
 
     expect(state.accepted.map((item) => item.narration)).toEqual([
       "Revised beat 1.",
       "Original beat 2.",
     ]);
-    expect(state.accepted[0].revisions).toEqual([
+    expect(savedRun.accepted[0].revisions).toEqual([
       expect.objectContaining({ narration: "Original beat 1." }),
     ]);
     expect(state.status).toBe("completed");
@@ -490,21 +550,22 @@ describe("reader run service", () => {
     const state = await applyReaderReview(root, storyPath, started.run_id, 0);
 
     expect(state.current_draft?.narration).toBe("Version three.");
-    expect(state.current_draft?.revisions?.map((item) => item.narration)).toEqual([
+    let savedRun = await readReaderRun(root, storyPath, started.run_id);
+    expect(savedRun.current_draft?.revisions?.map((item) => item.narration)).toEqual([
       "Version one.",
       "Version two.",
     ]);
 
     await prepareReaderGeneration(root, storyPath, started.run_id, "next");
-    const advanced = await getReaderState(root, storyPath, started.run_id);
-    expect(advanced.accepted[0].revisions?.map((item) => item.narration)).toEqual([
+    savedRun = await readReaderRun(root, storyPath, started.run_id);
+    expect(savedRun.accepted[0].revisions?.map((item) => item.narration)).toEqual([
       "Version one.",
       "Version two.",
     ]);
   });
 
-  it("branches a reviewed full-context beat and discards later beats", async () => {
-    const started = await startReaderRun(root, storyPath, "review-model", "full");
+  it("keeps later beats when applying a reviewed hybrid beat", async () => {
+    const started = await startReaderRun(root, storyPath, "review-model", "hybrid");
     await mutateReaderRun(root, storyPath, started.run_id, (run) => {
       run.accepted = [0, 1].map((beatIndex) => ({
         beat_index: beatIndex,
@@ -524,13 +585,13 @@ describe("reader run service", () => {
 
     const state = await applyReaderReview(root, storyPath, started.run_id, 0);
 
-    expect(state.accepted).toHaveLength(1);
+    expect(state.accepted).toHaveLength(2);
     expect(state.accepted[0]).toMatchObject({
       narration: "Revised beat 1.",
-      response_id: "resp_reviewed",
+      response_id: "resp_original_0",
     });
-    expect(state.beat_index).toBe(1);
-    expect(state.status).toBe("active");
+    expect(state.beat_index).toBe(2);
+    expect(state.status).toBe("completed");
   });
 
   it("leaves an unchanged reviewed beat byte-identical", async () => {
@@ -549,8 +610,8 @@ describe("reader run service", () => {
     expect(state.beat_index).toBe(0);
   });
 
-  it("uses a reviewed current draft as the full-context branch point", async () => {
-    const started = await startReaderRun(root, storyPath, "review-model", "full");
+  it("keeps the reviewed current draft in hybrid mode", async () => {
+    const started = await startReaderRun(root, storyPath, "review-model", "hybrid");
     await saveReaderDraft(root, storyPath, started.run_id, "Original draft.", undefined, "resp_original", {
       input: "Beat input",
     });
@@ -564,49 +625,8 @@ describe("reader run service", () => {
 
     expect(state.current_draft).toMatchObject({
       narration: "Revised draft.",
-      response_id: "resp_reviewed",
+      response_id: "resp_original",
     });
-  });
-
-  it("carries recent prose and derived history in hybrid mode", async () => {
-    const started = await startReaderRun(root, storyPath, "test-model", "hybrid", 1);
-    expect(started.context_mode).toBe("hybrid");
-    expect(started.prose_window).toBe(1);
-
-    await saveReaderDraft(
-      root,
-      storyPath,
-      started.run_id,
-      "Mara stepped between the brass lamps.",
-      undefined,
-      "resp_first"
-    );
-    const second = await prepareReaderGeneration(root, storyPath, started.run_id, "next");
-
-    // Hybrid rebuilds the prompt each beat rather than chaining responses.
-    expect(second.previousResponseId).toBeUndefined();
-    expect(second.systemPrompt).toContain("You are an expert fiction writer");
-    expect(second.messages).toEqual([
-      { role: "user", content: expect.stringContaining("## Current beat 1 of 2") },
-      { role: "assistant", content: "Mara stepped between the brass lamps." },
-      { role: "user", content: expect.stringContaining("## Current beat 2 of 2") },
-    ]);
-    expect(second.input).toContain("## Current beat 2 of 2");
-  });
-
-  it("uses blueprint events without stateful narration when requested", async () => {
-    const started = await startReaderRun(root, storyPath, "test-model", "blueprint");
-    expect(started.context_mode).toBe("blueprint");
-
-    await saveReaderDraft(root, storyPath, started.run_id, "Accepted prose must not be reused.", undefined, "resp_first");
-    const secondRequest = await prepareReaderGeneration(root, storyPath, started.run_id, "next");
-
-    expect(secondRequest.previousResponseId).toBeUndefined();
-    expect(secondRequest.systemPrompt).toContain("You are an expert fiction writer");
-    expect(secondRequest.input).toContain("## Story so far");
-    expect(secondRequest.input).toContain("### Beat 1 — Dining Car · Mara");
-    expect(secondRequest.input).toContain("Mara enters.");
-    expect(secondRequest.input).not.toContain("Accepted prose must not be reused.");
   });
 
   it("rolls back the last accepted beat before regenerating it", async () => {

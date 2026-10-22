@@ -9,3 +9,6 @@ games/
 web/test-results/
 web/playwright-report/
 web/.vite/
+test-results/
+playwright-report/
+.folio-audio-cache/

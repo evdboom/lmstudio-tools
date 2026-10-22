@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AuthoringApp } from "./authoring";
 import { useScreenWakeLock } from "./wake-lock";
+import { Volume2 } from "lucide-react";
+import { useReaderAudio } from "./audio";
 import type { GenerationMode, ReasoningMode, ReasoningEffort, RunItem, ReaderState, StoryItem } from "../../src/reader-store";
 import "./styles.css";
 
@@ -548,6 +550,12 @@ function App() {
       : Math.max(state.beat_index, state.accepted.length)
     : 0;
 
+  const audio = useReaderAudio({
+    runId: state?.run_id,
+    busy,
+    narrations: [...(state?.accepted ?? []), ...(state?.current_draft ? [{ ...state.current_draft, beat_index: state.beat_index }] : [])],
+  });
+
   return (
     <main className={state ? "reader active" : "reader"}>
       <header className="topbar">
@@ -750,6 +758,7 @@ function App() {
           <p className="eyebrow">Local stories</p>
           <h1>{stories.find((story) => story.path === storyPath)?.title ?? "No finalized stories found"}</h1>
           <p>{stories.find((story) => story.path === storyPath)?.premise ?? "Finalize a story blueprint to place it on the shelf."}</p>
+          {audio.panel}
           {runs.length > 0 && (
             <section className="saved-runs" aria-label="Saved reading sessions">
               <h2>Continue reading</h2>
@@ -811,6 +820,7 @@ function App() {
               <p className="eyebrow">{state.premise}</p>
               <h1>{state.title}</h1>
             </header>
+            {audio.panel}
             {state.accepted.map((beat) => {
               const isActing = actionBeatIndex === beat.beat_index;
               const displayNarration =
@@ -832,6 +842,7 @@ function App() {
                     </details>
                   )}
                   <div className="beat-review-actions">
+                    <button className="audio-read" disabled={busy || !audio.enabled || Boolean(beat.review && beat.review.narration !== beat.narration)} title={`Read beat ${beat.beat_index + 1} aloud`} aria-label={`Read beat ${beat.beat_index + 1} aloud`} onClick={() => audio.readBeat(beat.beat_index, beat.narration)}><Volume2 size={18} />{audio.activeBeat === beat.beat_index ? "Restart audio" : "Read aloud"}</button>
                     <button className="secondary" disabled={busy} onClick={() => void regenerateBeat(state, beat.beat_index)}>Regenerate</button>
                     <button className="secondary" disabled={busy} onClick={() => openReview(beat.beat_index)}>Review</button>
                   </div>
@@ -883,6 +894,7 @@ function App() {
                   </details>
                 )}
                 {!busy && state.current_draft && <div className="beat-review-actions">
+                  <button className="audio-read" disabled={!audio.enabled || Boolean(state.current_draft.review && state.current_draft.review.narration !== state.current_draft.narration)} title={`Read beat ${state.beat_index + 1} aloud`} aria-label={`Read beat ${state.beat_index + 1} aloud`} onClick={() => audio.readBeat(state.beat_index, state.current_draft!.narration)}><Volume2 size={18} />{audio.activeBeat === state.beat_index ? "Restart audio" : "Read aloud"}</button>
                   <button className="secondary" onClick={() => void regenerateBeat(state, state.beat_index)}>Regenerate</button>
                   <button className="secondary" onClick={() => openReview(state.beat_index)}>Review</button>
                 </div>}

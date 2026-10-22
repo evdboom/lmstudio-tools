@@ -241,6 +241,47 @@ The structured editor remains available when LM Studio is offline.
 
 Reader sessions are stored separately under `<story>/reader-runs/`. Existing MCP telling sessions remain under `<story>/runs/` and the `telling_start`, `next_beat`, and `telling_status` tools are unchanged.
 
+### Local Read-Aloud
+
+Folio can read saved beats using a local OpenAI-compatible TTS service. Audio is off by default. Start Kokoro on CPU (works on both the NVIDIA desktop and Intel Arc laptop) after installing and starting Docker Desktop with Linux containers:
+
+```powershell
+docker compose -f compose.audio.yml --profile cpu up -d
+```
+
+The first run downloads a large container image. Wait until the service at `http://127.0.0.1:8880/web` is ready, then start Folio with your existing stories root:
+
+```powershell
+npm run build:all
+node dist/reader-server.js --root C:\tmp\stories --tts-profile laptop
+```
+
+Use the play icon beside the voice field to preview the narrator without generating a story or loading an LM Studio model. Select **Read aloud** on a saved beat to queue its paragraphs. Native audio controls provide pause, resume, seek, and volume; the square button stops the queue. Speed changes playback rate without re-rendering. The refresh icon loads available voices; a voice ID can also be entered manually. Resolve proposed prose revisions before reading that beat aloud. Playback stops when generation starts, prose changes, or you switch reading sessions.
+
+On the RTX desktop, stop the CPU service and start the CUDA variant if desired:
+
+```powershell
+docker compose -f compose.audio.yml --profile cpu down
+docker compose -f compose.audio.yml --profile cuda up -d
+node dist/reader-server.js --root C:\tmp\stories --tts-profile portable
+```
+
+Both Kokoro variants use the same Folio settings and port; do not start both at once. CUDA requires NVIDIA GPU support in Docker Desktop's WSL 2 backend. The laptop CPU profile does not claim Intel GPU acceleration. `KOKORO_TAG` can pin a tested image release instead of `latest`.
+
+| Folio preset | Default service base URL | Model | Voice |
+| --- | --- | --- | --- |
+| `portable` | `http://127.0.0.1:8880/v1` | `kokoro` | `af_heart` |
+| `laptop` | `http://127.0.0.1:8880/v1` | `kokoro` | `af_heart` |
+| `desktop` | `http://127.0.0.1:8004/v1` | `chatterbox` | `default` |
+
+The `desktop` preset targets the separately installed [community Chatterbox server](https://github.com/devnen/Chatterbox-TTS-Server). Select its Turbo engine in that server and choose a valid predefined voice ID in Folio; `default` may need overriding. Folio does not install or select Chatterbox engines. All presets allow `--tts-url`, `--tts-model`, and `--tts-voice` overrides. URLs are API base URLs including `/v1`, not `/audio/speech`. Supplying `--tts-url` also enables audio without a preset. Runtime device selection belongs to the TTS service, not Folio; presets never silently switch models or voices.
+
+Environment equivalents are `FOLIO_TTS_PROFILE`, `FOLIO_TTS_URL`, `FOLIO_TTS_MODEL`, `FOLIO_TTS_VOICE`, and optional `FOLIO_TTS_API_TOKEN`. Requests go through Folio, including its existing password protection, so phone browsers do not need direct access to the TTS port. Keep the TTS service bound to localhost unless deliberately configuring a trusted remote service.
+
+Completed WAV clips are cached under `<root>/.folio-audio-cache/` by service URL, model, text, voice, and synthesis speed. Previously rendered clips can be replayed with the TTS service offline. Stop an active render before retrying another clip. One render runs at a time, each request is limited to 2000 characters and 30 MB of WAV output, and provider requests time out after three minutes. The cache has no automatic eviction; remove that folder while Folio is stopped to reclaim space or after replacing model weights behind the same service/model ID. The download icon exports the current clip, not an entire story.
+
+This first version does not yet include cast assignment, generated vocal/effect cues, whole-story export, or verified Intel GPU acceleration. The [audio research and design](docs/folio-audio.md) covers those follow-ups and the NVIDIA/Intel hardware requirements.
+
 ## File Tools
 
 - `get_root`

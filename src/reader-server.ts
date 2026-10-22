@@ -48,6 +48,7 @@ import {
 } from "./story-editor.js";
 import { parseSingleRootArgs, resolveSingleRoot } from "./server-cli.js";
 import { acquireWakeLock, releaseWakeLock } from "./wake-lock.js";
+import { registerReaderAudio, type ReaderAudioOptions } from "./reader-audio.js";
 
 interface ReaderServerOptions {
   root: string;
@@ -57,6 +58,7 @@ interface ReaderServerOptions {
   folioPassword?: string;
   /** LM Studio mcp.json plugin id for the story teller server. */
   mcpPluginId?: string;
+  audio?: ReaderAudioOptions;
 }
 
 const AUTHORING_MCP_PATH = "/mcp/story-teller";
@@ -253,6 +255,8 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       return reply.type("text/html; charset=utf-8").send(loginPage());
     });
   }
+
+  registerReaderAudio(app, options.root, options.audio);
 
   app.get("/api/stories", async () => ({ stories: await listFinalStories(options.root) }));
   app.get("/api/editor/stories", async () => ({ stories: await listEditableStories(options.root) }));
@@ -941,7 +945,15 @@ async function main(): Promise<void> {
   const webRoot = fileURLToPath(new URL("../reader-dist", import.meta.url));
   const localUrl = `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`;
   const mcpPluginId = option(argv, "--mcp-plugin-id") ?? process.env.STORY_READER_MCP_ID ?? "mcp/story-teller";
-  const app = await createReaderServer({ root, lmStudioUrl, lmStudioApiToken, webRoot, folioPassword, mcpPluginId });
+  const audioProfile = z.enum(["portable", "laptop", "desktop"]).optional().parse(option(argv, "--tts-profile") ?? process.env.FOLIO_TTS_PROFILE);
+  const audio: ReaderAudioOptions = {
+    profile: audioProfile,
+    baseUrl: option(argv, "--tts-url") ?? process.env.FOLIO_TTS_URL,
+    model: option(argv, "--tts-model") ?? process.env.FOLIO_TTS_MODEL,
+    voice: option(argv, "--tts-voice") ?? process.env.FOLIO_TTS_VOICE,
+    apiToken: process.env.FOLIO_TTS_API_TOKEN,
+  };
+  const app = await createReaderServer({ root, lmStudioUrl, lmStudioApiToken, webRoot, folioPassword, mcpPluginId, audio });
   await app.listen({ host, port });
   const urls = readerUrls(host, port, networkInterfaces(), await defaultGatewayInterfaces());
   console.log(`Story reader ready at ${localUrl}`);

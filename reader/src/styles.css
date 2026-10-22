@@ -97,6 +97,22 @@ button:disabled { cursor: default; opacity: 0.45; }
 .primary:hover:not(:disabled) { background: var(--green-hover); }
 .secondary { background: var(--surface); color: var(--red-dark); border-color: var(--red); }
 .secondary:hover:not(:disabled) { background: var(--red-pale); }
+.audio-panel { margin: 28px 0; padding: 16px 0; border-block: 1px solid var(--line); font-size: 13px; }
+.audio-settings, .audio-playback { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-width: 0; }
+.audio-playback[hidden] { display: none; }
+.audio-profile { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); }
+.audio-voice { display: grid; gap: 4px; flex: 1 1 150px; min-width: 0; }
+.audio-voice input { width: 100%; min-width: 0; }
+.audio-rate { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; flex: 1 1 130px; min-width: 0; }
+.audio-rate input { grid-column: 1 / -1; min-height: 24px; margin: 0; padding: 0; width: 100%; accent-color: var(--green); }
+.audio-playback { margin-top: 12px; }
+.audio-playback audio { flex: 1 1 220px; width: 220px; min-width: 0; max-width: 100%; height: 42px; }
+.audio-icon { display: inline-flex; align-items: center; justify-content: center; width: 42px; height: 42px; padding: 0; flex: 0 0 42px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 4px; }
+.audio-read { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border-color: var(--line-strong); color: var(--green); background: var(--surface); }
+.audio-status, .audio-error { margin-top: 10px; overflow-wrap: anywhere; }
+.audio-status { color: var(--muted); }
+.audio-error { color: var(--red-dark); }
+.audio-pulse { display: inline-block; width: 8px; height: 8px; margin-right: 8px; border-radius: 50%; background: var(--green); }
 .theme-toggle {
   width: 42px;
   flex: 0 0 42px;
@@ -207,7 +223,7 @@ a.beat-map-entry:hover { background: var(--paper); color: var(--green); }
   line-height: 0.8;
 }
 .beat.current { border-top: 1px solid var(--line); }
-.beat-review-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.beat-review-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .beat-review-actions button { min-height: 34px; padding-inline: 12px; }
 .review-focus { display: flex; gap: 8px; margin-top: 10px; }
 .review-focus input { min-width: 0; flex: 1; }

@@ -1,0 +1,21 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Folio audio preview",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"dist/reader-server.js",
+				"--root",
+				"tmp/folio-audio-preview",
+				"--tts-profile",
+				"portable",
+				"--port",
+				"4318"
+			],
+			"isBackground": true,
+			"problemMatcher": []
+		}
+	]
+}

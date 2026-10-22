@@ -446,8 +446,7 @@ export async function streamLmStudioAuthoring(options: {
   apiToken?: string;
   previousResponseId?: string;
   reasoningMode?: ReasoningMode;
-  mcpServerUrl: string;
-  mcpServerToken: string;
+  mcpPluginId: string;
   signal: AbortSignal;
   onDelta: (delta: string) => void;
   onReasoningDelta?: (delta: string) => void;
@@ -464,11 +463,9 @@ export async function streamLmStudioAuthoring(options: {
         ? undefined
         : authoringSystemPrompt(options.reasoningMode ?? "native"),
       integrations: [{
-        type: "ephemeral_mcp",
-        server_label: "story-teller",
-        server_url: options.mcpServerUrl,
+        type: "plugin",
+        id: options.mcpPluginId,
         allowed_tools: AUTHORING_ALLOWED_TOOLS,
-        headers: { authorization: `Bearer ${options.mcpServerToken}` },
       }],
       stream: true,
       store: true,
@@ -477,7 +474,10 @@ export async function streamLmStudioAuthoring(options: {
     signal: options.signal,
     dispatcher: lmStudioAgent,
   } as LmStudioRequestInit);
-  if (!response.ok) throw new Error(`LM Studio returned ${response.status}: ${(await response.text()).slice(0, 500)}`);
+  if (!response.ok) {
+    const responseText = (await response.text()).slice(0, 500);
+    throw new Error(`LM Studio returned ${response.status}: ${responseText}`);
+  }
   if (!response.body) throw new Error("LM Studio returned no response stream.");
 
   const reader = response.body.getReader();

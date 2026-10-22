@@ -55,8 +55,8 @@ interface ReaderServerOptions {
   lmStudioApiToken?: string;
   webRoot?: string;
   folioPassword?: string;
-  /** Base URL LM Studio uses to reach this process's own MCP endpoint. */
-  mcpBaseUrl?: string;
+  /** LM Studio mcp.json plugin id for the story teller server. */
+  mcpPluginId?: string;
 }
 
 const AUTHORING_MCP_PATH = "/mcp/story-teller";
@@ -341,8 +341,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         apiToken: options.lmStudioApiToken,
         previousResponseId: body.data.previous_response_id,
         reasoningMode: body.data.reasoning_mode,
-        mcpServerUrl: `${options.mcpBaseUrl ?? "http://127.0.0.1:4317"}${AUTHORING_MCP_PATH}`,
-        mcpServerToken: mcpToken,
+        mcpPluginId: options.mcpPluginId ?? "mcp/story-teller",
         signal: abort.signal,
         onDelta: (delta) => reply.raw.write(`event: delta\ndata: ${JSON.stringify(delta)}\n\n`),
         onReasoningDelta: (delta) => reply.raw.write(`event: reasoning\ndata: ${JSON.stringify(delta)}\n\n`),
@@ -941,8 +940,8 @@ async function main(): Promise<void> {
     ?? process.env.LMSTUDIO_API_TOKEN;
   const webRoot = fileURLToPath(new URL("../reader-dist", import.meta.url));
   const localUrl = `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`;
-  const mcpBaseUrl = option(argv, "--mcp-base-url") ?? process.env.STORY_READER_MCP_URL ?? localUrl;
-  const app = await createReaderServer({ root, lmStudioUrl, lmStudioApiToken, webRoot, folioPassword, mcpBaseUrl });
+  const mcpPluginId = option(argv, "--mcp-plugin-id") ?? process.env.STORY_READER_MCP_ID ?? "mcp/story-teller";
+  const app = await createReaderServer({ root, lmStudioUrl, lmStudioApiToken, webRoot, folioPassword, mcpPluginId });
   await app.listen({ host, port });
   const urls = readerUrls(host, port, networkInterfaces(), await defaultGatewayInterfaces());
   console.log(`Story reader ready at ${localUrl}`);

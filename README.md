@@ -110,7 +110,7 @@ Complete setup with file, skill, and story servers:
 }
 ```
 
-LM Studio currently follows Cursor-style `mcp.json` notation. If an existing file already contains `mcpServers`, merge only the individual server entries rather than adding a second `mcpServers` object.
+LM Studio currently follows Cursor-style `mcp.json` notation. If an existing file already contains `mcpServers`, merge only the individual server entries rather than adding a second `mcpServers` object. Folio authoring expects the story server entry to be named `story-teller`, which LM Studio exposes to API calls as plugin id `mcp/story-teller`.
 
 Restart the MCP integrations after changing `mcp.json` or rebuilding this project. Confirm that the Program tab lists each configured server and its tools.
 
@@ -218,12 +218,24 @@ The reader provides:
 
 Open `http://127.0.0.1:4317/author` or select **Write** in the reader. The authoring workspace can create and edit complete story blueprints, reorder or expand beats, validate references, and switch a story between draft and final status.
 
-The model collaborator uses LM Studio's native stateful chat with the configured `story-teller` MCP integration. The story-teller server exposes `story_list`, `story_read`, and `story_save` for the collaborator alongside its granular authoring and telling tools. The API request restricts the collaborator to those three tools. In LM Studio 0.4.0 or newer, enable **Require Authentication** and **Allow calling servers from mcp.json**, create an API key, then start the reader from the same terminal after setting it:
+The model collaborator uses LM Studio's native stateful chat with the configured `story-teller` MCP server from `mcp.json`. Add the minimal `story-teller` server from **LM Studio Setup** above; you do not need the file or skills servers for Folio authoring. The API request restricts the collaborator to the story authoring tools it needs.
+
+In LM Studio 0.4.0 or newer, enable **Require Authentication** and **Allow calling servers from mcp.json**, create an API key, then start the reader from the same terminal after setting it:
 
 ```powershell
 $env:LMSTUDIO_API_TOKEN = "your-api-key"
 node dist/reader-server.js --root C:\tmp\stories
 ```
+
+If your `mcp.json` server entry uses a different name, pass the matching LM Studio plugin id. For an entry named `folio-story`, use `mcp/folio-story`:
+
+```powershell
+node dist/reader-server.js `
+	--root C:\tmp\stories `
+	--mcp-plugin-id mcp/folio-story
+```
+
+The environment equivalent is `STORY_READER_MCP_ID`.
 
 The structured editor remains available when LM Studio is offline.
 

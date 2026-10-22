@@ -468,8 +468,7 @@ describe("LM Studio streaming client", () => {
       model: "test-model",
       input: "Expand the midpoint.",
       apiToken: "local-token",
-      mcpServerUrl: "http://127.0.0.1:4317/mcp/story-teller",
-      mcpServerToken: "test-mcp-token",
+      mcpPluginId: "mcp/story-teller",
       signal: new AbortController().signal,
       onDelta: vi.fn(),
       onReasoningDelta,
@@ -481,9 +480,8 @@ describe("LM Studio streaming client", () => {
       authorization: "Bearer local-token",
     });
     expect(request.integrations).toEqual([{
-      type: "ephemeral_mcp",
-      server_label: "story-teller",
-      server_url: "http://127.0.0.1:4317/mcp/story-teller",
+      type: "plugin",
+      id: "mcp/story-teller",
       allowed_tools: [
         "story_list",
         "story_read",
@@ -499,7 +497,6 @@ describe("LM Studio streaming client", () => {
         "story_finalize",
         "story_save",
       ],
-      headers: { authorization: "Bearer test-mcp-token" },
     }]);
     expect(onTool).toHaveBeenCalledWith("story_read");
     expect(onReasoningDelta).toHaveBeenCalledWith("Need to inspect the beats.");
@@ -519,8 +516,7 @@ describe("LM Studio streaming client", () => {
       model: "test-model",
       input: "Add a character.",
       reasoningMode: "think",
-      mcpServerUrl: "http://127.0.0.1:4317/mcp/story-teller",
-      mcpServerToken: "test-mcp-token",
+      mcpPluginId: "mcp/story-teller",
       signal: new AbortController().signal,
       onDelta: vi.fn(),
     });
@@ -546,8 +542,7 @@ describe("LM Studio streaming client", () => {
       baseUrl: "http://127.0.0.1:1234/api/v1",
       model: "test-model",
       input: "Save it.",
-      mcpServerUrl: "http://127.0.0.1:4317/mcp/story-teller",
-      mcpServerToken: "test-mcp-token",
+      mcpPluginId: "mcp/story-teller",
       signal: new AbortController().signal,
       onDelta: vi.fn(),
     });
@@ -570,8 +565,7 @@ describe("LM Studio streaming client", () => {
       baseUrl: "http://127.0.0.1:1234/api/v1",
       model: "test-model",
       input: "Expand the midpoint.",
-      mcpServerUrl: "http://127.0.0.1:4317/mcp/story-teller",
-      mcpServerToken: "test-mcp-token",
+      mcpPluginId: "mcp/story-teller",
       signal: new AbortController().signal,
       onDelta,
       onReasoningDelta,
@@ -598,8 +592,7 @@ describe("LM Studio streaming client", () => {
       model: "test-model",
       input: "Continue.",
       previousResponseId: "resp_parent",
-      mcpServerUrl: "http://127.0.0.1:4317/mcp/story-teller",
-      mcpServerToken: "test-mcp-token",
+      mcpPluginId: "mcp/story-teller",
       signal: new AbortController().signal,
       onDelta: vi.fn(),
     });
@@ -623,8 +616,7 @@ describe("LM Studio streaming client", () => {
       baseUrl: "http://127.0.0.1:1234/api/v1",
       model: "test-model",
       input: "Draft it.",
-      mcpServerUrl: "http://127.0.0.1:4317/mcp/story-teller",
-      mcpServerToken: "test-mcp-token",
+      mcpPluginId: "mcp/story-teller",
       signal: new AbortController().signal,
       onDelta: vi.fn(),
     });
@@ -644,8 +636,7 @@ describe("LM Studio streaming client", () => {
       baseUrl: "http://127.0.0.1:1234/api/v1",
       model: "test-model",
       input: "Draft it.",
-      mcpServerUrl: "http://127.0.0.1:4317/mcp/story-teller",
-      mcpServerToken: "test-mcp-token",
+      mcpPluginId: "mcp/story-teller",
       signal: new AbortController().signal,
       onDelta,
     });

@@ -142,7 +142,7 @@ export function renderAutomatedFlags(flaggedForLength: Array<{ index: number; wo
   ];
 }
 
-export function renderReviewerSystemPrompt(reasoningMode: ReasoningMode): string[] {
+export function renderReviewerSystemPrompt(reasoningMode: ReasoningMode, workflow: "authored" | "discovery" | "planned" = "authored"): string[] {
   return [
       "# Task",
       "You are a strict fiction editor reviewing one generated story beat.",
@@ -154,8 +154,13 @@ export function renderReviewerSystemPrompt(reasoningMode: ReasoningMode): string
       "Validate the prose against the original instructions:",
       "| Criterion | Fix if not met |",
       "|-----------|----------------|",
-      "| Does every event occur and occur in order | Add missing events, or reorder them as necessary while making sure transitions are correct |",
-      "| Does the prose end before the future beat begins | Ensure the prose concludes appropriately before the next beat starts |",
+      ...(workflow === "authored" ? [
+        "| Does every event occur and occur in order | Add missing events, or reorder them as necessary while making sure transitions are correct |",
+        "| Does the prose end before the future beat begins | Ensure the prose concludes appropriately before the next beat starts |",
+      ] : [
+        "| Does this scene advance the premise with coherent cause and effect and a natural stopping point | Fix repetition, arbitrary escalation and abrupt or unfinished endings; allow new inventions consistent with established history |",
+        ...(workflow === "planned" ? ["| Does the prose fulfill the approved scene plan and stop at its boundary | Repair missing or contradictory planned events without rewriting established canon |"] : []),
+      ]),
       "| Is the prose within the word budget | Adjust the prose to fit within the specified word limit, trimming or expanding as necessary |",
       "| Are viewpoint, tense, and established canon maintained | Correct any inconsistencies in viewpoint, tense, or established canon |",
       "| Is the prose coherent with well defined paragraphs and sentences | Restructure paragraphs and sentences to improve clarity and flow |",
@@ -174,7 +179,7 @@ export function renderReviewerSystemPrompt(reasoningMode: ReasoningMode): string
       "Otherwise, if the prose contains errors or deviates from the instructions, think carefully about what fixes need to be applied. This can require just a corrected paragraph, sentence but also a complete rewrite.",
       "Start your reply with the [REPLACE] tag on its own line. Follow it with the complete corrected prose for the entire beat.",
       "",
-      "Do not add other tags, headings, verdicts, or code fences.",
+      "Do not add other control tags, headings, verdicts, or code fences. Preserve permitted vocal-performance cues when the original instructions request them.",
     ]
 }
 

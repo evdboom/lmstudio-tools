@@ -2,8 +2,9 @@ import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AuthoringApp } from "./authoring";
 import { useScreenWakeLock } from "./wake-lock";
-import { Volume2 } from "lucide-react";
+import { Check, RefreshCw, Save, Volume2 } from "lucide-react";
 import { useReaderAudio } from "./audio";
+import { buildReaderRunInstructions, CHATTERBOX_VOCAL_CUE_INSTRUCTION } from "../../src/reader-audio-text";
 import type { GenerationMode, ReasoningMode, ReasoningEffort, RunItem, ReaderState, StoryItem } from "../../src/reader-store";
 import "./styles.css";
 
@@ -22,6 +23,23 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 function App() {
+  const [savedSetup] = useState(() => {
+    try {
+      const value: unknown = JSON.parse(localStorage.getItem("folio-creative-setup") ?? "null");
+      if (!value || typeof value !== "object") return undefined;
+      const draft = value as Record<string, unknown>;
+      return {
+        workflow: draft.workflow === "planned" ? "planned" as const : draft.workflow === "discovery" ? "discovery" as const : "authored" as const,
+        premise: typeof draft.premise === "string" ? draft.premise : "",
+        title: typeof draft.title === "string" ? draft.title : "",
+        narrationRules: typeof draft.narrationRules === "string" ? draft.narrationRules : "",
+        sceneWords: typeof draft.sceneWords === "number" && Number.isInteger(draft.sceneWords) && draft.sceneWords >= 100 && draft.sceneWords <= 3000 ? draft.sceneWords : 700,
+        storyPath: typeof draft.storyPath === "string" ? draft.storyPath : "",
+      };
+    } catch {
+      return undefined;
+    }
+  });
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     const saved = localStorage.getItem("story-reader-theme");
     if (saved === "light" || saved === "dark") return saved;
@@ -30,7 +48,14 @@ function App() {
   const [stories, setStories] = useState<StoryItem[]>([]);
   const [models, setModels] = useState<string[]>([]);
   const [runs, setRuns] = useState<RunItem[]>([]);
-  const [storyPath, setStoryPath] = useState("");
+  const [storyPath, setStoryPath] = useState(savedSetup?.storyPath ?? "");
+  const [workflow, setWorkflow] = useState<"authored" | "discovery" | "planned">(savedSetup?.workflow ?? "authored");
+  const [premise, setPremise] = useState(savedSetup?.premise ?? "");
+  const [narrationRules, setNarrationRules] = useState(savedSetup?.narrationRules ?? "");
+  const [creativeTitle, setCreativeTitle] = useState(savedSetup?.title ?? "");
+  const [sceneWords, setSceneWords] = useState(savedSetup?.sceneWords ?? 700);
+  const [planInput, setPlanInput] = useState("");
+  const [autoApprovePlans, setAutoApprovePlans] = useState(false);
   const [model, setModel] = useState("");
   const [generationMode, setGenerationMode] = useState<GenerationMode>("direct");
   const [iterationCount, setIterationCount] = useState(3);
@@ -43,6 +68,9 @@ function App() {
   const [reviewerReasoningEffort, setReviewerReasoningEffort] = useState<ReasoningEffort>("default");
   const [proseWindow, setProseWindow] = useState(1);
   const [ongoingInstructions, setOngoingInstructions] = useState<string[]>([]);
+  const [chatterboxVocalCues, setChatterboxVocalCues] = useState(
+    () => localStorage.getItem("folio-chatterbox-vocal-cues") === "true"
+  );
   const [ongoingInstructionInput, setOngoingInstructionInput] = useState("");
   const [modelOptionsOpen, setModelOptionsOpen] = useState(false);
   const [state, setState] = useState<ReaderState>();
@@ -88,26 +116,52 @@ function App() {
   }, [reviewAfterGeneration]);
 
   useEffect(() => {
+    localStorage.setItem("folio-chatterbox-vocal-cues", String(chatterboxVocalCues));
+  }, [chatterboxVocalCues]);
+
+  useEffect(() => {
+    localStorage.setItem("folio-creative-setup", JSON.stringify({
+      workflow, premise, title: creativeTitle, narrationRules, sceneWords, storyPath,
+    }));
+  }, [workflow, premise, creativeTitle, narrationRules, sceneWords, storyPath]);
+
+  useEffect(() => {
+    setPlanInput(state?.pending_plan ?? "");
+    if (state?.pending_plan) {
+      const frame = requestAnimationFrame(() => document.querySelector(".scene-proposal")?.scrollIntoView({ block: "start" }));
+      return () => cancelAnimationFrame(frame);
+    }
+  }, [state?.pending_plan]);
+
+  useEffect(() => {
+    if (state) setNarrationRules(state.narration_rules ?? "");
+  }, [state?.run_id, state?.narration_rules]);
+
+  useEffect(() => {
     Promise.all([
       json<{ stories: StoryItem[] }>("/api/stories"),
       json<{ models: string[] }>("/api/models"),
     ]).then(([storyResult, modelResult]) => {
       setStories(storyResult.stories);
       setModels(modelResult.models);
-      setStoryPath(storyResult.stories[0]?.path ?? "");
+      setStoryPath(storyResult.stories.some((story) => story.path === savedSetup?.storyPath)
+        ? savedSetup!.storyPath
+        : storyResult.stories.find((story) => !story.workflow || story.workflow === "authored")?.path ?? storyResult.stories[0]?.path ?? "");
       setModel(modelResult.models[0] ?? "");
       setReviewerModel(modelResult.models[0] ?? "");
     }).catch((reason) => setError(reason.message));
   }, []);
 
   useEffect(() => {
+    let active = true;
+    setRuns([]);
     if (!storyPath) {
-      setRuns([]);
       return;
     }
     json<{ runs: RunItem[] }>(`/api/runs?story_path=${encodeURIComponent(storyPath)}`)
-      .then((result) => setRuns(result.runs))
-      .catch((reason) => setError(reason.message));
+      .then((result) => { if (active) setRuns(result.runs); })
+      .catch((reason) => { if (active) setError(reason.message); });
+    return () => { active = false; };
   }, [storyPath]);
 
   function narrationAt(run: ReaderState, beatIndex: number) {
@@ -336,7 +390,9 @@ function App() {
   async function generate(
     run: ReaderState,
     action: "next" | "regenerate" | "regenerate_previous",
-    direction = ""
+    direction = "",
+    approvedPlan?: string,
+    replan = false
   ) {
     const abort = new AbortController();
     generationAbort.current = abort;
@@ -346,6 +402,11 @@ function App() {
     setError("");
     setStreamed("");
     setReasoning("");
+    setActionBeatIndex(undefined);
+    setActionKind(undefined);
+    setActionStatus("");
+    setActionReasoning("");
+    setActionStreamed("");
     let completedState: ReaderState | undefined;
     try {
       const response = await fetch(`/api/runs/${run.run_id}/generate`, {
@@ -355,6 +416,10 @@ function App() {
           story_path: run.story_path,
           model,
           action,
+          approved_plan: approvedPlan,
+          replan,
+          auto_approve: autoApprovePlans || autoContinueRef.current,
+          review_after_generation: reviewAfterGenerationRef.current,
           instruction: direction || undefined,
         }),
         signal: abort.signal,
@@ -386,6 +451,8 @@ function App() {
       });
       setState(completedState);
       setStreamed("");
+      setGenerationAction(undefined);
+      setGenerationStatus("");
       let reviewChanged = false;
       if (reviewAfterGenerationRef.current && completedState?.current_draft) {
         const reviewed = await runReview(completedState, completedState.beat_index, abort.signal);
@@ -396,11 +463,16 @@ function App() {
           reviewChanged = false;
         }
       }
-      if (!reviewChanged && autoContinueRef.current && completedState?.current_draft &&
+      if (!reviewChanged && autoContinueRef.current && completedState?.current_draft && !completedState.current_draft.incomplete_reason &&
           completedState.beat_index + 1 < completedState.total_beats) {
         await generate(completedState, "next");
       }
     } catch (reason) {
+      try {
+        const saved = await json<ReaderState>(`/api/runs/${run.run_id}?story_path=${encodeURIComponent(run.story_path)}`);
+        setState(saved);
+        setStreamed("");
+      } catch {}
       if (!abort.signal.aborted) {
         setError(reason instanceof Error ? reason.message : String(reason));
       }
@@ -409,6 +481,11 @@ function App() {
       setBusy(false);
       setGenerationAction(undefined);
       setGenerationStatus("");
+      setActionBeatIndex(undefined);
+      setActionKind(undefined);
+      setActionStatus("");
+      setActionReasoning("");
+      setActionStreamed("");
     }
   }
 
@@ -473,8 +550,8 @@ function App() {
     setOngoingInstructions((current) => current.filter((_, itemIndex) => itemIndex !== index));
   }
 
-  async function begin() {
-    if (!storyPath || !model) return;
+  async function begin(generateImmediately = true) {
+    if (!model || (workflow === "authored" ? !storyPath : !premise.trim())) return;
     setBusy(true);
     setError("");
     setVisibleReviews(new Set());
@@ -483,7 +560,12 @@ function App() {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          story_path: storyPath,
+          story_path: workflow === "authored" ? storyPath : undefined,
+          workflow,
+          premise: workflow === "authored" ? undefined : premise.trim(),
+          narration_rules: workflow === "authored" ? undefined : narrationRules.trim(),
+          title: workflow === "authored" ? undefined : creativeTitle.trim() || "Untitled story",
+          scene_words: sceneWords,
           model,
           generation_mode: generationMode,
           iteration_count: iterationCount,
@@ -491,14 +573,16 @@ function App() {
           prose_window: proseWindow,
           reasoning_mode: reasoningMode,
           reasoning_effort: reasoningEffort,
-          ongoing_instructions: ongoingInstructions,
+          ongoing_instructions: buildReaderRunInstructions(ongoingInstructions, chatterboxVocalCues),
           reviewer_model: differentReviewer ? reviewerModel : undefined,
           reviewer_reasoning_mode: differentReviewer ? reviewerReasoningMode : undefined,
           reviewer_reasoning_effort: differentReviewer ? reviewerReasoningEffort : undefined,
         }),
       });
       setState(run);
-      await generate(run, "regenerate");
+      setStoryPath(run.story_path);
+      if (generateImmediately) await generate(run, "regenerate");
+      else setBusy(false);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
       setBusy(false);
@@ -514,6 +598,15 @@ function App() {
         `/api/runs/${run.run_id}?story_path=${encodeURIComponent(run.story_path)}`
       );
       setState(resumed);
+      setWorkflow(resumed.workflow ?? "authored");
+      setStoryPath(resumed.story_path);
+      if (resumed.workflow && resumed.workflow !== "authored") {
+        setPremise(resumed.premise);
+        setCreativeTitle(resumed.title);
+        setSceneWords(resumed.scene_words ?? 700);
+      }
+      setOngoingInstructions(resumed.ongoing_instructions.filter((item) => item !== CHATTERBOX_VOCAL_CUE_INSTRUCTION));
+      setChatterboxVocalCues(resumed.ongoing_instructions.includes(CHATTERBOX_VOCAL_CUE_INSTRUCTION));
       if (resumed.model) setModel(resumed.model);
       setGenerationMode(resumed.generation_mode);
       setIterationCount(resumed.iteration_count);
@@ -539,8 +632,40 @@ function App() {
     void generate(state, action, direction);
   }
 
+  async function saveNarrationRules() {
+    if (!state) return;
+    setBusy(true);
+    setError("");
+    try {
+      setState(await json<ReaderState>(`/api/runs/${state.run_id}/narration-rules`, {
+        method: "PATCH", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ story_path: state.story_path, narration_rules: narrationRules }),
+      }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function finishCreativeStory() {
+    if (!state) return;
+    setBusy(true);
+    setError("");
+    try {
+      setState(await json<ReaderState>(`/api/runs/${state.run_id}/finish`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ story_path: state.story_path }),
+      }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const currentNarration = streamed
-    || (busy && generationAction !== "next" ? undefined : state?.current_draft?.narration);
+    || (busy && (generationAction === "regenerate" || generationAction === "regenerate_previous") ? undefined : state?.current_draft?.narration);
   const isActingCurrent = actionBeatIndex !== undefined && actionBeatIndex === state?.beat_index;
   const currentDisplayNarration =
     isActingCurrent && actionKind === "regenerate" && actionStreamed ? actionStreamed : currentNarration;
@@ -564,18 +689,27 @@ function App() {
           <a className="nav-link" href="/author">Write</a>
           {!state ? (
             <div className="selectors">
-              <select aria-label="Story" value={storyPath} onChange={(event) => setStoryPath(event.target.value)}>
-                {stories.map((story) => <option key={story.path} value={story.path}>{story.title}</option>) }
+              <select aria-label="Story workflow" value={workflow} onChange={(event) => {
+                setWorkflow(event.target.value as typeof workflow);
+                if (event.target.value === "authored") setStoryPath(stories.find((story) => !story.workflow || story.workflow === "authored")?.path ?? "");
+              }}>
+                <option value="authored">Authored</option>
+                <option value="discovery">Discovery</option>
+                <option value="planned">Plan &amp; Approve</option>
               </select>
+              {workflow === "authored" &&
+              <select aria-label="Story" value={storyPath} onChange={(event) => setStoryPath(event.target.value)}>
+                {stories.filter((story) => !story.workflow || story.workflow === "authored").map((story) => <option key={story.path} value={story.path}>{story.title}</option>) }
+              </select>}
               <button className="secondary" onClick={() => setModelOptionsOpen(true)}>Model options</button>
-              <button className="primary" disabled={!storyPath || !model || busy} onClick={begin}>Begin</button>
+              <button className="primary" disabled={!model || busy || (workflow === "authored" ? !storyPath || !stories.some((story) => story.path === storyPath && (!story.workflow || story.workflow === "authored")) : !premise.trim())} onClick={() => void begin()}>Begin</button>
             </div>
           ) : (
             <>
               <button className="secondary" disabled={busy} onClick={() => void returnToStories()}>Stories</button>
               <div className="progress" aria-label={`Beat ${Math.min(currentBeatIndex + 1, state.total_beats)} of ${state.total_beats}`}>
-                <span title={state.model}>{state.model ?? "Unknown model"} · {Math.min(currentBeatIndex + 1, state.total_beats)} / {state.total_beats}</span>
-                <i style={{ width: `${(state.accepted.length / state.total_beats) * 100}%` }} />
+                <span title={state.model}>{state.model ?? "Unknown model"} · {state.workflow && state.workflow !== "authored" ? `Scene ${currentBeatIndex + 1}` : `${Math.min(currentBeatIndex + 1, state.total_beats)} / ${state.total_beats}`}</span>
+                {(!state.workflow || state.workflow === "authored") && <i style={{ width: `${(state.accepted.length / state.total_beats) * 100}%` }} />}
               </div>
             </>
           )}
@@ -715,9 +849,9 @@ function App() {
             </label>
             <div className="modal-field">
               <span>Ongoing instructions</span>
-              {ongoingInstructions.length > 0 && (
+              {ongoingInstructions.filter((item) => item !== CHATTERBOX_VOCAL_CUE_INSTRUCTION).length > 0 && (
                 <ul className="ongoing-instructions-list">
-                  {ongoingInstructions.map((item, index) => (
+                  {ongoingInstructions.filter((item) => item !== CHATTERBOX_VOCAL_CUE_INSTRUCTION).map((item, index) => (
                     <li key={index}>
                       <span>{item}</span>
                       <button
@@ -746,6 +880,18 @@ function App() {
                 <button type="button" className="secondary" onClick={addOngoingInstruction}>Add</button>
               </div>
             </div>
+            <label className="modal-field checkbox-field">
+              <input
+                type="checkbox"
+                aria-label="Include vocal cue guidance"
+                checked={chatterboxVocalCues}
+                onChange={(event) => setChatterboxVocalCues(event.target.checked)}
+              />
+              <span>
+                <strong>Suggest vocal cue tags</strong>
+                <small>Optionally tag fitting delivery or reactions such as [whispering], [gasp], or [sigh]. Intended for Chatterbox Turbo; other speech providers may ignore them or read them aloud.</small>
+              </span>
+            </label>
             <div className="modal-actions">
               <button className="primary" onClick={() => setModelOptionsOpen(false)}>Done</button>
             </div>
@@ -756,16 +902,33 @@ function App() {
       {!state ? (
         <section className="shelf">
           <p className="eyebrow">Local stories</p>
+          {workflow !== "authored" ? <>
+            <h1>{workflow === "discovery" ? "Discovery" : "Plan & Approve"}</h1>
+            <div className="creative-setup">
+              <label className="modal-field"><span>Title</span><input aria-label="Story title" value={creativeTitle} maxLength={200} onChange={(event) => setCreativeTitle(event.target.value)} /></label>
+              <label className="modal-field"><span>Premise</span><textarea aria-label="Premise" rows={5} maxLength={10000} value={premise} onChange={(event) => setPremise(event.target.value)} /></label>
+              <label className="modal-field"><span>Narration Rules</span><textarea aria-label="Narration Rules" rows={4} maxLength={10000} value={narrationRules} onChange={(event) => setNarrationRules(event.target.value)} /></label>
+              <label className="modal-field"><span>Maximum scene words</span><input aria-label="Maximum scene words" type="number" min={100} max={3000} value={sceneWords} onChange={(event) => setSceneWords(Math.max(100, Math.min(3000, Number(event.target.value) || 100)))} /></label>
+              <button className="secondary" disabled={busy || !model || !premise.trim()} onClick={() => void begin(false)}><Save size={18} /> Save story</button>
+            </div>
+          </> : <>
           <h1>{stories.find((story) => story.path === storyPath)?.title ?? "No finalized stories found"}</h1>
           <p>{stories.find((story) => story.path === storyPath)?.premise ?? "Finalize a story blueprint to place it on the shelf."}</p>
+          </>}
           {audio.panel}
+          {stories.some((story) => story.workflow && story.workflow !== "authored") && <label className="modal-field">
+            <span>Saved story</span>
+            <select aria-label="Saved story" value={storyPath} onChange={(event) => setStoryPath(event.target.value)}>
+              {stories.map((story) => <option key={story.path} value={story.path}>{story.title}</option>)}
+            </select>
+          </label>}
           {runs.length > 0 && (
             <section className="saved-runs" aria-label="Saved reading sessions">
               <h2>Continue reading</h2>
               {runs.map((run) => (
                 <div className="saved-run" key={run.run_id}>
                   <div className="saved-run-summary">
-                    <strong>{run.status === "completed" ? "Completed" : `Beat ${run.beat_index + 1}`}</strong>
+                    <strong>{run.workflow === "planned" ? "Plan & Approve · " : run.workflow === "discovery" ? "Discovery · " : ""}{run.status === "completed" ? "Completed" : `Scene ${run.beat_index + 1}`}</strong>
                     <span title={run.model}>{run.model ?? "Unknown model"} · {run.accepted_beats} accepted · {new Date(run.updated_at).toLocaleString()}</span>
                   </div>
                   <div className="saved-run-actions">
@@ -821,6 +984,18 @@ function App() {
               <h1>{state.title}</h1>
             </header>
             {audio.panel}
+            {state.workflow && state.workflow !== "authored" && <details className="narration-settings">
+              <summary>Narration Rules</summary>
+              <label className="modal-field"><textarea aria-label="Narration Rules" rows={4} maxLength={10000} value={narrationRules} disabled={busy} onChange={(event) => setNarrationRules(event.target.value)} /></label>
+              <button className="secondary" disabled={busy || narrationRules.trim() === (state.narration_rules ?? "")} onClick={() => void saveNarrationRules()}><Save size={18} /> Save rules</button>
+            </details>}
+            {state.continuity_warning && <p className="error" role="status">{state.continuity_warning}</p>}
+            {state.pending_plan && <section className="scene-proposal" aria-label="Scene proposal">
+              <h2>Scene {state.beat_index + 1} proposal</h2>
+              <textarea aria-label="Scene plan" rows={8} value={planInput} disabled={busy} maxLength={10000} onChange={(event) => setPlanInput(event.target.value)} />
+              <button className="primary" disabled={busy || !planInput.trim()} onClick={() => void generate(state, "regenerate", instruction, planInput)}><Check size={18} /> Approve &amp; Write</button>
+              <button className="icon-button secondary" title="New proposal" aria-label="New proposal" disabled={busy} onClick={() => void generate(state, "regenerate", instruction, undefined, true)}><RefreshCw size={18} /></button>
+            </section>}
             {state.accepted.map((beat) => {
               const isActing = actionBeatIndex === beat.beat_index;
               const displayNarration =
@@ -893,6 +1068,10 @@ function App() {
                     <pre>{actionReasoning}</pre>
                   </details>
                 )}
+                {isActingCurrent && actionKind === "review" && actionStreamed && <section className="beat-review" aria-label="Live review">
+                  <strong>Reviewing</strong>
+                  <div className="review-prose">{actionStreamed}</div>
+                </section>}
                 {!busy && state.current_draft && <div className="beat-review-actions">
                   <button className="audio-read" disabled={!audio.enabled || Boolean(state.current_draft.review && state.current_draft.review.narration !== state.current_draft.narration)} title={`Read beat ${state.beat_index + 1} aloud`} aria-label={`Read beat ${state.beat_index + 1} aloud`} onClick={() => audio.readBeat(state.beat_index, state.current_draft!.narration)}><Volume2 size={18} />{audio.activeBeat === state.beat_index ? "Restart audio" : "Read aloud"}</button>
                   <button className="secondary" onClick={() => void regenerateBeat(state, state.beat_index)}>Regenerate</button>
@@ -925,14 +1104,14 @@ function App() {
                 </section>}
               </section>
             )}
-            {busy && !streamed && (generationStatus || actionStatus) && (
+            {busy && (generationStatus || actionStatus) && !isActingCurrent && (
               <div className="generation-status" role="status" aria-live="polite">
                 <i />
-                <span>{generationStatus || actionStatus}</span>
+                <span>{actionStatus || generationStatus}</span>
               </div>
             )}
-            {busy && (reasoning || actionReasoning) && (
-              <details className="reasoning-trace">
+            {busy && (reasoning || actionReasoning) && !(isActingCurrent && actionReasoning) && (
+              <details className="reasoning-trace" open>
                 <summary>Reasoning <span>live</span></summary>
                 <pre>{reasoning || actionReasoning}</pre>
               </details>
@@ -960,6 +1139,7 @@ function App() {
                 />
                 <button
                   className={busy ? "danger" : "primary"}
+                  disabled={!busy && Boolean(state.pending_plan)}
                   onClick={() => busy
                     ? cancelGeneration()
                     : act(state.current_draft ? "next" : "regenerate")}
@@ -967,11 +1147,12 @@ function App() {
                   {busy
                     ? "Stop"
                     : !state.current_draft
-                      ? `Generate beat ${currentBeatIndex + 1}`
+                      ? state.workflow === "planned" ? "Plan next scene" : `Generate ${state.workflow === "discovery" ? "scene" : "beat"} ${currentBeatIndex + 1}`
                       : state.beat_index + 1 === state.total_beats ? "Finish" : "Next"}
                 </button>
               </div>
               <div className="control-options">
+                {state.workflow === "planned" && <label><input type="checkbox" checked={autoApprovePlans} onChange={(event) => setAutoApprovePlans(event.target.checked)} /><span>Auto-approve plans</span></label>}
                 <label>
                   <input
                     type="checkbox"
@@ -988,6 +1169,7 @@ function App() {
                   />
                   <span>Auto continue</span>
                 </label>
+                {state.workflow && state.workflow !== "authored" && <button className="secondary" disabled={busy || !state.current_draft} onClick={() => void finishCreativeStory()}>End story</button>}
               </div>
             </footer>
           )}

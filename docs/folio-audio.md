@@ -6,9 +6,20 @@ beat playback. See [the setup instructions](../README.md#local-read-aloud).
 The broader performance/effects design below remains proposed. Provider-specific
 model quality and Intel GPU acceleration have not been benchmarked locally.
 
-Implemented presets are `portable` and `laptop` (Kokoro at port 8880), and
-`desktop` (external Chatterbox server at port 8004). Each supports service URL,
-model, and voice overrides. Execution device remains the service's responsibility.
+Implemented presets are `kokoro` (Kokoro at port 8880, WAV) and `chatterbox`
+(external Chatterbox server at port 8004, WAV by default); `portable` is a Kokoro
+alias. Folio sends complete paragraphs, not fixed-size text fragments. The
+Chatterbox server can then split each paragraph into sentence-aware internal
+chunks. Folio rejects paragraphs over 20,000 characters rather than truncating
+them. The previous `laptop` and `desktop` names remain compatibility aliases.
+Each supports service URL,
+model, and voice overrides. Execution device remains the service's
+responsibility. Chatterbox temperature, reference cloning, and synthesis speed
+factor are managed separately by its UI; Folio currently leaves them at server
+defaults. Folio queries `/get_predefined_voices`, stores filenames such as
+`Emily.wav` as IDs, displays the friendly name, and auto-selects the first
+available voice if the configured choice is missing. MP3 is an explicit format
+override; the Chatterbox server needs FFmpeg available to encode MP3.
 The supplied Compose file has separate Kokoro `cpu` and NVIDIA `cuda` profiles;
 neither establishes an Intel-accelerated container path. Cached clips can replay
 without the provider, but portable whole-story audio manifests are not yet built.
@@ -100,6 +111,27 @@ than speech. Do not remove intentional breaths through blanket silence trimming.
 - Keep accepted prose unchanged and audio optional. Build an audio performance
   plan after prose review, with spans that reference exact source text, speaker
   IDs, delivery notes, pauses, and optional vocal/effect events.
+- The current **Suggest Chatterbox vocal cues** run option adds a persistent
+  ongoing narration instruction only for the Chatterbox profile. It is off by
+  default; it targets Turbo specifically and does not guarantee the selected
+  engine will interpret tags. The tags remain visible in authored narration.
+- Before speech synthesis, Folio strips recognized Chatterbox cue tags unless
+  the active Chatterbox service reports Turbo with
+  `supports_paralinguistic_tags`. If capability probing fails, tags are
+  stripped. Em/en dashes are converted to comma pauses in the TTS request only;
+  stored and displayed story prose is not rewritten.
+- When Turbo tags are preserved, Folio canonicalizes recognized tokens to their
+  exact lowercase spellings because the model's special tokens are
+  case-sensitive. For example, `[Sigh]` becomes `[sigh]` before synthesis.
+- Vocal-cue guidance uses a per-tag usage table matching Turbo's
+  [published added-token vocabulary](https://huggingface.co/ResembleAI/chatterbox-turbo/blob/main/added_tokens.json).
+  Delivery cues prefix the affected sentence or opening dialogue quotation
+  mark; they must not be appended as labels after the words they describe.
+  Reaction cues belong where the sound actually happens, which may be after
+  speech. `[softly]` and `[breathing hard]` are unsupported: describe these in
+  ordinary prose, not invented tags. Review receives automated flags for
+  unknown cues, incorrect case and misplaced delivery cues. Existing sessions
+  automatically receive refreshed cue guidance when loaded.
 - Validate span coverage/order and source hashes. Reject plans that rewrite,
   omit, duplicate, or invent spoken text. An LLM may propose direction, but the
   application owns validation and provider translation.
@@ -161,6 +193,8 @@ prose, plus restart/cache reuse, service failures, and playback without inferenc
 - [Kokoro ONNX](https://github.com/thewh1teagle/kokoro-onnx)
 - [Piper](https://github.com/OHF-Voice/piper1-gpl)
 - [Chatterbox](https://github.com/resemble-ai/chatterbox)
+- [Official Chatterbox Turbo special-token inventory](https://huggingface.co/ResembleAI/chatterbox-turbo/blob/main/added_tokens.json)
+- [Community Chatterbox Turbo tag descriptions](https://github.com/wobba/ComfyUI-ChatterBox-Turbo#emotion--paralinguistic-tags)
 - [Chatterbox Turbo weights](https://huggingface.co/ResembleAI/chatterbox-turbo)
 - [Community Chatterbox server](https://github.com/devnen/Chatterbox-TTS-Server)
 - [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS)

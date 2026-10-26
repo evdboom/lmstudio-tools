@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -35,12 +35,14 @@ import {
   saveReaderReview,
   startReaderRun,
 } from "./reader-service.js";
-import { iterationFocuses, type ReaderChatMessage } from "./reader-prompts.js";
+import { iterationFocuses, taggedReasoningRule, type ReaderChatMessage } from "./reader-prompts.js";
+import { buildCreativePlanPrompt, buildCreativePrompt, summarizeCreativeRun } from "./reader-creative.js";
+import { createStory } from "./story-authoring.js";
 import { buildBeatDesignPrompt, parseBeatDraft } from "./reader-beat-design.js";
 import { buildCharacterDesignPrompt, parseCharacterDraft } from "./reader-character-design.js";
 import { buildLocationDesignPrompt, parseLocationDraft } from "./reader-location-design.js";
 import { storyBlueprintSchema } from "./story-model.js";
-import { deleteReaderRun, GenerationMode, listFinalStories, listReaderRuns, RunRequest, type ReaderIteration } from "./reader-store.js";
+import { deleteReaderRun, GenerationMode, listFinalStories, listReaderRuns, mutateReaderRun, readReaderRun, RunRequest, type ReaderIteration } from "./reader-store.js";
 import {
   listEditableStories,
   readEditableStory,
@@ -258,6 +260,22 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
 
   registerReaderAudio(app, options.root, options.audio);
 
+  async function summarize(storyPath: string, runId: string, signal?: AbortSignal, reply?: FastifyReply) {
+    const run = await readReaderRun(options.root, storyPath, runId);
+    await summarizeCreativeRun(options.root, storyPath, runId, async (prompt) => {
+      const generated = await streamLmStudioNarration({
+        baseUrl: options.lmStudioUrl, model: run.model!, apiToken: options.lmStudioApiToken,
+        systemPrompt: [...taggedReasoningRule(run.reasoning_mode), prompt.systemPrompt].join("\n"),
+        messages: prompt.messages, store: false, reasoningEffort: run.reasoning_effort,
+        signal: signal ?? new AbortController().signal, onDelta: () => {},
+        onReasoningDelta: (delta) => reply?.raw.write(`event: reasoning\ndata: ${JSON.stringify(delta)}\n\n`),
+        onReasoning: () => reply?.raw.write(`event: status\ndata: ${JSON.stringify("Summarizing the saved prose...")}\n\n`),
+      });
+      if (generated.incompleteReason) throw new Error("Summary generation was interrupted. Retry Continue.");
+      return generated.narration;
+    });
+  }
+
   app.get("/api/stories", async () => ({ stories: await listFinalStories(options.root) }));
   app.get("/api/editor/stories", async () => ({ stories: await listEditableStories(options.root) }));
   app.get("/api/editor/story", async (request, reply) => {
@@ -362,7 +380,12 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
 
   app.post("/api/runs", async (request, reply) => {
     const parsed = z.object({
-      story_path: storyPathSchema,
+      story_path: storyPathSchema.optional(),
+      workflow: z.enum(["authored", "discovery", "planned"]).default("authored"),
+      premise: z.string().trim().min(1).max(10_000).optional(),
+      narration_rules: z.string().trim().max(10_000).default(""),
+      title: z.string().trim().min(1).max(200).optional(),
+      scene_words: z.number().int().min(100).max(3000).default(700),
       model: z.string().trim().min(1).max(500),
       generation_mode: z.enum(["direct", "distinct", "recurring"]).default("direct"),
       iteration_count: z.number().int().min(1).max(20).default(3),
@@ -377,9 +400,26 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
     }).safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "A valid story_path and model are required." });
     try {
+      let storyPath = parsed.data.story_path;
+      if (parsed.data.workflow !== "authored") {
+        if (!parsed.data.premise) throw new Error("A premise is required for creative stories.");
+        storyPath = `stories/creative-${randomUUID()}`;
+        const created = await createStory(options.root, {
+          storyPath, title: parsed.data.title ?? "Untitled story", premise: parsed.data.premise,
+          storyType: "creative", defaultNarrationMode: "creative",
+          beatBudget: { min_words: 100, max_words: parsed.data.scene_words },
+        });
+        if (!created.ok) throw new Error(created.error);
+      }
+      if (!storyPath) throw new Error("A story is required for authored reading.");
       const requestData: RunRequest = {
         root: options.root,
-        story_path: parsed.data.story_path,
+        story_path: storyPath,
+        workflow: parsed.data.workflow,
+        premise: parsed.data.premise,
+        narration_rules: parsed.data.narration_rules,
+        title: parsed.data.title,
+        scene_words: parsed.data.scene_words,
         model: parsed.data.model,
         prose_window: parsed.data.prose_window,
         include_iterations: parsed.data.include_iterations,
@@ -412,6 +452,26 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
     }
   });
 
+  app.patch("/api/runs/:runId/narration-rules", async (request, reply) => {
+    const params = z.object({ runId: runIdSchema }).safeParse(request.params);
+    const body = z.object({ story_path: storyPathSchema, narration_rules: z.string().trim().max(10_000) }).safeParse(request.body);
+    if (!params.success || !body.success) return reply.code(400).send({ error: "Invalid narration rules request." });
+    const key = `${body.data.story_path}\0${params.data.runId}`;
+    if (activeGenerations.has(key)) return reply.code(409).send({ error: "A generation is already active for this run." });
+    activeGenerations.add(key);
+    try {
+      await mutateReaderRun(options.root, body.data.story_path, params.data.runId, (run) => {
+        if (run.workflow === "authored") throw new Error("Edit narration rules in the authored blueprint.");
+        run.narration_rules = body.data.narration_rules;
+      });
+      return await getReaderState(options.root, body.data.story_path, params.data.runId);
+    } catch (error) {
+      return reply.code(400).send({ error: message(error) });
+    } finally {
+      activeGenerations.delete(key);
+    }
+  });
+
   app.get("/api/runs/:runId/beats/:beatIndex/prompt", async (request, reply) => {
     const parsed = z.object({
       runId: runIdSchema,
@@ -439,6 +499,10 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       story_path: storyPathSchema,
       model: z.string().trim().min(1).max(500),
       action: z.enum(["next", "regenerate", "regenerate_previous"]),
+      approved_plan: z.string().trim().min(1).max(10_000).optional(),
+      auto_approve: z.boolean().default(false),
+      replan: z.boolean().default(false),
+      review_after_generation: z.boolean().default(false),
       instruction: z.string().max(10_000).optional(),
     }).safeParse(request.body);
     if (!params.success || !body.success) {
@@ -451,16 +515,31 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
     }
 
     let prepared: Awaited<ReturnType<typeof prepareReaderGeneration>>;
+    activeGenerations.add(key);
+    const abort = new AbortController();
+    request.raw.on("aborted", () => abort.abort());
+    reply.raw.on("close", () => {
+      if (!reply.raw.writableEnded) abort.abort();
+    });
     try {
+      await summarize(body.data.story_path, params.data.runId, abort.signal);
+      if (body.data.replan) {
+        await mutateReaderRun(options.root, body.data.story_path, params.data.runId, (run) => {
+          if (run.workflow !== "planned" || !run.pending_plan || run.current_draft) throw new Error("There is no scene proposal to replace.");
+          run.pending_plan = undefined;
+        });
+      }
       prepared = await prepareReaderGeneration(
         options.root,
         body.data.story_path,
         params.data.runId,
         body.data.action,
         body.data.instruction,
-        body.data.model
+        body.data.model,
+        body.data.approved_plan
       );
     } catch (error) {
+      activeGenerations.delete(key);
       return reply.code(400).send({ error: message(error) });
     }
 
@@ -472,6 +551,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
     });
 
     if (prepared.state) {
+      activeGenerations.delete(key);
       reply.raw.write(`event: done\ndata: ${JSON.stringify(prepared.state)}\n\n`);
       reply.raw.end();
       return;
@@ -479,13 +559,38 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
 
     activeGenerations.add(key);
     await acquireWakeLock();
-    const abort = new AbortController();
-    request.raw.on("aborted", () => abort.abort());
-    reply.raw.on("close", () => {
-      if (!reply.raw.writableEnded) abort.abort();
-    });
     try {
       reply.raw.write(`event: state\ndata: ${JSON.stringify(prepared.generationState)}\n\n`);
+      let creative = await readReaderRun(options.root, body.data.story_path, params.data.runId);
+      if (creative.workflow === "planned" && !creative.approved_plan) {
+        reply.raw.write(`event: status\ndata: ${JSON.stringify("Planning the next scene...")}\n\n`);
+        let proposal = creative.pending_plan;
+        if (!proposal) {
+          const prompt = buildCreativePlanPrompt(creative, body.data.instruction);
+          const generatedPlan = await streamLmStudioNarration({
+            baseUrl: options.lmStudioUrl, model: body.data.model, apiToken: options.lmStudioApiToken,
+            systemPrompt: prompt.systemPrompt, messages: prompt.messages, store: false,
+            reasoningEffort: creative.reasoning_effort, signal: abort.signal, onDelta: () => {},
+            onReasoningDelta: (delta) => reply.raw.write(`event: reasoning\ndata: ${JSON.stringify(delta)}\n\n`),
+          });
+          if (generatedPlan.incompleteReason || !generatedPlan.narration.trim()) throw new Error("The scene proposal was interrupted. Retry to plan again.");
+          proposal = generatedPlan.narration.trim();
+        }
+        creative = await mutateReaderRun(options.root, body.data.story_path, params.data.runId, (run) => {
+          run.pending_plan = body.data.auto_approve ? undefined : proposal;
+          run.approved_plan = body.data.auto_approve ? proposal : undefined;
+          return run;
+        });
+        if (!body.data.auto_approve) {
+          reply.raw.write(`event: done\ndata: ${JSON.stringify(await getReaderState(options.root, body.data.story_path, params.data.runId))}\n\n`);
+          return;
+        }
+      }
+      if (creative.workflow !== "authored") {
+        const prompt = buildCreativePrompt(creative, body.data.instruction, creative.generation_mode === "direct" ? undefined : 1);
+        prepared.messages = prompt.messages;
+        prepared.systemPrompt = prompt.systemPrompt;
+      }
       const beatNumber = prepared.generationState!.beat_index + 1;
       reply.raw.write(`event: phase\ndata: ${JSON.stringify({ name: "preparing", beat: beatNumber })}\n\n`);
       reply.raw.write(`event: status\ndata: ${JSON.stringify(`Preparing beat ${beatNumber}...`)}\n\n`);
@@ -514,7 +619,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         reply,
         signal: abort.signal,
       });
-      const state = await saveReaderDraft(
+      await saveReaderDraft(
         options.root,
         body.data.story_path,
         params.data.runId,
@@ -527,6 +632,11 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         },
         generated.incompleteReason
       );
+      if (creative.workflow !== "authored" && !generated.incompleteReason && !body.data.review_after_generation) {
+        reply.raw.write(`event: status\ndata: ${JSON.stringify("Saving the scene summary...")}\n\n`);
+        await summarize(body.data.story_path, params.data.runId, abort.signal, reply);
+      }
+      const state = await getReaderState(options.root, body.data.story_path, params.data.runId);
       reply.raw.write(`event: done\ndata: ${JSON.stringify(state)}\n\n`);
     } catch (error) {
       if (!abort.signal.aborted) {
@@ -625,7 +735,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       const resolved = resolveReviewNarration(review.narration, generated.narration);
       reply.raw.write(`event: phase\ndata: ${JSON.stringify({ name: "parsing", beat: beatNumber })}\n\n`);
       reply.raw.write(`event: draft\ndata: ${JSON.stringify(resolved.narration)}\n\n`);
-      const state = await saveReaderReview(
+      await saveReaderReview(
         options.root,
         body.data.story_path,
         params.data.runId,
@@ -638,6 +748,11 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
           responseId: review.store ? generated.responseId : undefined,
         }
       );
+      if (resolved.narration === review.narration) {
+        reply.raw.write(`event: status\ndata: ${JSON.stringify("Saving the scene summary...")}\n\n`);
+        await summarize(body.data.story_path, params.data.runId, abort.signal, reply);
+      }
+      const state = await getReaderState(options.root, body.data.story_path, params.data.runId);
       reply.raw.write(`event: done\ndata: ${JSON.stringify(state)}\n\n`);
     } catch (error) {
       if (!abort.signal.aborted) {
@@ -720,7 +835,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         reply,
         signal: abort.signal,
       });
-      const state = await applyReaderRegeneration(
+      await applyReaderRegeneration(
         options.root,
         body.data.story_path,
         params.data.runId,
@@ -733,6 +848,8 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
           incompleteReason: generated.incompleteReason,
         }
       );
+      await summarize(body.data.story_path, params.data.runId, abort.signal);
+      const state = await getReaderState(options.root, body.data.story_path, params.data.runId);
       reply.raw.write(`event: done\ndata: ${JSON.stringify(state)}\n\n`);
     } catch (error) {
       if (!abort.signal.aborted) {
@@ -755,14 +872,41 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       return reply.code(400).send({ error: "Invalid review application request." });
     }
     try {
-      return await applyReaderReview(
+      await applyReaderReview(
         options.root,
         body.data.story_path,
         params.data.runId,
         body.data.beat_index
       );
+      await summarize(body.data.story_path, params.data.runId);
+      return await getReaderState(options.root, body.data.story_path, params.data.runId);
     } catch (error) {
       return reply.code(400).send({ error: message(error) });
+    }
+  });
+
+  app.post("/api/runs/:runId/finish", async (request, reply) => {
+    const params = z.object({ runId: runIdSchema }).safeParse(request.params);
+    const body = z.object({ story_path: storyPathSchema }).safeParse(request.body);
+    if (!params.success || !body.success) return reply.code(400).send({ error: "Invalid finish request." });
+    const key = `${body.data.story_path}\0${params.data.runId}`;
+    if (activeGenerations.has(key)) return reply.code(409).send({ error: "A generation is already active for this run." });
+    activeGenerations.add(key);
+    try {
+      await summarize(body.data.story_path, params.data.runId);
+      await mutateReaderRun(options.root, body.data.story_path, params.data.runId, (run) => {
+        if (run.workflow === "authored") throw new Error("Authored stories finish at their final beat.");
+        if (!run.current_draft || run.current_draft.incomplete_reason) throw new Error("Finish or repair the current scene first.");
+        run.accepted.push({ ...run.current_draft, beat_index: run.beat_index });
+        run.current_draft = undefined;
+        run.pending_plan = undefined;
+        run.status = "completed";
+      });
+      return await getReaderState(options.root, body.data.story_path, params.data.runId);
+    } catch (error) {
+      return reply.code(400).send({ error: message(error) });
+    } finally {
+      activeGenerations.delete(key);
     }
   });
 
@@ -776,12 +920,14 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       return reply.code(400).send({ error: "Invalid review dismissal request." });
     }
     try {
-      return await dismissReaderReview(
+      await dismissReaderReview(
         options.root,
         body.data.story_path,
         params.data.runId,
         body.data.beat_index
       );
+      await summarize(body.data.story_path, params.data.runId);
+      return await getReaderState(options.root, body.data.story_path, params.data.runId);
     } catch (error) {
       return reply.code(400).send({ error: message(error) });
     }
@@ -945,12 +1091,13 @@ async function main(): Promise<void> {
   const webRoot = fileURLToPath(new URL("../reader-dist", import.meta.url));
   const localUrl = `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`;
   const mcpPluginId = option(argv, "--mcp-plugin-id") ?? process.env.STORY_READER_MCP_ID ?? "mcp/story-teller";
-  const audioProfile = z.enum(["portable", "laptop", "desktop"]).optional().parse(option(argv, "--tts-profile") ?? process.env.FOLIO_TTS_PROFILE);
+  const audioProfile = z.enum(["portable", "laptop", "desktop", "kokoro", "chatterbox"]).optional().parse(option(argv, "--tts-profile") ?? process.env.FOLIO_TTS_PROFILE);
   const audio: ReaderAudioOptions = {
     profile: audioProfile,
     baseUrl: option(argv, "--tts-url") ?? process.env.FOLIO_TTS_URL,
     model: option(argv, "--tts-model") ?? process.env.FOLIO_TTS_MODEL,
     voice: option(argv, "--tts-voice") ?? process.env.FOLIO_TTS_VOICE,
+    format: z.enum(["wav", "mp3"]).optional().parse(option(argv, "--tts-format") ?? process.env.FOLIO_TTS_FORMAT),
     apiToken: process.env.FOLIO_TTS_API_TOKEN,
   };
   const app = await createReaderServer({ root, lmStudioUrl, lmStudioApiToken, webRoot, folioPassword, mcpPluginId, audio });

@@ -22,6 +22,8 @@ import {
   startReaderRun as startReaderRunRequest,
 } from "../src/reader-service.js";
 import { DISTINCT_ITERATION_FOCUSES } from "../src/reader-prompts.js";
+import { buildCreativePlanPrompt, buildCreativePrompt, creativeContext, summarizeCreativeRun } from "../src/reader-creative.js";
+import { CHATTERBOX_VOCAL_CUE_INSTRUCTION } from "../src/reader-audio-text.js";
 import { deleteReaderRun, listReaderRuns, mutateReaderRun, readReaderRun, type RunRequest } from "../src/reader-store.js";
 import { makeSandbox } from "./helpers.js";
 
@@ -99,6 +101,138 @@ beforeEach(async () => {
 afterEach(async () => cleanup());
 
 describe("reader run service", () => {
+  it("flags unsupported and trailing vocal cues explicitly in review", async () => {
+    const legacy = "Optional Chatterbox Turbo vocal-cue guidance:\nOld cue rules.";
+    const started = await startReaderRun(root, storyPath, "test-model", "blueprint", 1, "native", "default", [legacy]);
+    const prepared = await prepareReaderGeneration(root, storyPath, started.run_id, "regenerate");
+    expect(prepared.input).toContain("Delivery cues are PREFIXES");
+    await saveReaderDraft(root, storyPath, started.run_id, '"We need a plan." [breathing hard]\n\n"Agreed." [softly]\n\n"Keep quiet." [whispering]', undefined, undefined, { messages: prepared.messages, system_prompt: prepared.systemPrompt });
+    const review = await prepareReaderReview(root, storyPath, started.run_id, 0);
+    expect(review.messages[0].content).toContain("[breathing hard] is not an allowed vocal cue");
+    expect(review.messages[0].content).toContain("[softly] is not an allowed vocal cue");
+    expect(review.messages[0].content).toContain("[whispering] is a trailing or isolated delivery cue");
+    expect(review.messages[0].content).toContain("require [REPLACE], not [VALID] or [APPEND]");
+  });
+
+  async function creativeRun(workflow: "discovery" | "planned" = "discovery") {
+    return startReaderRunRequest({
+      root, story_path: storyPath, model: "test-model", workflow,
+      premise: "A conductor finds an impossible passenger.",
+      prose_window: 1, include_iterations: "none", reasoning_mode: "native", reasoning_effort: "default",
+      ongoing_instructions: [CHATTERBOX_VOCAL_CUE_INSTRUCTION], reviewer: null,
+      generationMode: "direct", iterationCount: 3,
+    });
+  }
+
+  it("summarizes actual prose separately and uses summaries outside the prose window", async () => {
+    const started = await creativeRun();
+    const first = await prepareReaderGeneration(root, storyPath, started.run_id, "regenerate");
+    expect(first.systemPrompt).toContain("Invent events");
+    expect(first.input).not.toContain("Mara enters.");
+    await saveReaderDraft(root, storyPath, started.run_id, "The passenger becomes a moth.");
+    await expect(prepareReaderGeneration(root, storyPath, started.run_id, "next")).rejects.toThrow("Summarize");
+    const sources: string[] = [];
+    const summarize = async (prompt: { messages: Array<{ content: string }> }) => {
+      sources.push(prompt.messages[0].content);
+      return "The passenger transformed into a moth.";
+    };
+    await summarizeCreativeRun(root, storyPath, started.run_id, summarize);
+    expect(sources).toEqual(["The passenger becomes a moth."]);
+    await prepareReaderGeneration(root, storyPath, started.run_id, "next");
+    await saveReaderDraft(root, storyPath, started.run_id, "Mara opens the window.");
+    await summarizeCreativeRun(root, storyPath, started.run_id, async () => "Mara opened the window.");
+    const next = await prepareReaderGeneration(root, storyPath, started.run_id, "next");
+    expect(next.input).toContain("The passenger transformed into a moth.");
+    expect(next.input).not.toContain("The passenger becomes a moth.");
+    expect(next.input).toContain("Mara opens the window.");
+    expect(next.generationState?.status).toBe("active");
+    expect((await readReaderRun(root, storyPath, started.run_id)).accepted[0].narration).toBe("The passenger becomes a moth.");
+  });
+
+  it("keeps proposals out of canon and uses the edited approved plan", async () => {
+    const started = await creativeRun("planned");
+    await mutateReaderRun(root, storyPath, started.run_id, (run) => { run.pending_plan = "The train derails."; });
+    let run = await readReaderRun(root, storyPath, started.run_id);
+    expect(creativeContext(run)).not.toContain("derails");
+    expect(buildCreativePrompt(run).messages[0].content).not.toContain("derails");
+    const prepared = await prepareReaderGeneration(root, storyPath, started.run_id, "regenerate", undefined, "test-model", "Mara stops the train safely.");
+    expect(prepared.input).toContain("Mara stops the train safely.");
+    expect(prepared.input).not.toContain("The train derails.");
+    await saveReaderDraft(root, storyPath, started.run_id, "Mara stopped the train.", undefined, undefined, { messages: prepared.messages, system_prompt: prepared.systemPrompt });
+    run = await readReaderRun(root, storyPath, started.run_id);
+    expect(run.current_draft?.plan).toBe("Mara stops the train safely.");
+    expect(run.pending_plan).toBeUndefined();
+    const review = await prepareReaderReview(root, storyPath, started.run_id, 0);
+    expect(review.systemPrompt).toContain("approved scene plan");
+    expect(review.messages[0].content).toContain("Check supported lowercase cues");
+    expect(review.messages[0].content).toContain("Mara stops the train safely.");
+  });
+
+  it("invalidates changed summaries and warns when later scenes exist", async () => {
+    const started = await creativeRun();
+    await mutateReaderRun(root, storyPath, started.run_id, (run) => {
+      run.accepted = [{ beat_index: 0, narration: "Old prose.", summary: "Old summary." }];
+      run.beat_index = 1;
+      run.current_draft = { narration: "Later prose.", summary: "Later summary." };
+      run.recap = { through: 0, text: "Old recap." };
+    });
+    await saveReaderReview(root, storyPath, started.run_id, 0, { model: "test-model", narration: "Revised prose.", verdict: "replace" });
+    await applyReaderReview(root, storyPath, started.run_id, 0);
+    let run = await readReaderRun(root, storyPath, started.run_id);
+    expect(run.accepted[0].summary).toBeUndefined();
+    expect(run.recap).toBeUndefined();
+    expect(run.continuity_warning).toContain("Scene 1 changed");
+    await summarizeCreativeRun(root, storyPath, started.run_id, async (prompt) => `Summary of ${prompt.messages[0].content}`);
+    run = await readReaderRun(root, storyPath, started.run_id);
+    expect(run.accepted[0].summary).toBe("Summary of Revised prose.");
+    expect(run.current_draft?.summary).toBe("Later summary.");
+  });
+
+  it("consolidates old summaries while preserving full prose and excludes future recaps from review", async () => {
+    const started = await creativeRun();
+    await mutateReaderRun(root, storyPath, started.run_id, (run) => {
+      run.accepted = Array.from({ length: 12 }, (_, index) => ({ beat_index: index, narration: `Prose ${index}.`, summary: `Summary ${index}.` }));
+      run.beat_index = 12;
+    });
+    await summarizeCreativeRun(root, storyPath, started.run_id, async () => "Compact history through scene four.");
+    const run = await readReaderRun(root, storyPath, started.run_id);
+    expect(run.recap?.through).toBe(3);
+    const context = creativeContext(run);
+    expect(context).toContain("Compact history");
+    expect(context).not.toContain("Summary 0.");
+    expect(context).toContain("Summary 4.");
+    expect(context).toContain("Prose 11.");
+    expect(creativeContext(run, 2)).toContain("Summary 0.");
+    expect(creativeContext(run, 2)).not.toContain("Compact history");
+    expect(run.accepted[0].narration).toBe("Prose 0.");
+  });
+
+  it("keeps prose intact when summary generation fails", async () => {
+    const started = await creativeRun();
+    await saveReaderDraft(root, storyPath, started.run_id, "Saved prose.");
+    await expect(summarizeCreativeRun(root, storyPath, started.run_id, async () => { throw new Error("offline"); })).rejects.toThrow("offline");
+    expect((await readReaderRun(root, storyPath, started.run_id)).current_draft?.narration).toBe("Saved prose.");
+  });
+
+  it("keeps narration rules separate from the premise and applies them to creative prompts and review", async () => {
+    const started = await creativeRun("planned");
+    const rules = "First-person present tense. Spare prose and dry humor.";
+    await mutateReaderRun(root, storyPath, started.run_id, (run) => { run.narration_rules = rules; });
+    const prepared = await prepareReaderGeneration(root, storyPath, started.run_id, "regenerate");
+    await saveReaderDraft(root, storyPath, started.run_id, "I open the letter.", undefined, undefined, { messages: prepared.messages, system_prompt: prepared.systemPrompt });
+    const run = await readReaderRun(root, storyPath, started.run_id);
+    expect(run.premise).toBe("A conductor finds an impossible passenger.");
+    expect(buildCreativePlanPrompt(run).messages[0].content).toContain(rules);
+    expect(buildCreativePrompt(run, undefined, 2).messages[0].content).toContain(rules);
+    expect((await prepareReaderReview(root, storyPath, started.run_id, 0)).messages[0].content).toContain(rules);
+    expect((await getReaderState(root, storyPath, started.run_id)).narration_rules).toBe(rules);
+    await summarizeCreativeRun(root, storyPath, started.run_id, async (prompt) => {
+      expect(prompt.messages[0].content).toBe("I open the letter.");
+      expect(prompt.systemPrompt).not.toContain(rules);
+      return "The narrator opened the letter.";
+    });
+  });
+
   it("builds distinct passes from an ordered event scaffold", async () => {
     const started = await startReaderRun(
       root,

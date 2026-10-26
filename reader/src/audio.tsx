@@ -1,12 +1,26 @@
 import { useEffect, useRef, useState } from "react";
 import { Download, Play, RefreshCw, Square, Volume2 } from "lucide-react";
-import { splitSpeechText } from "../../src/reader-audio-text";
+import { splitSpeechParagraphs } from "../../src/reader-audio-text";
 
 interface AudioConfig {
   enabled: boolean;
   profile: string;
   model: string;
   voice: string;
+  response_format: "wav" | "mp3";
+  supports_vocal_cues: boolean;
+}
+
+interface AudioVoice {
+  id: string;
+  label: string;
+}
+
+async function fetchAudioVoices(): Promise<AudioVoice[]> {
+  const response = await fetch("/api/audio/voices");
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error ?? "Cannot load TTS voices.");
+  return (result.voices as AudioVoice[]).filter((item) => item && typeof item.id === "string" && typeof item.label === "string");
 }
 
 export function useReaderAudio(options: {
@@ -16,7 +30,7 @@ export function useReaderAudio(options: {
 }) {
   const [config, setConfig] = useState<AudioConfig>();
   const [voice, setVoice] = useState("");
-  const [voices, setVoices] = useState<string[]>([]);
+  const [voices, setVoices] = useState<AudioVoice[]>([]);
   const [rate, setRate] = useState(1);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -55,7 +69,20 @@ export function useReaderAudio(options: {
       if (controller.signal.aborted) return;
       setConfig(settings);
       const saved = localStorage.getItem(`folio-audio-voice:${settings.profile}:${settings.model}`);
-      setVoice(saved || settings.voice);
+      const preferred = saved || settings.voice;
+      setVoice(preferred);
+      if (settings.profile === "chatterbox" || settings.profile === "desktop") {
+        try {
+          const available = await fetchAudioVoices();
+          if (controller.signal.aborted) return;
+          setVoices(available);
+          const chosen = available.some((item) => item.id === preferred) ? preferred : available[0]?.id ?? preferred;
+          setVoice(chosen);
+          if (chosen) localStorage.setItem(`folio-audio-voice:${settings.profile}:${settings.model}`, chosen);
+        } catch (reason) {
+          if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason));
+        }
+      }
       const savedRate = Number(localStorage.getItem("folio-audio-rate") ?? "1");
       setRate(Number.isFinite(savedRate) && savedRate >= 0.5 && savedRate <= 2 ? savedRate : 1);
     }).catch((reason) => { if (!controller.signal.aborted) setError(reason.message); });
@@ -80,10 +107,9 @@ export function useReaderAudio(options: {
   async function refreshVoices() {
     setError("");
     try {
-      const response = await fetch("/api/audio/voices");
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error);
-      setVoices(result.voices);
+      const configResponse = await fetch("/api/audio/config");
+      if (configResponse.ok) setConfig(await configResponse.json() as AudioConfig);
+      setVoices(await fetchAudioVoices());
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }
@@ -93,7 +119,13 @@ export function useReaderAudio(options: {
     stop();
     setError("");
     if (!config?.enabled || !voice.trim() || options.busy) return;
-    const chunks = splitSpeechText(narration);
+    let chunks: string[];
+    try {
+      chunks = splitSpeechParagraphs(narration);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      return;
+    }
     if (!chunks.length) return;
     const currentSequence = sequence.current;
     const label = beatIndex < 0 ? "Voice preview" : `Beat ${beatIndex + 1}`;
@@ -144,12 +176,15 @@ export function useReaderAudio(options: {
       <span className="audio-profile"><Volume2 size={18} aria-hidden="true" />{config?.enabled ? config.profile : "Audio off"}</span>
       {config?.enabled && <>
         <label className="audio-voice">Voice
-          <input aria-label="Narrator voice" list="folio-voices" value={voice} maxLength={200} onChange={(event) => {
+          {voices.length > 0 ? <select aria-label="Narrator voice" value={voice} onChange={(event) => {
             stop();
             setVoice(event.target.value);
             localStorage.setItem(`folio-audio-voice:${config.profile}:${config.model}`, event.target.value);
-          }} />
-          <datalist id="folio-voices">{voices.map((item) => <option key={item} value={item} />)}</datalist>
+          }}>{voices.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select> : <input aria-label="Narrator voice" value={voice} maxLength={200} onChange={(event) => {
+            stop();
+            setVoice(event.target.value);
+            localStorage.setItem(`folio-audio-voice:${config.profile}:${config.model}`, event.target.value);
+          }} />}
         </label>
         <button className="audio-icon" aria-label="Refresh voices" title="Refresh voices" onClick={() => void refreshVoices()}><RefreshCw size={18} /></button>
         <button className="audio-icon" disabled={options.busy || !voice.trim()} aria-label="Preview narrator voice" title="Preview narrator voice" onClick={() => readBeat(-1, "The library was quiet, except for the rain against the windows. She paused at the doorway, then smiled. There was still time for one more story.")}><Play size={18} /></button>
@@ -163,11 +198,17 @@ export function useReaderAudio(options: {
         if (objectUrl.current) { stop(); setError("The browser could not decode this audio clip."); }
       }} />
       <button className="audio-icon" disabled={activeBeat === undefined && !clipUrl} aria-label="Stop audio" title="Stop audio" onClick={stop}><Square size={18} /></button>
-      {clipUrl && <a className="audio-icon" href={clipUrl} download="folio-clip.wav" aria-label="Download current audio clip" title="Download current audio clip"><Download size={18} /></a>}
+      {clipUrl && <a className="audio-icon" href={clipUrl} download={`folio-clip.${config?.response_format ?? "wav"}`} aria-label="Download current audio clip" title="Download current audio clip"><Download size={18} /></a>}
     </div>
     {status && <div className="audio-status" role="status" aria-live="polite">{rendering && <span className="audio-pulse" />}{status}</div>}
     {error && <div className="audio-error" role="alert">{error}</div>}
   </section>;
 
-  return { panel, enabled: Boolean(config?.enabled && voice.trim()), readBeat, activeBeat };
+  return {
+    panel,
+    enabled: Boolean(config?.enabled && voice.trim()),
+    supportsVocalCues: Boolean(config?.enabled && config.supports_vocal_cues),
+    readBeat,
+    activeBeat,
+  };
 }

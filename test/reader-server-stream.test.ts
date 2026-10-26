@@ -102,6 +102,136 @@ function parseDoneEvent<T>(payload: string): T {
 }
 
 describe("reader generation stream", () => {
+  it.each(["discovery", "planned"])("keeps a saved %s premise available after a server restart with no scenes", async (workflow) => {
+    let app = await createReaderServer({ root, lmStudioUrl: "http://lmstudio.test/api/v1" });
+    const calls = vi.mocked(streamLmStudioNarration).mock.calls.length;
+    try {
+      const created = await app.inject({ method: "POST", url: "/api/runs", payload: {
+        workflow, title: "A Story Without Scenes", premise: "A keeper receives tomorrow's letters.",
+        narration_rules: "First-person present. Spare prose.", scene_words: 900, model: "test-model",
+      } });
+      expect(created.statusCode).toBe(200);
+      const run = created.json<{ run_id: string; story_path: string }>();
+      await app.close();
+      app = await createReaderServer({ root, lmStudioUrl: "http://lmstudio.test/api/v1" });
+      const shelf = (await app.inject({ method: "GET", url: "/api/stories" })).json<{ stories: Array<{ path: string; beats: number }> }>();
+      expect(shelf.stories).toContainEqual(expect.objectContaining({ path: run.story_path, beats: 0 }));
+      const runs = (await app.inject({ method: "GET", url: `/api/runs?story_path=${encodeURIComponent(run.story_path)}` })).json<{ runs: Array<{ run_id: string }> }>();
+      expect(runs.runs).toContainEqual(expect.objectContaining({ run_id: run.run_id }));
+      const saved = (await app.inject({ method: "GET", url: `/api/runs/${run.run_id}?story_path=${encodeURIComponent(run.story_path)}` })).json();
+      expect(saved.premise).toBe("A keeper receives tomorrow's letters.");
+      expect(saved.narration_rules).toBe("First-person present. Spare prose.");
+      expect(saved.scene_words).toBe(900);
+      expect(saved.accepted).toEqual([]);
+      expect(saved.current_draft).toBeUndefined();
+      expect(vi.mocked(streamLmStudioNarration).mock.calls).toHaveLength(calls);
+    } finally { await app.close(); }
+  });
+
+  it("saves and updates separate creative narration rules without rewriting prose", async () => {
+    const app = await createReaderServer({ root, lmStudioUrl: "http://lmstudio.test/api/v1" });
+    try {
+      const started = await app.inject({ method: "POST", url: "/api/runs", payload: {
+        workflow: "discovery", premise: "Tomorrow's letters arrive today.", model: "test-model", narration_rules: "Past tense. Dry humor.",
+      } });
+      expect(started.json().narration_rules).toBe("Past tense. Dry humor.");
+      const run = started.json<{ run_id: string; story_path: string }>();
+      await app.inject({ method: "POST", url: `/api/runs/${run.run_id}/generate`, payload: { story_path: run.story_path, model: "test-model", action: "next" } });
+      const before = await readReaderRun(root, run.story_path, run.run_id);
+      const saved = await app.inject({ method: "PATCH", url: `/api/runs/${run.run_id}/narration-rules`, payload: { story_path: run.story_path, narration_rules: "First-person present. Spare prose." } });
+      expect(saved.statusCode).toBe(200);
+      expect(saved.json().narration_rules).toBe("First-person present. Spare prose.");
+      const after = await readReaderRun(root, run.story_path, run.run_id);
+      expect(after.premise).toBe(before.premise);
+      expect(after.current_draft).toEqual(before.current_draft);
+      const generated = await app.inject({ method: "POST", url: `/api/runs/${run.run_id}/generate`, payload: { story_path: run.story_path, model: "test-model", action: "next" } });
+      expect(generated.body).not.toContain("event: error");
+      expect((await readReaderRun(root, run.story_path, run.run_id)).current_draft?.prompt?.messages?.[0].content).toContain("First-person present. Spare prose.");
+      const cleared = await app.inject({ method: "PATCH", url: `/api/runs/${run.run_id}/narration-rules`, payload: { story_path: run.story_path, narration_rules: "" } });
+      expect(cleared.json().narration_rules).toBe("");
+    } finally { await app.close(); }
+  });
+
+  it("summarizes only after a reviewed creative replacement is applied", async () => {
+    vi.mocked(streamLmStudioNarration).mockClear();
+    const app = await createReaderServer({ root, lmStudioUrl: "http://lmstudio.test/api/v1" });
+    try {
+      const started = await app.inject({ method: "POST", url: "/api/runs", payload: {
+        workflow: "discovery", premise: "A lighthouse receives tomorrow's letters.", model: "test-model",
+      } });
+      const run = started.json<{ run_id: string; story_path: string }>();
+      await app.inject({ method: "POST", url: `/api/runs/${run.run_id}/generate`, payload: {
+        story_path: run.story_path, model: "test-model", action: "next", review_after_generation: true,
+      } });
+      expect((await readReaderRun(root, run.story_path, run.run_id)).current_draft?.summary).toBeUndefined();
+      vi.mocked(streamLmStudioNarration).mockImplementationOnce(async () => ({ narration: "[REPLACE]\nThe keeper locked the letter away.", reasoning: "" }));
+      await app.inject({ method: "POST", url: `/api/runs/${run.run_id}/review`, payload: {
+        story_path: run.story_path, model: "test-model", beat_index: 0,
+      } });
+      expect((await readReaderRun(root, run.story_path, run.run_id)).current_draft?.summary).toBeUndefined();
+      const applied = await app.inject({ method: "POST", url: `/api/runs/${run.run_id}/apply-review`, payload: { story_path: run.story_path, beat_index: 0 } });
+      expect(applied.statusCode).toBe(200);
+      const requests = vi.mocked(streamLmStudioNarration).mock.calls;
+      expect(requests).toHaveLength(3);
+      expect(requests[2][0].messages[0].content).toBe("The keeper locked the letter away.");
+      expect((await readReaderRun(root, run.story_path, run.run_id)).current_draft?.summary).toBeTruthy();
+    } finally { await app.close(); }
+  });
+
+  it("creates a premise-only Discovery story, summarizes it, continues, and ends it", async () => {
+    const app = await createReaderServer({ root, lmStudioUrl: "http://lmstudio.test/api/v1" });
+    try {
+      const started = await app.inject({ method: "POST", url: "/api/runs", payload: {
+        workflow: "discovery", premise: "A lighthouse receives tomorrow's letters.", title: "Tomorrow's Post", model: "test-model",
+      } });
+      expect(started.statusCode).toBe(200);
+      const run = started.json<{ run_id: string; story_path: string }>();
+      const generate = () => app.inject({ method: "POST", url: `/api/runs/${run.run_id}/generate`, payload: { story_path: run.story_path, model: "test-model", action: "next" } });
+      const first = parseDoneEvent<{ current_draft: { narration: string }; workflow: string }>((await generate()).body);
+      expect(first.workflow).toBe("discovery");
+      expect(first.current_draft.narration).toBe("The carriage stirred.");
+      expect((await readReaderRun(root, run.story_path, run.run_id)).current_draft?.summary).toBeTruthy();
+      await generate();
+      expect((await readReaderRun(root, run.story_path, run.run_id)).accepted).toHaveLength(1);
+      const shelf = (await app.inject({ method: "GET", url: "/api/stories" })).json<{ stories: Array<{ title: string }> }>();
+      expect(shelf.stories.some((story) => story.title === "Tomorrow's Post")).toBe(true);
+      const finished = await app.inject({ method: "POST", url: `/api/runs/${run.run_id}/finish`, payload: { story_path: run.story_path } });
+      expect(finished.json().status).toBe("completed");
+      expect(finished.json().accepted).toHaveLength(2);
+    } finally { await app.close(); }
+  });
+
+  it("pauses for approval, uses an edited plan, and auto-approves the next scene", async () => {
+    const app = await createReaderServer({ root, lmStudioUrl: "http://lmstudio.test/api/v1" });
+    try {
+      const started = await app.inject({ method: "POST", url: "/api/runs", payload: {
+        workflow: "planned", premise: "A lighthouse receives tomorrow's letters.", model: "test-model",
+      } });
+      const run = started.json<{ run_id: string; story_path: string }>();
+      const endpoint = `/api/runs/${run.run_id}/generate`;
+      const payload = { story_path: run.story_path, model: "test-model", action: "next" };
+      const proposal = parseDoneEvent<{ pending_plan?: string; current_draft?: unknown }>((await app.inject({ method: "POST", url: endpoint, payload })).body);
+      expect(proposal.pending_plan).toBeTruthy();
+      expect(proposal.current_draft).toBeUndefined();
+      const edited = "The keeper opens a letter, then locks it away.";
+      const written = await app.inject({ method: "POST", url: endpoint, payload: { ...payload, action: "regenerate", approved_plan: edited } });
+      expect(written.body).not.toContain("event: error");
+      let saved = await readReaderRun(root, run.story_path, run.run_id);
+      expect(saved.current_draft?.plan).toBe(edited);
+      expect(saved.current_draft?.prompt?.messages?.[0].content).toContain(edited);
+      expect(saved.pending_plan).toBeUndefined();
+      const next = await app.inject({ method: "POST", url: endpoint, payload: { ...payload, auto_approve: true } });
+      expect(next.body).not.toContain("event: error");
+      saved = await readReaderRun(root, run.story_path, run.run_id);
+      expect(saved.accepted).toHaveLength(1);
+      expect(saved.current_draft?.plan).toBeTruthy();
+      expect(saved.current_draft?.summary).toBeTruthy();
+      const regenerated = await app.inject({ method: "POST", url: `/api/runs/${run.run_id}/regenerate-beat`, payload: { story_path: run.story_path, model: "test-model", beat_index: 0 } });
+      expect(regenerated.body).not.toContain("event: error");
+      expect((await readReaderRun(root, run.story_path, run.run_id)).continuity_warning).toBeTruthy();
+    } finally { await app.close(); }
+  });
+
   it("runs the requested recurring improvement passes and stores only the final response", async () => {
     vi.mocked(streamLmStudioNarration).mockClear();
     for (let pass = 1; pass <= 3; pass += 1) {

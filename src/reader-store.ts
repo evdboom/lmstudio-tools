@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { z } from "zod";
 import { safeResolve } from "./sandbox.js";
 import { readStoryFile } from "./story-store.js";
+import { buildReaderRunInstructions, isChatterboxVocalCueInstruction } from "./reader-audio-text.js";
 
 const narrationMessageSchema = z.object({
   role: z.enum(["user", "assistant"]),
@@ -50,6 +51,8 @@ const readerIterationSchema = z.object({
 
 const acceptedNarrationSchema = z.object({
   beat_index: z.number().int().nonnegative(),
+  summary: z.string().min(1).optional(),
+  plan: z.string().min(1).optional(),
   narration: z.string().min(1),
   reasoning: z.string().optional(),
   prompt_instruction: z.string().optional(),
@@ -63,6 +66,8 @@ const acceptedNarrationSchema = z.object({
 
 const draftNarrationSchema = z.object({
   narration: z.string().min(1),
+  summary: z.string().min(1).optional(),
+  plan: z.string().min(1).optional(),
   reasoning: z.string().optional(),
   prompt_instruction: z.string().optional(),
   incomplete_reason: z.string().optional(),
@@ -77,6 +82,15 @@ export const readerRunSchema = z.object({
   schema: z.literal("story-reader-run-v1"),
   run_id: z.string().uuid(),
   story_path: z.string().min(1),
+  workflow: z.enum(["authored", "discovery", "planned"]).default("authored"),
+  premise: z.string().min(1).optional(),
+  narration_rules: z.string().max(10_000).default(""),
+  title: z.string().min(1).optional(),
+  scene_words: z.number().int().min(100).max(3000).default(700),
+  pending_plan: z.string().min(1).optional(),
+  approved_plan: z.string().min(1).optional(),
+  continuity_warning: z.string().optional(),
+  recap: z.object({ through: z.number().int().nonnegative(), text: z.string().min(1) }).optional(),
   model: z.string().trim().min(1).max(500).optional(),
   generation_mode: z.enum(["direct", "distinct", "recurring"]).default("direct"),
   /** Recurring mode only: number of identical improvement passes. */
@@ -93,7 +107,8 @@ export const readerRunSchema = z.object({
   include_iterations: z.enum(["none", "last", "full"]).default("none"),
   beat_index: z.number().int().nonnegative(),
   accepted: z.array(acceptedNarrationSchema),
-  ongoing_instructions: z.array(z.string().min(1)),
+  ongoing_instructions: z.array(z.string().min(1)).transform((instructions) =>
+    buildReaderRunInstructions(instructions, instructions.some(isChatterboxVocalCueInstruction))),
   current_draft: draftNarrationSchema.optional(),
   started_at: z.string().datetime(),
   updated_at: z.string().datetime(),
@@ -148,13 +163,20 @@ async function writeRun(file: string, run: ReaderRun): Promise<void> {
 
 export async function createReaderRun(request: RunRequest): Promise<ReaderRun> {
   const story = await readStoryFile(request.root, request.story_path);
-  if (story.status !== "final") throw new Error("Story must be finalized before reading.");
-  if (story.beats.length === 0) throw new Error("Story has no beats.");
+  if (!request.workflow || request.workflow === "authored") {
+    if (story.status !== "final") throw new Error("Story must be finalized before reading.");
+    if (story.beats.length === 0) throw new Error("Story has no beats.");
+  }
   const now = new Date().toISOString();
   const run: ReaderRun = {
     schema: "story-reader-run-v1",
     run_id: randomUUID(),
     story_path: request.story_path,
+    workflow: request.workflow ?? "authored",
+    premise: request.premise,
+    narration_rules: request.narration_rules ?? "",
+    title: request.title,
+    scene_words: request.scene_words ?? 700,
     model: request.model,
     generation_mode: request.generationMode,
     iteration_count: request.iterationCount,
@@ -230,6 +252,7 @@ export async function mutateReaderRun<T>(
 
 export interface StoryListItem {
   path: string;
+  workflow?: "authored" | "discovery" | "planned";
   title: string;
   premise: string;
   beats: number;
@@ -237,6 +260,7 @@ export interface StoryListItem {
 
 export interface ReaderRunListItem {
   run_id: string;
+  workflow?: "authored" | "discovery" | "planned";
   story_path: string;
   model?: string;
   generation_mode: ReaderRun["generation_mode"];
@@ -270,6 +294,7 @@ export async function listReaderRuns(
       if (run.story_path !== storyPath) continue;
       runs.push({
         run_id: run.run_id,
+        workflow: run.workflow,
         story_path: run.story_path,
         model: run.model,
         generation_mode: run.generation_mode,
@@ -302,9 +327,13 @@ export async function listFinalStories(root: string): Promise<StoryListItem[]> {
       if (await fs.stat(storyFile).then((item) => item.isFile()).catch(() => false)) {
         try {
           const story = await readStoryFile(root, childRelative);
-          if (story.status === "final") {
+          const creative = story.status !== "final"
+            ? (await listReaderRuns(root, childRelative.split(path.sep).join("/"))).find((run) => run.workflow !== "authored")
+            : undefined;
+          if (story.status === "final" || creative) {
             found.push({
               path: childRelative.split(path.sep).join("/"),
+              workflow: creative?.workflow ?? "authored",
               title: story.title,
               premise: story.premise,
               beats: story.beats.length,
@@ -329,6 +358,7 @@ export type ReasoningEffort = "default" | "off" | "low" | "medium" | "high";
 
 export interface RunItem {
   run_id: string;
+  workflow?: "authored" | "discovery" | "planned";
   story_path: string;
   model?: string;
   generation_mode: GenerationMode;
@@ -343,6 +373,11 @@ export interface RunItem {
 
 export interface RunRequest {
   root: string;
+  workflow?: "authored" | "discovery" | "planned";
+  premise?: string;
+  narration_rules?: string;
+  title?: string;
+  scene_words?: number;
   story_path: string;
   model?: string;
   prose_window: number;
@@ -361,7 +396,7 @@ export interface ReviewerOptions {
   reasoningEffort: ReasoningEffort;
 }
 
-export interface StoryItem { path: string; title: string; premise: string; beats: number }
+export interface StoryItem { path: string; title: string; premise: string; beats: number; workflow?: "authored" | "discovery" | "planned" }
 
 export interface NarrationReview {
   narration: string;
@@ -374,6 +409,11 @@ export interface Narration { beat_index: number; narration: string; incomplete_r
 
 export interface ReaderState {
   run_id: string;
+  scene_words?: number;
+  narration_rules?: string;
+  workflow?: "authored" | "discovery" | "planned";
+  pending_plan?: string;
+  continuity_warning?: string;
   story_path: string;
   model?: string;
   generation_mode: GenerationMode;

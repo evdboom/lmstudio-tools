@@ -168,7 +168,7 @@ npm run dev:story
 
 ## Story Reader App
 
-The reader uses the same finalized `story.json` blueprints, but it does not ask the model to call MCP tools. The app owns beat progression and builds each beat's prompt itself.
+The reader supports finalized `story.json` blueprints and premise-only creative stories. It does not ask the model to call MCP tools. The app owns scene progression and builds each request itself.
 
 1. Start LM Studio's local server and load a model. The default API URL is `http://127.0.0.1:1234/api/v1`.
 2. Build and start the reader:
@@ -214,6 +214,24 @@ The reader provides:
 - A context selector when starting a narration: **Full narration context** retains LM Studio response IDs and the complete accepted prose, while **Previous beat events only** starts a stateless request for every beat and supplies compact prior `story.json` events instead.
 - Story beats store an `events` array. Narration prompts list the current beat's events alongside story context and reader instructions.
 
+### Reading Workflows
+
+Choose a **Story workflow** before selecting **Begin**:
+
+- **Authored** follows an existing finalized blueprint, as before.
+- **Discovery** starts from a premise and optional title. The model invents one scene at a time and chooses a natural stopping point within **Maximum scene words**. **Next** continues from the actual ending; **End story** saves the current scene and closes the session.
+- **Plan & Approve** proposes the next scene before writing it. Edit the **Scene plan**, select **Approve & Write**, or request a **New proposal**. **Auto-approve plans** skips manual approval on subsequent requests; **Auto continue** also approves plans while generating successive scenes. Use **Stop** to interrupt automatic generation.
+
+All three workflows retain **Direct**, **Distinct**, and **Recurring improvement** drafting choices under **Model options**. Creative stories appear on the shelf under **Saved story** and can be resumed without creating an outline.
+
+Creative setup fields are automatically retained in the current browser across reloads. Select **Save story** to save the premise, title, narration rules and settings to the story root without generating any scenes. A saved creative story needs no beats or finalized outline and remains available under **Saved story** after restarting Folio with the same root. **Begin** also saves the session before generation starts.
+
+For creative stories, **Narration Rules** sits beside **Premise** and separately controls viewpoint, tense, voice and prose style. During reading, open **Narration Rules** and select **Save rules** to change them. Saved changes guide future planning, prose, improvement, review and explicit regeneration; existing prose stays unchanged, and factual summaries do not inherit the prose style.
+
+Creative scene summaries are generated in a separate pass from saved prose, never displayed as part of the story, and refreshed after an applied review or regeneration. Older context uses these factual summaries and a bounded consolidated recap; recent scenes remain full prose according to **Recent beats carried as prose**. Full prose is always retained for reading. Summary failures preserve the draft so **Next** can retry summarization. Interrupted prose must be reviewed or regenerated before continuation.
+
+Review criteria follow the workflow: authored events, creative continuity, or adherence to an approved scene plan. When **Suggest vocal cue tags** is enabled, review also checks supported lowercase tags, speaker attribution, placement, missing cues where appropriate, and excessive cues. Changed earlier scenes invalidate their summaries and flag later scenes for a continuity review; later prose is not silently rewritten. Proposals are not established history: only the resulting prose is summarized as canon.
+
 ### Story Authoring
 
 Open `http://127.0.0.1:4317/author` or select **Write** in the reader. The authoring workspace can create and edit complete story blueprints, reorder or expand beats, validate references, and switch a story between draft and final status.
@@ -243,42 +261,86 @@ Reader sessions are stored separately under `<story>/reader-runs/`. Existing MCP
 
 ### Local Read-Aloud
 
-Folio can read saved beats using a local OpenAI-compatible TTS service. Audio is off by default. Start Kokoro on CPU (works on both the NVIDIA desktop and Intel Arc laptop) after installing and starting Docker Desktop with Linux containers:
+Folio can read saved beats using a local OpenAI-compatible text-to-speech (TTS) service. Audio is off by default. **Folio does not install Docker, a TTS server, model weights, or voices.** Install and start one of the speech services below first; Folio sends it the text and plays/caches the returned WAV clips.
+
+#### Kokoro
+
+Kokoro is the recommended lightweight starting point. Install and start Docker Desktop (Linux containers), then from the Folio repository:
 
 ```powershell
 docker compose -f compose.audio.yml --profile cpu up -d
 ```
 
-The first run downloads a large container image. Wait until the service at `http://127.0.0.1:8880/web` is ready, then start Folio with your existing stories root:
+This downloads the TTS container and model files on first run. Wait until the Kokoro UI at `http://127.0.0.1:8880/web` is ready. Then start Folio with your story directory:
 
 ```powershell
 npm run build:all
-node dist/reader-server.js --root C:\tmp\stories --tts-profile laptop
+node dist/reader-server.js --root C:\path\to\stories --tts-profile kokoro
 ```
 
-Use the play icon beside the voice field to preview the narrator without generating a story or loading an LM Studio model. Select **Read aloud** on a saved beat to queue its paragraphs. Native audio controls provide pause, resume, seek, and volume; the square button stops the queue. Speed changes playback rate without re-rendering. The refresh icon loads available voices; a voice ID can also be entered manually. Resolve proposed prose revisions before reading that beat aloud. Playback stops when generation starts, prose changes, or you switch reading sessions.
+The same CPU service works on Windows, macOS, and Linux where Docker Desktop/Engine is supported. It does not require a compatible GPU.
 
-On the RTX desktop, stop the CPU service and start the CUDA variant if desired:
+For an NVIDIA GPU with Docker GPU support, stop the CPU container and select the CUDA profile instead:
 
 ```powershell
 docker compose -f compose.audio.yml --profile cpu down
 docker compose -f compose.audio.yml --profile cuda up -d
-node dist/reader-server.js --root C:\tmp\stories --tts-profile portable
 ```
 
-Both Kokoro variants use the same Folio settings and port; do not start both at once. CUDA requires NVIDIA GPU support in Docker Desktop's WSL 2 backend. The laptop CPU profile does not claim Intel GPU acceleration. `KOKORO_TAG` can pin a tested image release instead of `latest`.
+Both variants use the same Folio settings and port; do not start them simultaneously. On Windows, Docker GPU passthrough requires Docker Desktop's WSL 2 backend and NVIDIA support. Intel/AMD acceleration is not configured by these Docker profiles. The `KOKORO_TAG` environment variable can pin an image release instead of `latest`.
 
-| Folio preset | Default service base URL | Model | Voice |
-| --- | --- | --- | --- |
-| `portable` | `http://127.0.0.1:8880/v1` | `kokoro` | `af_heart` |
-| `laptop` | `http://127.0.0.1:8880/v1` | `kokoro` | `af_heart` |
-| `desktop` | `http://127.0.0.1:8004/v1` | `chatterbox` | `default` |
+#### Chatterbox
 
-The `desktop` preset targets the separately installed [community Chatterbox server](https://github.com/devnen/Chatterbox-TTS-Server). Select its Turbo engine in that server and choose a valid predefined voice ID in Folio; `default` may need overriding. Folio does not install or select Chatterbox engines. All presets allow `--tts-url`, `--tts-model`, and `--tts-voice` overrides. URLs are API base URLs including `/v1`, not `/audio/speech`. Supplying `--tts-url` also enables audio without a preset. Runtime device selection belongs to the TTS service, not Folio; presets never silently switch models or voices.
+Chatterbox requires a separate server. On Windows, install Git, then clone and start the [community Chatterbox TTS server](https://github.com/devnen/Chatterbox-TTS-Server):
 
-Environment equivalents are `FOLIO_TTS_PROFILE`, `FOLIO_TTS_URL`, `FOLIO_TTS_MODEL`, `FOLIO_TTS_VOICE`, and optional `FOLIO_TTS_API_TOKEN`. Requests go through Folio, including its existing password protection, so phone browsers do not need direct access to the TTS port. Keep the TTS service bound to localhost unless deliberately configuring a trusted remote service.
+```powershell
+git clone https://github.com/devnen/Chatterbox-TTS-Server.git
+Set-Location .\Chatterbox-TTS-Server
+.\start.bat
+```
 
-Completed WAV clips are cached under `<root>/.folio-audio-cache/` by service URL, model, text, voice, and synthesis speed. Previously rendered clips can be replayed with the TTS service offline. Stop an active render before retrying another clip. One render runs at a time, each request is limited to 2000 characters and 30 MB of WAV output, and provider requests time out after three minutes. The cache has no automatic eviction; remove that folder while Folio is stopped to reclaim space or after replacing model weights behind the same service/model ID. The download icon exports the current clip, not an entire story.
+Follow its hardware selection menu. The launcher installs the server dependencies and downloads the chosen model on first launch. The server's current Windows launcher documents CPU and NVIDIA paths; select the appropriate option there. Its Docker deployment is also available from the project README, but NVIDIA GPU Docker needs the NVIDIA Container Toolkit/runtime configured for your platform.
+
+After the server reports ready, start Folio with:
+
+```powershell
+node dist/reader-server.js --root C:\path\to\stories --tts-profile chatterbox
+```
+
+The Chatterbox community server documents an OpenAI-compatible API, large-text chunking, predefined/reference voices, and switchable engines. Folio queries its predefined voice list when it starts, displays the friendly names, and sends the matching filename (for example, `Emily.wav`). If your saved voice is unavailable, Folio selects the first installed voice. Refresh the list after adding voices. Select Turbo in the Chatterbox UI for inline vocal cues; Folio does not choose the engine or install it. Confirm the API port shown by the server. If it differs from `8004`, set `--tts-url http://127.0.0.1:<port>/v1`.
+
+Folio sends each complete story paragraph to the speech service as one request, so it never cuts a paragraph at an arbitrary character boundary. Chatterbox can perform its own sentence-aware chunking inside that paragraph. Folio queues the next paragraph after the current audio ends; there may be a generation pause between paragraphs. A paragraph over Folio's 20,000-character request limit is reported as an error rather than truncated. Folio requests WAV by default because MP3 encoding requires FFmpeg and fails if that executable is unavailable to the Chatterbox server. Install/configure FFmpeg for the Chatterbox process, verify MP3 export in its own UI, then opt into MP3 from Folio with `--tts-format mp3`. The Chatterbox server's audiobook UI settings are not otherwise controlled by Folio. Import predefined voices or upload clean reference audio for cloning in the Chatterbox UI. Chatterbox's Temperature and other model controls remain in that server. Its synthesis Speed Factor is experimental and can cause echo; Folio leaves it at the provider default. Folio's separate speed slider changes browser playback rate and does not re-render audio.
+
+#### Reader Controls And Configuration
+
+Use the play icon beside the voice field to preview the narrator without generating a story or loading an LM Studio model. Select **Read aloud** on a saved beat to queue its paragraphs. Native audio controls provide pause, resume, seek, and volume; the square button stops the queue. Speed changes playback rate without re-rendering. The refresh icon loads available voices; a voice ID can also be entered manually. Resolve proposed prose revisions before reading that beat aloud. Playback stops when generation starts, prose changes, or you switch reading sessions.
+
+Before synthesis, Folio converts em/en dashes to comma pauses and removes the known Chatterbox bracket tokens whenever the active provider reports that it does not support paralinguistic tags. For Chatterbox, Folio checks `/api/model-info`: Turbo's `supports_paralinguistic_tags` preserves the tokens; Original and other engines have them stripped. If capability detection is unavailable, Folio errs on the side of stripping. These adjustments apply only to text sent to TTS; generated prose and saved narration remain unchanged. This prevents unsupported `[gasp]` markers from being read aloud and reduces abrupt dash pauses in speech.
+
+When the Chatterbox provider is configured, **Model options** includes the optional **Suggest Chatterbox vocal cues** setting. Enable it before starting a run to add a persistent narration instruction; it applies to every beat in that run and is retained when you resume it. It is off by default and hidden for Kokoro. The instruction asks the writing model to add only occasional, story-appropriate bracket cues. Select **Turbo** in the Chatterbox server for these cues; other engines/providers may ignore them or read them as text. The tags remain in the story prose.
+
+The official [Chatterbox Turbo tokenizer file](https://huggingface.co/ResembleAI/chatterbox-turbo/blob/main/added_tokens.json) defines 19 special tokens. The emotion/delivery versus vocal-reaction groupings and descriptions below are documented by the community [ComfyUI-ChatterBox-Turbo node](https://github.com/wobba/ComfyUI-ChatterBox-Turbo#emotion--paralinguistic-tags), not an official guarantee of how each tag will sound. Audition tags with your selected voice and engine.
+
+| Delivery / emotion cues | Vocal reaction cues |
+| --- | --- |
+| `[angry]`, `[fear]`, `[surprised]`, `[whispering]`, `[advertisement]` | `[laugh]`, `[chuckle]`, `[gasp]`, `[sigh]`, `[groan]` |
+| `[dramatic]`, `[narration]`, `[crying]`, `[happy]`, `[sarcastic]` | `[sniff]`, `[cough]`, `[clear throat]`, `[shush]` |
+
+Use an emotion/delivery cue at the start of the sentence or line it affects. Put a reaction cue where it belongs, possibly mid-sentence. Spell every tag exactly as shown, in lowercase: the special-token matching is case-sensitive, so `[Sigh]` may be spoken as text instead of recognized as `[sigh]`. Avoid stacking cues or tagging every line. These controls steer delivery; they do not guarantee an exact acting performance.
+
+Provider presets are aliases for service defaults, not machine or GPU detection:
+
+| Folio preset | Default service base URL | Model | Voice | Output / request boundary |
+| --- | --- | --- | --- | --- |
+| `kokoro` | `http://127.0.0.1:8880/v1` | `kokoro` | `af_heart` | WAV / complete paragraph |
+| `chatterbox` | `http://127.0.0.1:8004/v1` | `chatterbox` | First installed voice | WAV / complete paragraph; service chunks internally |
+| `portable` | `http://127.0.0.1:8880/v1` | `kokoro` | `af_heart` | WAV / complete paragraph |
+
+`--tts-profile` also accepts the earlier `laptop` and `desktop` aliases for compatibility. All profiles accept `--tts-url`, `--tts-model`, `--tts-voice`, and `--tts-format wav|mp3` overrides. Environment equivalents are `FOLIO_TTS_URL`, `FOLIO_TTS_MODEL`, `FOLIO_TTS_VOICE`, and `FOLIO_TTS_FORMAT`. URLs are API base URLs including `/v1`, not `/audio/speech`. Supplying `--tts-url` enables audio without a preset. Device selection belongs to the TTS service; Folio does not infer hardware or silently switch model/voice.
+
+Environment equivalents are `FOLIO_TTS_PROFILE`, `FOLIO_TTS_URL`, `FOLIO_TTS_MODEL`, `FOLIO_TTS_VOICE`, `FOLIO_TTS_FORMAT`, and optional `FOLIO_TTS_API_TOKEN`. Requests go through Folio, including its existing password protection, so phone browsers do not need direct access to the TTS port. Keep the TTS service bound to localhost unless deliberately configuring a trusted remote service.
+
+Completed clips are cached under `<root>/.folio-audio-cache/` by service URL, model, text, voice, format, and synthesis settings. Kokoro clips are WAV; Chatterbox clips are WAV by default or MP3 when configured. Previously rendered clips can be replayed with the TTS service offline. Stop an active render before retrying another clip. One render runs at a time, each paragraph request is limited to 20,000 characters and 30 MB of audio, and provider requests time out after three minutes. The cache has no automatic eviction; remove that folder while Folio is stopped to reclaim space or after replacing model weights behind the same service/model ID. The download icon exports the current paragraph clip, not an entire story.
 
 This first version does not yet include cast assignment, generated vocal/effect cues, whole-story export, or verified Intel GPU acceleration. The [audio research and design](docs/folio-audio.md) covers those follow-ups and the NVIDIA/Intel hardware requirements.
 

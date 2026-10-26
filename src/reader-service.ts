@@ -22,6 +22,8 @@ import {
 } from "./reader-store.js";
 import { readStoryFile } from "./story-store.js";
 import { beatBudgetCeiling, type StoryBlueprint } from "./story-model.js";
+import { buildCreativePrompt, creativeContext, invalidateCreativeSummary } from "./reader-creative.js";
+import { CHATTERBOX_VOCAL_CUE_INSTRUCTION, findVocalCueIssues } from "./reader-audio-text.js";
 
 export function jsonObject(text: string): unknown {
   const trimmed = text.trim();
@@ -188,17 +190,29 @@ export async function prepareReaderReview(
   if (!narration.prompt) throw new Error(`Beat ${beatIndex + 1} has no saved prompt to review.`);
 
   return {
-    systemPrompt: renderReviewerSystemPrompt(run.reviewer_reasoning_mode ?? run.reasoning_mode).join("\n"),      
+    systemPrompt: renderReviewerSystemPrompt(run.reviewer_reasoning_mode ?? run.reasoning_mode, run.workflow).join("\n"),
     messages: [{
       role: "user",
       content: [
         "# Original system instructions",
         narration.prompt.system_prompt ?? "(none)",
         "",
+        "# Continuity context",
+        ...(run.workflow === "authored"
+          ? (narration.prompt.messages ?? []).slice(0, -1).map((item) => item.content)
+          : [creativeContext(run, beatIndex)]),
+        ...(narration.plan ? ["# Approved scene plan", narration.plan] : []),
+        ...(run.ongoing_instructions.includes(CHATTERBOX_VOCAL_CUE_INSTRUCTION)
+          ? ["# Vocal cue review", CHATTERBOX_VOCAL_CUE_INSTRUCTION,
+            "Check supported lowercase cues, appropriate placement and speaker attribution. Add missing cues only where clearly warranted; remove excessive or inappropriate cues. Do not require a cue in every scene or invent events to justify one.",
+            "Check every bracketed cue against the allowed table. A trailing delivery label is a defect, not a valid annotation. Unsupported performance cues and misplaced delivery cues require [REPLACE], not [VALID] or [APPEND]. Return the complete corrected prose with cues repaired; do not merely discuss the fixes.",
+            ...findVocalCueIssues(narration.narration).map((issue) => `- Automated vocal-cue flag: ${issue}`)] : []),
         "# Original beat request",
         promptInput(narration.prompt),
         ...(instruction?.trim() ? ["", "# Specific review focus", instruction.trim()] : []),
         ...renderAutomatedFlags(findOverlongSingleSentenceParagraphs(narration.narration), findTrailingOffParagraphs(narration.narration)),        
+        ...(run.workflow !== "authored" && run.narration_rules
+          ? ["# Current narration rules", run.narration_rules, "Use these rules for style, viewpoint and tense over older style directions in the original request. Preserve established events and facts."] : []),
         "",
         "# Result to review",
         narration.narration,
@@ -235,6 +249,18 @@ export async function prepareReaderBeatRegeneration(
   ]);
   const narration = narrationAt(run, beatIndex);
   if (!narration) throw new Error(`Beat ${beatIndex + 1} has no narration to regenerate.`);
+  if (run.workflow !== "authored") {
+    const prompt = buildCreativePrompt({
+      ...run, beat_index: beatIndex, approved_plan: narration.plan,
+      accepted: run.accepted.filter((scene) => scene.beat_index < beatIndex), current_draft: undefined,
+    }, narration.prompt_instruction);
+    return {
+      ...prompt, input: narrationRequestInput(prompt.messages),
+      wordBudget: { maxWords: run.scene_words, ceilingWords: Math.ceil(run.scene_words * 1.2) },
+      reasoningEffort: run.reasoning_effort, store: false,
+      generationMode: "direct", iterationCount: run.iteration_count,
+    };
+  }
   const acceptedBefore = run.accepted.filter((item) => item.beat_index < beatIndex);
   const acceptedHistory = acceptedBefore.map((item) => ({
     beatIndex: item.beat_index,
@@ -337,6 +363,8 @@ export async function applyReaderReview(
 
     target.revisions = [...(target.revisions ?? []), archiveCurrentVersion(target)];
     target.narration = target.review.narration;
+    target.incomplete_reason = undefined;
+    if (current.workflow !== "authored") invalidateCreativeSummary(current, beatIndex);
     // Keep the original beat's reasoning: it reasoned through the correct events, only the prose needed the reviewer's fix.
     if (target.review.prompt) target.prompt = target.review.prompt;
     return current;
@@ -364,6 +392,7 @@ export async function applyReaderRegeneration(
 
     target.revisions = [...(target.revisions ?? []), archiveCurrentVersion(target)];
     target.narration = stripNarrationTags(regenerated.narration);
+    if (current.workflow !== "authored") invalidateCreativeSummary(current, beatIndex);
     target.reasoning = regenerated.reasoning;
     target.incomplete_reason = regenerated.incompleteReason;
     target.prompt = regenerated.prompt;
@@ -377,6 +406,11 @@ async function toState(root: string, run: ReaderRun): Promise<ReaderState> {
   const story = await readStoryFile(root, run.story_path);
   return {
     run_id: run.run_id,
+    workflow: run.workflow,
+    narration_rules: run.narration_rules,
+    scene_words: run.scene_words,
+    pending_plan: run.pending_plan,
+    continuity_warning: run.continuity_warning,
     story_path: run.story_path,
     model: run.model,
     generation_mode: run.generation_mode,
@@ -388,11 +422,12 @@ async function toState(root: string, run: ReaderRun): Promise<ReaderState> {
     reviewer_reasoning_effort: run.reviewer_reasoning_effort,
     prose_window: run.prose_window,
     include_iterations: run.include_iterations,
-    title: story.title,
-    premise: story.premise,
+    title: run.title ?? story.title,
+    premise: run.premise ?? story.premise,
     beat_index: run.beat_index,
-    total_beats: story.beats.length,
-    beat_titles: story.beats.map((beat) => beat.title ?? beat.id),
+    total_beats: run.workflow === "authored" ? story.beats.length : run.accepted.length + 2,
+    beat_titles: run.workflow === "authored" ? story.beats.map((beat) => beat.title ?? beat.id)
+      : Array.from({ length: run.accepted.length + 1 }, (_, index) => `Scene ${index + 1}`),
     accepted: run.accepted,
     current_draft: run.current_draft,
     ongoing_instructions: run.ongoing_instructions,
@@ -428,7 +463,8 @@ export async function prepareReaderGeneration(
   runId: string,
   action: "next" | "regenerate" | "regenerate_previous",
   instruction?: string,
-  model?: string
+  model?: string,
+  approvedPlan?: string
 ): Promise<{
   messages?: ReaderChatMessage[];
   input?: string;
@@ -441,6 +477,41 @@ export async function prepareReaderGeneration(
   generationState?: ReaderState;
   iterationSeed?: string;
 }> {
+  const existing = await readReaderRun(root, storyPath, runId);
+  if (existing.workflow !== "authored") {
+    const run = await mutateReaderRun(root, storyPath, runId, (current) => {
+      if (model && current.model && model !== current.model) throw new Error(`Reader run uses model '${current.model}', not '${model}'.`);
+      if (current.status === "completed") throw new Error("This story has ended.");
+      if (action === "regenerate_previous") throw new Error("Use the scene's Regenerate action instead.");
+      if (action === "next" && current.current_draft) {
+        if (current.current_draft.incomplete_reason) throw new Error("This scene was interrupted. Review or regenerate it before continuing.");
+        if (!current.current_draft.summary) throw new Error("Summarize the current scene before continuing.");
+        current.accepted.push({ ...current.current_draft, beat_index: current.beat_index });
+        current.current_draft = undefined;
+        current.beat_index += 1;
+        current.approved_plan = undefined;
+        current.pending_plan = undefined;
+      }
+      if (approvedPlan !== undefined) {
+        if (!current.pending_plan || current.current_draft || current.workflow !== "planned") throw new Error("There is no scene proposal awaiting approval.");
+        if (!approvedPlan.trim()) throw new Error("The approved plan cannot be empty.");
+        current.approved_plan = approvedPlan.trim();
+        current.pending_plan = undefined;
+      }
+      if (action === "next" && instruction?.trim()) current.ongoing_instructions.push(instruction.trim());
+      if (action === "regenerate" && current.current_draft) current.current_draft.iterations = undefined;
+      return current;
+    });
+    const prompt = buildCreativePrompt(run, instruction);
+    return {
+      ...prompt,
+      input: narrationRequestInput(prompt.messages),
+      wordBudget: { maxWords: run.scene_words, ceilingWords: Math.ceil(run.scene_words * 1.2) },
+      reasoningEffort: run.reasoning_effort,
+      generationState: await toState(root, run),
+      promptInstruction: instruction,
+    };
+  }
   const story = await readStoryFile(root, storyPath);
   const prepared = await mutateReaderRun(root, storyPath, runId, (run) => {
     if (run.story_path !== storyPath) throw new Error("Reader run does not belong to this story.");
@@ -549,6 +620,8 @@ export async function prepareReaderGenerationPass(
   focus: string | undefined,
   remainingFocuses: string[]
 ): Promise<NarrationRequest> {
+  const creative = await readReaderRun(root, storyPath, runId);
+  if (creative.workflow !== "authored") return buildCreativePrompt(creative, creative.current_draft?.prompt_instruction, pass);
   const [story, run] = await Promise.all([
     readStoryFile(root, storyPath),
     readReaderRun(root, storyPath, runId),
@@ -589,6 +662,7 @@ export async function saveReaderIteration(
       narration: iteration.narration,
       reasoning: iteration.reasoning,
       prompt: iteration.prompt,
+      ...(current.workflow !== "authored" ? { summary: undefined, review: undefined, incomplete_reason: "An improvement draft was saved before finalization. Review or regenerate this scene before continuing." } : {}),
       iterations: [...existing.filter((item) => item.pass !== iteration.pass), iteration],
     };
   });
@@ -608,6 +682,7 @@ export async function saveReaderDraft(
   const run = await mutateReaderRun(root, storyPath, runId, (current) => {
     current.current_draft = {
       narration: stripNarrationTags(narration),
+      plan: current.approved_plan,
       reasoning,
       prompt_instruction: instruction,
       incomplete_reason: incompleteReason,

@@ -113,6 +113,16 @@ button:disabled { cursor: default; opacity: 0.45; }
 .audio-status { color: var(--muted); }
 .audio-error { color: var(--red-dark); }
 .audio-pulse { display: inline-block; width: 8px; height: 8px; margin-right: 8px; border-radius: 50%; background: var(--green); }
+.creative-setup { max-width: 640px; margin-block: 24px; }
+.creative-setup textarea, .scene-proposal textarea, .narration-settings textarea { width: 100%; min-width: 0; padding: 12px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--surface); color: var(--ink); resize: vertical; line-height: 1.5; }
+.narration-settings { margin-block: 24px; padding-block: 16px; border-block: 1px solid var(--line); font-size: 14px; }
+.narration-settings summary { cursor: pointer; font-weight: 700; }
+.narration-settings[open] summary { margin-bottom: 12px; }
+.narration-settings button, .creative-setup button { display: inline-flex; align-items: center; gap: 8px; }
+.scene-proposal { margin-block: 28px; padding-block: 20px; border-block: 1px solid var(--line); scroll-margin-top: 110px; }
+.scene-proposal h2 { font-size: 20px; }
+.scene-proposal button { display: inline-flex; align-items: center; gap: 8px; margin-top: 12px; }
+.creative-setup input { min-width: 0; width: 100%; }
 .theme-toggle {
   width: 42px;
   flex: 0 0 42px;
@@ -328,7 +338,7 @@ a.beat-map-entry:hover { background: var(--paper); color: var(--green); }
   field-sizing: content;
 }
 .control-primary-row button { min-width: 118px; }
-.control-options { display: flex; align-items: center; justify-content: flex-end; gap: 24px; }
+.control-options { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 24px; }
 .control-options label { display: flex; align-items: center; gap: 7px; white-space: nowrap; color: var(--muted); font-size: 13px; }
 .control-options input { width: 16px; min-height: 16px; margin: 0; padding: 0; accent-color: var(--green); }
 .error { margin: 24px 0; padding: 12px 14px; border-left: 3px solid var(--red); background: var(--red-pale); color: var(--red-dark); }

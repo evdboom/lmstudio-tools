@@ -5,6 +5,7 @@ import { z } from "zod";
 import { safeResolve } from "./sandbox.js";
 import { readStoryFile } from "./story-store.js";
 import { buildReaderRunInstructions, isChatterboxVocalCueInstruction } from "./reader-audio-text.js";
+import { cuePassSchema, type CuePass } from "./reader-cues.js";
 
 const narrationMessageSchema = z.object({
   role: z.enum(["user", "assistant"]),
@@ -54,6 +55,11 @@ const acceptedNarrationSchema = z.object({
   summary: z.string().min(1).optional(),
   plan: z.string().min(1).optional(),
   narration: z.string().min(1),
+  source_markdown: z.string().optional(),
+  language: z.enum(["en", "nl"]).optional(),
+  cue_proposal: cuePassSchema.optional(),
+  vocal_cues: cuePassSchema.optional(),
+  vocal_cue_revisions: z.array(cuePassSchema).optional(),
   reasoning: z.string().optional(),
   prompt_instruction: z.string().optional(),
   incomplete_reason: z.string().optional(),
@@ -66,6 +72,9 @@ const acceptedNarrationSchema = z.object({
 
 const draftNarrationSchema = z.object({
   narration: z.string().min(1),
+  cue_proposal: cuePassSchema.optional(),
+  vocal_cues: cuePassSchema.optional(),
+  vocal_cue_revisions: z.array(cuePassSchema).optional(),
   summary: z.string().min(1).optional(),
   plan: z.string().min(1).optional(),
   reasoning: z.string().optional(),
@@ -261,6 +270,7 @@ export interface StoryListItem {
   title: string;
   premise: string;
   beats: number;
+  imported_book?: { language: "en" | "nl" };
 }
 
 export interface ReaderRunListItem {
@@ -342,6 +352,7 @@ export async function listFinalStories(root: string): Promise<StoryListItem[]> {
               title: story.title,
               premise: story.premise,
               beats: story.beats.length,
+              imported_book: story.imported_book,
             });
           }
         } catch {
@@ -401,7 +412,7 @@ export interface ReviewerOptions {
   reasoningEffort: ReasoningEffort;
 }
 
-export interface StoryItem { path: string; title: string; premise: string; beats: number; workflow?: "authored" | "discovery" | "planned" }
+export interface StoryItem { path: string; title: string; premise: string; beats: number; workflow?: "authored" | "discovery" | "planned"; imported_book?: { language: "en" | "nl" } }
 
 export interface NarrationReview {
   narration: string;
@@ -410,9 +421,10 @@ export interface NarrationReview {
   model: string;
   reviewed_at: string;
 }
-export interface Narration { beat_index: number; narration: string; incomplete_reason?: string; review?: NarrationReview; iterations?: ReaderIteration[] }
+export interface Narration { beat_index: number; narration: string; source_markdown?: string; language?: "en" | "nl"; incomplete_reason?: string; review?: NarrationReview; iterations?: ReaderIteration[]; cue_proposal?: CuePass; vocal_cues?: CuePass }
 
 export interface ReaderState {
+  imported_book?: { language: "en" | "nl" };
   run_id: string;
   scene_words?: number;
   narration_rules?: string;
@@ -436,7 +448,7 @@ export interface ReaderState {
   total_beats: number;
   beat_titles: string[];
   accepted: Narration[];
-  current_draft?: { narration: string; incomplete_reason?: string; review?: NarrationReview; iterations?: ReaderIteration[] };
+  current_draft?: { narration: string; incomplete_reason?: string; review?: NarrationReview; iterations?: ReaderIteration[]; cue_proposal?: CuePass; vocal_cues?: CuePass };
   ongoing_instructions: string[];
   status: "active" | "completed";
 }

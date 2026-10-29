@@ -58,6 +58,41 @@ async function narratedServer(profile: "portable" | "chatterbox" = "portable") {
 }
 
 describe("reader audio", () => {
+  it("sends chapter language to Multilingual Chatterbox and separates language caches", async () => {
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => url.endsWith("/api/model-info")
+      ? Response.json({ type: "multilingual", supports_paralinguistic_tags: false }) : new Response(pcmWav()));
+    vi.stubGlobal("fetch", fetchMock);
+    const { app, root, payload, jobUrl } = await narratedServer("chatterbox");
+    await mutateReaderRun(root, "book", payload.run_id, (run) => {
+      run.accepted = [{ beat_index: 0, narration: "Hello.", language: "nl" }, { beat_index: 1, narration: "Hello.", language: "en" }];
+      run.current_draft = undefined; run.beat_index = 2; run.status = "completed";
+    });
+    await app.inject({ method: "POST", url: "/api/audio/jobs", payload });
+    await vi.waitFor(async () => expect((await app.inject(jobUrl)).json().job.status).toBe("complete"));
+    const requests = fetchMock.mock.calls.filter(([url]) => url.endsWith("/audio/speech"));
+    expect(requests.map(([_url, init]) => JSON.parse(init!.body as string).language)).toEqual(["nl", "en"]);
+  });
+
+  it("requires the Multilingual engine before generating Dutch narration", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ type: "original", supports_paralinguistic_tags: false }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { app, root, payload, jobUrl } = await narratedServer("chatterbox");
+    await mutateReaderRun(root, "book", payload.run_id, (run) => { run.accepted[0].language = "nl"; });
+    await app.inject({ method: "POST", url: "/api/audio/jobs", payload });
+    await vi.waitFor(async () => expect((await app.inject(jobUrl)).json().job.status).toBe("failed"));
+    expect((await app.inject(jobUrl)).json().job.error).toContain("Multilingual engine");
+    expect(fetchMock.mock.calls.every(([url]) => String(url).endsWith("/api/model-info"))).toBe(true);
+  });
+
+  it("does not silently send Dutch chapters to the English Kokoro preset", async () => {
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+    const app = await server({ profile: "portable" });
+    const response = await app.inject({ method: "POST", url: "/api/audio/speech", payload: { text: "De brief.", language: "nl" } });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toContain("Multilingual engine");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("serializes background session reads with narration writes", async () => {
     const { root, payload } = await narratedServer();
     let release!: () => void;

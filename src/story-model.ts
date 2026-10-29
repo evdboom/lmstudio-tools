@@ -125,6 +125,10 @@ export const storyBlueprintSchema = z.object({
   narration_modes: z.array(narrationModeSchema),
   facts: z.array(storyFactSchema),
   beats: z.array(storyBeatSchema),
+  imported_book: z.object({
+    language: z.enum(["en", "nl"]),
+    chapters: z.array(z.object({ id: storyId, title: nonEmpty, filename: nonEmpty, language: z.enum(["en", "nl"]) })),
+  }).optional(),
 });
 
 export type StoryBlueprint = z.infer<typeof storyBlueprintSchema>;

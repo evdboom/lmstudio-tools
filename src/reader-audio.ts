@@ -20,6 +20,7 @@ const speechSchema = z.object({
   voice: z.string().trim().min(1).max(200).optional(),
   speed: z.number().min(0.5).max(2).default(1),
   beat: beatClipSchema.optional(),
+  language: z.enum(["en", "nl"]).optional(),
 }).strict();
 const MAX_AUDIO_BYTES = 30 * 1024 * 1024;
 class AudioServiceError extends Error {
@@ -69,7 +70,7 @@ export function registerReaderAudio(app: FastifyInstance, root: string, options?
   const supportsVocalCues = async () => (await getProviderInfo()).cues;
 
   const beatAudio = registerReaderBeatAudio(app, cacheDirectory, config, supportsVocalCues, () => active, async () => (await getProviderInfo()).engine);
-  const jobs = registerReaderAudioJobs(app, root, config.enabled, beatAudio, synthesize, () => active);
+  const jobs = registerReaderAudioJobs(app, root, config.enabled, beatAudio, synthesize, () => active, supportsVocalCues);
 
   app.get("/api/audio/config", async () => {
     return {
@@ -123,8 +124,16 @@ export function registerReaderAudio(app: FastifyInstance, root: string, options?
     signal.throwIfAborted();
     const info = await getProviderInfo();
     const synthesisText = prepareSpeechText(data.text, info.cues);
+    if (!chatterbox && data.language === "nl") {
+      throw new AudioServiceError(400, "Dutch audio requires the Chatterbox profile with its Multilingual engine selected.");
+    }
+    if (chatterbox && data.language === "nl" && info.engine && info.engine !== "multilingual") {
+      throw new AudioServiceError(400, "Select the Multilingual engine in Chatterbox to generate Dutch audio.");
+    }
     if (!synthesisText) throw new AudioServiceError(400, "No speakable text remains after removing unsupported vocal cues.");
-    const payload = { model: config.model, input: synthesisText, voice: data.voice ?? config.voice, speed: data.speed, response_format: config.responseFormat };
+    const payload = { model: config.model, input: synthesisText, voice: data.voice ?? config.voice, speed: data.speed, response_format: config.responseFormat,
+      ...(chatterbox && data.language ? { language: data.language } : {}),
+    };
     const key = speechCacheKey(config.baseUrl, { ...payload, ...(info.engine ? { engine: info.engine } : {}) });
     if (data.beat) {
       try { await beatAudio.validateClip(data.beat, key); } catch {
@@ -216,4 +225,5 @@ export function registerReaderAudio(app: FastifyInstance, root: string, options?
       return reply.code(error instanceof AudioServiceError ? error.statusCode : 502).send({ error: error instanceof Error ? error.message : "Cannot render audio." });
     } finally { reply.raw.off("close", disconnect); }
   });
+  return { supportsVocalCues };
 }

@@ -406,6 +406,7 @@ async function toState(root: string, run: ReaderRun): Promise<ReaderState> {
   const story = await readStoryFile(root, run.story_path);
   return {
     run_id: run.run_id,
+    imported_book: story.imported_book,
     workflow: run.workflow,
     narration_rules: run.narration_rules,
     scene_words: run.scene_words,

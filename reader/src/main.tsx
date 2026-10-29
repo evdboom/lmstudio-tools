@@ -2,7 +2,10 @@ import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AuthoringApp } from "./authoring";
 import { useScreenWakeLock } from "./wake-lock";
-import { Check, RefreshCw, Save, Volume2 } from "lucide-react";
+import { Check, RefreshCw, Save, Upload, Volume2 } from "lucide-react";
+import Markdown from "react-markdown";
+import { BookImport } from "./book-import";
+import { VocalCues } from "./vocal-cues";
 import { useReaderAudio } from "./audio";
 import { buildReaderRunInstructions, CHATTERBOX_VOCAL_CUE_INSTRUCTION } from "../../src/reader-audio-text";
 import type { GenerationMode, ReasoningMode, ReasoningEffort, RunItem, ReaderState, StoryItem } from "../../src/reader-store";
@@ -73,6 +76,7 @@ function App() {
   );
   const [ongoingInstructionInput, setOngoingInstructionInput] = useState("");
   const [modelOptionsOpen, setModelOptionsOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [state, setState] = useState<ReaderState>();
   const [streamed, setStreamed] = useState("");
   const [instruction, setInstruction] = useState("");
@@ -138,15 +142,14 @@ function App() {
   }, [state?.run_id, state?.narration_rules]);
 
   useEffect(() => {
-    Promise.all([
-      json<{ stories: StoryItem[] }>("/api/stories"),
-      json<{ models: string[] }>("/api/models"),
-    ]).then(([storyResult, modelResult]) => {
+    json<{ stories: StoryItem[] }>("/api/stories").then((storyResult) => {
       setStories(storyResult.stories);
-      setModels(modelResult.models);
       setStoryPath(storyResult.stories.some((story) => story.path === savedSetup?.storyPath)
         ? savedSetup!.storyPath
         : storyResult.stories.find((story) => !story.workflow || story.workflow === "authored")?.path ?? storyResult.stories[0]?.path ?? "");
+    }).catch((reason) => setError(reason.message));
+    json<{ models: string[] }>("/api/models").then((modelResult) => {
+      setModels(modelResult.models);
       setModel(modelResult.models[0] ?? "");
       setReviewerModel(modelResult.models[0] ?? "");
     }).catch((reason) => setError(reason.message));
@@ -573,7 +576,7 @@ function App() {
           prose_window: proseWindow,
           reasoning_mode: reasoningMode,
           reasoning_effort: reasoningEffort,
-          ongoing_instructions: buildReaderRunInstructions(ongoingInstructions, chatterboxVocalCues),
+          ongoing_instructions: buildReaderRunInstructions(ongoingInstructions, chatterboxVocalCues && audio.supportsVocalCues),
           reviewer_model: differentReviewer ? reviewerModel : undefined,
           reviewer_reasoning_mode: differentReviewer ? reviewerReasoningMode : undefined,
           reviewer_reasoning_effort: differentReviewer ? reviewerReasoningEffort : undefined,
@@ -623,6 +626,20 @@ function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function openImportedBook() {
+    try {
+      const result = await json<{ runs: RunItem[] }>(`/api/runs?story_path=${encodeURIComponent(storyPath)}`);
+      const book = result.runs.find((run) => run.status === "completed");
+      if (!book) throw new Error("The imported book's reading session was not found.");
+      await resume(book);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+  }
+
+  function importedBook(book: ReaderState) {
+    setState(book); setStoryPath(book.story_path); setWorkflow("authored"); setImportOpen(false); setError("");
+    void json<{ stories: StoryItem[] }>("/api/stories").then((result) => setStories(result.stories)).catch((reason) => setError(reason.message));
   }
 
   function act(action: "next" | "regenerate" | "regenerate_previous") {
@@ -681,6 +698,7 @@ function App() {
     busy,
     narrations: [...(state?.accepted ?? []), ...(state?.current_draft ? [{ ...state.current_draft, beat_index: state.beat_index }] : [])],
   });
+  const importedSelection = workflow === "authored" && Boolean(stories.find((story) => story.path === storyPath)?.imported_book);
 
   return (
     <main className={state ? "reader active" : "reader"}>
@@ -688,6 +706,7 @@ function App() {
         <div className="wordmark">Folio</div>
         <div className="topbar-actions">
           <a className="nav-link" href="/author">Write</a>
+          {!state && <button className="secondary" onClick={() => setImportOpen(true)}><Upload size={18} />Import book</button>}
           {!state ? (
             <div className="selectors">
               <select aria-label="Story workflow" value={workflow} onChange={(event) => {
@@ -703,13 +722,13 @@ function App() {
                 {stories.filter((story) => !story.workflow || story.workflow === "authored").map((story) => <option key={story.path} value={story.path}>{story.title}</option>) }
               </select>}
               <button className="secondary" onClick={() => setModelOptionsOpen(true)}>Model options</button>
-              <button className="primary" disabled={!model || busy || (workflow === "authored" ? !storyPath || !stories.some((story) => story.path === storyPath && (!story.workflow || story.workflow === "authored")) : !premise.trim())} onClick={() => void begin()}>Begin</button>
+              <button className="primary" disabled={busy || (!importedSelection && (!model || (workflow === "authored" ? !storyPath || !stories.some((story) => story.path === storyPath && (!story.workflow || story.workflow === "authored")) : !premise.trim())))} onClick={() => void (importedSelection ? openImportedBook() : begin())}>{importedSelection ? "Open book" : "Begin"}</button>
             </div>
           ) : (
             <>
               <button className="secondary" disabled={busy} onClick={() => void returnToStories()}>Stories</button>
               <div className="progress" aria-label={`Beat ${Math.min(currentBeatIndex + 1, state.total_beats)} of ${state.total_beats}`}>
-                <span title={state.model}>{state.model ?? "Unknown model"} · {state.workflow && state.workflow !== "authored" ? `Scene ${currentBeatIndex + 1}` : `${Math.min(currentBeatIndex + 1, state.total_beats)} / ${state.total_beats}`}</span>
+                <span title={state.model}>{state.imported_book ? "Imported book" : state.model ?? "Unknown model"} · {state.workflow && state.workflow !== "authored" ? `Scene ${currentBeatIndex + 1}` : `${Math.min(currentBeatIndex + 1, state.total_beats)} / ${state.total_beats}`}</span>
                 {(!state.workflow || state.workflow === "authored") && <i style={{ width: `${(state.accepted.length / state.total_beats) * 100}%` }} />}
               </div>
             </>
@@ -725,6 +744,7 @@ function App() {
         </div>
       </header>
 
+      {importOpen && <BookImport onClose={() => setImportOpen(false)} onImported={importedBook} />}
       {modelOptionsOpen && (
         <div className="modal-overlay">
           <div className="modal" role="dialog" aria-modal="true" aria-label="Model options">
@@ -885,7 +905,9 @@ function App() {
               <input
                 type="checkbox"
                 aria-label="Include vocal cue guidance"
-                checked={chatterboxVocalCues}
+                checked={chatterboxVocalCues && audio.supportsVocalCues}
+                disabled={!audio.supportsVocalCues}
+                title="English narration with Chatterbox Turbo only"
                 onChange={(event) => setChatterboxVocalCues(event.target.checked)}
               />
               <span>
@@ -930,7 +952,7 @@ function App() {
                 <div className="saved-run" key={run.run_id}>
                   <div className="saved-run-summary">
                     <strong>{run.workflow === "planned" ? "Plan & Approve · " : run.workflow === "discovery" ? "Discovery · " : ""}{run.status === "completed" ? "Completed" : `Scene ${run.beat_index + 1}`}</strong>
-                    <span title={run.model}>{run.model ?? "Unknown model"} · {run.accepted_beats} accepted · {new Date(run.updated_at).toLocaleString()}</span>
+                    <span title={run.model}>{importedSelection ? "Imported book" : run.model ?? "Unknown model"} · {run.accepted_beats} {importedSelection ? "chapters" : "accepted"} · {new Date(run.updated_at).toLocaleString()}</span>
                   </div>
                   <div className="saved-run-actions">
                     <button className="secondary" disabled={busy} onClick={() => void resume(run)}>
@@ -1004,7 +1026,7 @@ function App() {
               return (
                 <section className={`beat ${isActing ? "writing" : ""}`} id={`beat-${beat.beat_index}`} key={beat.beat_index}>
                   <span className="beat-number">{String(beat.beat_index + 1).padStart(2, "0")}</span>
-                  {displayNarration.split(/\n{2,}/).map((paragraph, index) => <p key={index}>{paragraph}</p>)}
+                  {beat.source_markdown ? <div className="imported-chapter"><Markdown skipHtml>{beat.source_markdown}</Markdown></div> : displayNarration.split(/\n{2,}/).map((paragraph, index) => <p key={index}>{paragraph}</p>)}
                   {isActing && (
                     <div className="beat-action-status" role="status" aria-live="polite">
                       <i />
@@ -1019,9 +1041,11 @@ function App() {
                   )}
                   <div className="beat-review-actions">
                     <button className="audio-read" disabled={busy || !audio.enabled || Boolean(beat.review && beat.review.narration !== beat.narration)} title={`Read beat ${beat.beat_index + 1} aloud`} aria-label={`Read beat ${beat.beat_index + 1} aloud`} onClick={() => audio.readBeat(beat.beat_index, beat.narration)}><Volume2 size={18} />{audio.activeBeat === beat.beat_index ? "Restart audio" : "Read aloud"}</button>
-                    <button className="secondary" disabled={busy} onClick={() => void regenerateBeat(state, beat.beat_index)}>Regenerate</button>
-                    <button className="secondary" disabled={busy} onClick={() => openReview(beat.beat_index)}>Review</button>
+                    {!state.imported_book && <><button className="secondary" disabled={busy} onClick={() => void regenerateBeat(state, beat.beat_index)}>Regenerate</button>
+                    <button className="secondary" disabled={busy} onClick={() => openReview(beat.beat_index)}>Review</button></>}
                   </div>
+                  <VocalCues run={state} beatIndex={beat.beat_index} target={beat} language={beat.language ?? state.imported_book?.language}
+                    turbo={audio.supportsVocalCues} models={models} model={model} busy={busy} onChange={setState} />
                   {reviewBeatIndex === beat.beat_index && <div className="review-focus">
                     <input
                       aria-label={`Review focus for beat ${beat.beat_index + 1}`}
@@ -1075,6 +1099,8 @@ function App() {
                 </section>}
                 {!busy && state.current_draft && <div className="beat-review-actions">
                   <button className="audio-read" disabled={!audio.enabled || Boolean(state.current_draft.review && state.current_draft.review.narration !== state.current_draft.narration)} title={`Read beat ${state.beat_index + 1} aloud`} aria-label={`Read beat ${state.beat_index + 1} aloud`} onClick={() => audio.readBeat(state.beat_index, state.current_draft!.narration)}><Volume2 size={18} />{audio.activeBeat === state.beat_index ? "Restart audio" : "Read aloud"}</button>
+                  <VocalCues run={state} beatIndex={state.beat_index} target={state.current_draft} language={state.imported_book?.language}
+                    turbo={audio.supportsVocalCues} models={models} model={model} busy={busy} onChange={setState} />
                   <button className="secondary" onClick={() => void regenerateBeat(state, state.beat_index)}>Regenerate</button>
                   <button className="secondary" onClick={() => openReview(state.beat_index)}>Review</button>
                 </div>}

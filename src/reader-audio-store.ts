@@ -20,9 +20,10 @@ export const beatAudioRequestSchema = z.object({
   narration: z.string().trim().min(1).max(2_000_000), voice: z.string().trim().min(1).max(200),
   replace: z.boolean().default(false),
   story_title: z.string().max(500).optional(), beat_title: z.string().max(500).optional(), beat_id: z.string().max(200).optional(),
+  language: z.enum(["en", "nl"]).optional(),
 }).strict();
 export type BeatAudioRequest = z.infer<typeof beatAudioRequestSchema>;
-type SpeechSettings = { baseUrl: string; model: string; responseFormat: "wav" | "mp3" };
+type SpeechSettings = { baseUrl: string; model: string; responseFormat: "wav" | "mp3"; profile?: string };
 interface Manifest {
   revision: string;
   format: "wav" | "mp3";
@@ -122,6 +123,7 @@ export function registerReaderBeatAudio(
       const keys = paragraphs.map((text) => speechCacheKey(settings.baseUrl, {
         model: settings.model, input: prepareSpeechText(text, cues), voice: input.voice,
         speed: 1, response_format: settings.responseFormat,
+        ...((settings.profile === "chatterbox" || settings.profile === "desktop") && input.language ? { language: input.language } : {}),
         ...(engine ? { engine } : {}),
       }));
       const revision = createHash("sha256").update(JSON.stringify({ narration: input.narration, keys })).digest("hex");

@@ -1,5 +1,6 @@
 export const CHATTERBOX_VOCAL_CUE_INSTRUCTION = [
   "Optional Chatterbox Turbo vocal-cue guidance:",
+  "Chatterbox Turbo and these cues are English-only. Do not add vocal cues to Dutch or other non-English narration; use Multilingual without Turbo cues for Dutch speech.",
   "Use Chatterbox Turbo's bracketed special tokens sparingly in the narration when they serve the scene. They are audio-performance cues, not dialogue to be spoken aloud. Leave ordinary prose untagged.",
   "Write every cue using the exact lowercase spelling shown below; tag matching is case-sensitive (for example, write [sigh], never [Sigh]).",
   "Allowed cues only: never invent bracketed directions or synonyms. [breathing hard] and [softly] are NOT allowed cues; describe those actions in ordinary prose instead. Do not substitute an unrelated sound.",

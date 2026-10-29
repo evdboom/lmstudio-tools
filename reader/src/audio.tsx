@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Download, Play, RefreshCw, Square, Volume2 } from "lucide-react";
 import type { SavedBeatAudio } from "../../src/reader-audio-store";
 import type { AudioJob, AudioLibraryBeat } from "../../src/reader-audio-jobs";
+import type { CuePass } from "../../src/reader-cues";
 
 interface AudioConfig {
   enabled: boolean;
@@ -53,7 +54,7 @@ export function useReaderAudio(options: {
   runId?: string;
   storyPath?: string;
   busy: boolean;
-  narrations: Array<{ beat_index: number; narration: string }>;
+  narrations: Array<{ beat_index: number; narration: string; vocal_cues?: CuePass }>;
 }) {
   const [config, setConfig] = useState<AudioConfig>();
   const [voice, setVoice] = useState("");
@@ -77,7 +78,7 @@ export function useReaderAudio(options: {
   const library = useRef<AudioLibraryBeat[]>([]);
   const waitingBeat = useRef<number | undefined>(undefined);
   const jobRunning = starting || job?.status === "running" || job?.status === "stopping";
-  const sourceKey = JSON.stringify(options.narrations);
+  const sourceKey = JSON.stringify(options.narrations.map(({ beat_index, narration, vocal_cues }) => ({ beat_index, narration, vocal_cues })));
 
   function stop() {
     sequence.current += 1;

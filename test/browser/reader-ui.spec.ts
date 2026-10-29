@@ -17,6 +17,10 @@ let narrationOverride: string | undefined;
 let responseStream: ((response: ServerResponse, id: string) => void) | undefined;
 let speechRequests: Array<{ input: string; voice: string }> = [];
 let speechGate: Promise<void> | undefined;
+let modelBaseUrl: string;
+let ttsEngine = "original";
+let cueReply: { cues: Array<{ before: string; tag: string }> } = { cues: [] };
+let cueRequests: Array<{ model: string; input: string }> = [];
 
 function silentWav(seconds = 2): Buffer {
   const samples = Math.round(24000 * seconds);
@@ -93,6 +97,22 @@ test.beforeAll(async () => {
       ] }));
       return;
     }
+    if (request.method === "GET" && request.url === "/api/model-info") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ type: ttsEngine, supports_paralinguistic_tags: ttsEngine === "turbo" }));
+      return;
+    }
+    if (request.method === "GET" && request.url === "/get_predefined_voices") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify([{ display_name: "Emily", filename: "Emily.wav" }]));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/chat") {
+      cueRequests.push(JSON.parse(await jsonBody(request)));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ output: [{ type: "message", content: JSON.stringify(cueReply) }] }));
+      return;
+    }
     if (request.method === "POST" && request.url === "/v1/responses") {
       const body = JSON.parse(await jsonBody(request)) as { input?: Array<{ role: string; content: string }>; instructions?: string };
       responseRequests.push(body);
@@ -121,6 +141,7 @@ test.beforeAll(async () => {
     response.end();
   });
   const lmStudioPort = await listen(lmStudioMock);
+  modelBaseUrl = `http://127.0.0.1:${lmStudioPort}`;
   readerServer = await createReaderServer({
     root,
     lmStudioUrl: `http://127.0.0.1:${lmStudioPort}`,
@@ -325,7 +346,7 @@ test("previews a narrator without stories or an LM Studio model", async ({ page 
   await expect(page.getByLabel("Story audio player")).not.toHaveAttribute("src");
 });
 
-test("optionally adds vocal cue guidance to generation regardless of TTS profile", async ({ page }) => {
+test("enables English vocal cue guidance only when Turbo capabilities are reported", async ({ page }) => {
   await page.route("**/api/audio/config", (route) => route.fulfill({ json: {
     enabled: true, profile: "portable", model: "portable", voice: "af_heart",
     response_format: "wav", supports_vocal_cues: false,
@@ -336,6 +357,14 @@ test("optionally adds vocal cue guidance to generation regardless of TTS profile
   await page.getByRole("button", { name: "Model options" }).click();
   const cueOption = page.getByLabel("Include vocal cue guidance");
   await expect(cueOption).toBeVisible();
+  await expect(cueOption).toBeDisabled();
+  await page.route("**/api/audio/config", (route) => route.fulfill({ json: {
+    enabled: true, profile: "chatterbox", model: "chatterbox", voice: "Emily.wav",
+    response_format: "wav", supports_vocal_cues: true,
+  } }));
+  await page.reload();
+  await page.getByRole("button", { name: "Model options" }).click();
+  await expect(cueOption).toBeEnabled();
   await cueOption.check();
   await page.getByRole("button", { name: "Done" }).click();
   await page.getByRole("button", { name: "Begin", exact: true }).click();
@@ -344,10 +373,112 @@ test("optionally adds vocal cue guidance to generation regardless of TTS profile
   expect(firstPrompt).toContain("[dramatic]");
   expect(firstPrompt).toContain("[clear throat]");
   expect(firstPrompt).toContain("Use Chatterbox Turbo's bracketed special tokens sparingly");
+  expect(firstPrompt).toContain("English-only");
   await page.getByRole("button", { name: "Next", exact: true }).click();
   await expect(page.getByText("Final draft.")).toBeVisible();
   const nextBeatPrompt = responseRequests[1]?.input?.map((message) => message.content).join("\n") ?? "";
   expect(nextBeatPrompt).toContain("Use Chatterbox Turbo's bracketed special tokens sparingly");
+});
+
+test("previews and applies English Turbo cues without rewriting prose or invalidating audio until approval", async ({ page }) => {
+  const source = '"Stay," she whispered.';
+  narrationOverride = source;
+  ttsEngine = "turbo";
+  cueReply = { cues: [{ before: source, tag: "whispering" }] };
+  cueRequests = []; speechRequests = [];
+  const cueReader = await createReaderServer({ root, lmStudioUrl: modelBaseUrl, webRoot: path.resolve("reader-dist"),
+    audio: { profile: "chatterbox", baseUrl: `${modelBaseUrl}/v1` } });
+  const cueUrl = await cueReader.listen({ host: "127.0.0.1", port: 0 });
+  try {
+    await page.goto(cueUrl);
+    await page.getByRole("button", { name: "Begin", exact: true }).click();
+    await expect(page.locator("#beat-0")).toContainText(source);
+    await page.getByRole("button", { name: "Read beat 1 aloud" }).click();
+    const player = page.getByLabel("Story audio player");
+    await expect(player).toHaveAttribute("src", /\/play\?/);
+    const originalPlayback = await player.getAttribute("src");
+    const originalDownload = await page.getByRole("link", { name: "Download complete beat audio" }).getAttribute("href");
+    await page.getByRole("button", { name: "Vocal cues for beat 1" }).click();
+    const dialog = page.getByRole("dialog", { name: "English Turbo vocal cues" });
+    await expect(dialog.getByRole("button", { name: "Suggest vocal cues" })).toBeDisabled();
+    await dialog.getByLabel("Narration is English").check();
+    await dialog.getByLabel("Vocal cue model").selectOption("prose-model");
+    await dialog.getByRole("button", { name: "Suggest vocal cues" }).click();
+    const proposal = page.getByRole("region", { name: "Vocal cue proposal for beat 1" });
+    await expect(proposal).toContainText("[whispering]");
+    expect(cueRequests).toHaveLength(1);
+    expect(cueRequests[0]).toMatchObject({ model: "prose-model", input: source });
+    await expect(player).toHaveAttribute("src", originalPlayback!);
+    await expect(page.getByRole("link", { name: "Download complete beat audio" })).toHaveAttribute("href", originalDownload!);
+    await expect(page.locator("#beat-0 p").first()).toHaveText(source);
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(await proposal.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+    await proposal.screenshot({ path: "test-results/cue-pass-mobile.png" });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await proposal.screenshot({ path: "test-results/cue-pass-desktop.png" });
+    await proposal.getByRole("button", { name: "Apply vocal cues" }).click();
+    await expect(page.getByLabel("Audio beat").locator("option[value='0']")).toContainText("outdated");
+    await expect(page.locator("#beat-0 p").first()).toHaveText(source);
+    page.once("dialog", (confirmation) => confirmation.accept());
+    await page.getByRole("button", { name: "Read beat 1 aloud" }).click();
+    await expect.poll(() => speechRequests.length).toBe(2);
+    expect(speechRequests[1].input).toBe(`[whispering] ${source}`);
+    await expect(page.getByRole("link", { name: "Download complete beat audio" })).not.toHaveAttribute("href", originalDownload!);
+    const imported = await page.request.post(`${cueUrl}/api/books/import`, { data: { title: "Turbo Dutch boundary", language: "nl",
+      chapters: [{ filename: "een.md", markdown: "# Een\n\nZij wachtte bij de deur." }] } });
+    const book = await imported.json();
+    await page.goto(cueUrl);
+    await page.getByLabel("Story", { exact: true }).selectOption(book.story_path);
+    await page.getByRole("button", { name: "Open book", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Vocal cues for beat 1" })).toBeDisabled();
+    const blocked = await page.request.post(`${cueUrl}/api/runs/${book.run_id}/cues`, { data: { story_path: book.story_path, beat_index: 0, model: "mock-model", english: true } });
+    expect(blocked.status()).toBe(400);
+    expect(cueRequests).toHaveLength(1);
+  } finally { narrationOverride = undefined; ttsEngine = "original"; cueReply = { cues: [] }; await cueReader.close(); }
+});
+
+test("imports ordered bilingual Markdown chapters without a model and safely reopens the book", async ({ page }) => {
+  responseRequests = [];
+  await page.route("**/api/models", (route) => route.fulfill({ status: 502, json: { error: "LM Studio is offline." } }));
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(readerUrl);
+  await page.getByRole("button", { name: "Import book", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Import Markdown book" });
+  await dialog.getByLabel("Book title", { exact: true }).fill("Brieven");
+  await dialog.getByLabel("Book language", { exact: true }).selectOption("nl");
+  await dialog.getByLabel("Chapter Markdown files").setInputFiles([
+    { name: "02-English.md", mimeType: "text/markdown", buffer: Buffer.from("# The room\n\nShe waited at the door.") },
+    { name: "01-Nederlands.md", mimeType: "text/markdown", buffer: Buffer.from("# De brief\n\nZij **las** de brief.\n\n<script>window.bookImportUnsafe=true</script>\n") },
+  ]);
+  await expect(dialog.locator(".import-chapters > li")).toHaveCount(2);
+  await dialog.getByLabel("Chapter 2 language", { exact: true }).selectOption("en");
+  await dialog.getByLabel("Chapter 2 title", { exact: true }).fill("The waiting room");
+  await dialog.getByRole("button", { name: "Move chapter 2 up" }).click();
+  await dialog.getByRole("button", { name: "Preview chapters" }).click();
+  await expect(dialog.getByLabel("Chapter 1 title", { exact: true })).toHaveValue("The waiting room");
+  await expect(dialog.getByLabel("Chapter 2 title", { exact: true })).toHaveValue("De brief");
+  await expect(dialog.getByRole("button", { name: "Import book", exact: true })).toBeEnabled();
+  expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  await dialog.screenshot({ path: "test-results/import-mobile.png" });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await dialog.screenshot({ path: "test-results/import-desktop.png" });
+  await dialog.getByRole("button", { name: "Import book", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Brieven", exact: true })).toBeVisible();
+  await expect(page.locator("#beat-0")).toContainText("She waited at the door.");
+  await expect(page.locator("#beat-1 strong")).toHaveText("las");
+  expect(await page.evaluate(() => (window as unknown as { bookImportUnsafe?: boolean }).bookImportUnsafe)).toBeUndefined();
+  await expect(page.getByRole("button", { name: "Regenerate", exact: true })).toHaveCount(0);
+  expect(responseRequests).toHaveLength(0);
+  const stories = await (await page.request.get(`${readerUrl}/api/stories`)).json();
+  const book = stories.stories.find((story: { title: string }) => story.title === "Brieven");
+  const runs = await (await page.request.get(`${readerUrl}/api/runs?story_path=${encodeURIComponent(book.path)}`)).json();
+  const saved = await (await page.request.get(`${readerUrl}/api/runs/${runs.runs[0].run_id}?story_path=${encodeURIComponent(book.path)}`)).json();
+  expect(saved.accepted.map((chapter: { language: string }) => chapter.language)).toEqual(["en", "nl"]);
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Open book", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "Open book", exact: true }).click();
+  await expect(page.locator("#beat-1 strong")).toHaveText("las");
+  expect(responseRequests).toHaveLength(0);
 });
 
 test("reads a Discovery story from only a premise and resumes it", async ({ page }) => {

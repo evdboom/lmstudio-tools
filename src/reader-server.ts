@@ -51,6 +51,8 @@ import {
 import { parseSingleRootArgs, resolveSingleRoot } from "./server-cli.js";
 import { acquireWakeLock, releaseWakeLock } from "./wake-lock.js";
 import { registerReaderAudio, type ReaderAudioOptions } from "./reader-audio.js";
+import { registerReaderImport } from "./reader-import.js";
+import { registerReaderCuePass } from "./reader-cue-server.js";
 
 interface ReaderServerOptions {
   root: string;
@@ -259,7 +261,8 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
     });
   }
 
-  registerReaderAudio(app, options.root, options.audio);
+  const audio = registerReaderAudio(app, options.root, options.audio);
+  registerReaderCuePass(app, { ...options, supportsVocalCues: audio.supportsVocalCues });
 
   async function summarize(storyPath: string, runId: string, signal?: AbortSignal, reply?: FastifyReply) {
     const run = await readReaderRun(options.root, storyPath, runId);
@@ -278,6 +281,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
   }
 
   app.get("/api/stories", async () => ({ stories: await listFinalStories(options.root) }));
+  registerReaderImport(app, options.root);
   app.get("/api/editor/stories", async () => ({ stories: await listEditableStories(options.root) }));
   app.get("/api/editor/story", async (request, reply) => {
     const query = z.object({ story_path: storyPathSchema }).safeParse(request.query);

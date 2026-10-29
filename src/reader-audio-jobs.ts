@@ -5,6 +5,7 @@ import { getReaderState } from "./reader-service.js";
 import { readStoryFile } from "./story-store.js";
 import { splitSpeechParagraphs } from "./reader-audio-text.js";
 import { beatClipSchema, type BeatAudioRequest, type SavedBeatAudio, type registerReaderBeatAudio } from "./reader-audio-store.js";
+import { cueNarration } from "./reader-cues.js";
 
 const requestSchema = z.object({
   story_path: z.string().trim().min(1).max(500), run_id: z.string().uuid(), voice: z.string().trim().min(1).max(200),
@@ -36,8 +37,9 @@ export interface AudioLibraryBeat {
 export function registerReaderAudioJobs(
   app: FastifyInstance, root: string, enabled: boolean,
   store: ReturnType<typeof registerReaderBeatAudio>,
-  synthesize: (input: { text: string; voice: string; speed: number; beat: z.infer<typeof beatClipSchema> }, signal: AbortSignal) => Promise<Buffer>,
+  synthesize: (input: { text: string; voice: string; speed: number; language?: "en" | "nl"; beat: z.infer<typeof beatClipSchema> }, signal: AbortSignal) => Promise<Buffer>,
   isRendering: () => boolean,
+  supportsVocalCues: () => Promise<boolean> = () => Promise.resolve(false),
 ) {
   let job: AudioJob | undefined;
   let task: Promise<void> | undefined;
@@ -48,6 +50,7 @@ export function registerReaderAudioJobs(
   async function plan(input: AudioRequest) {
     const state = await getReaderState(root, input.story_path, input.run_id);
     const story = await readStoryFile(root, input.story_path);
+    const turbo = await supportsVocalCues();
     const narrations = [...state.accepted, ...(state.current_draft ? [{ ...state.current_draft, beat_index: state.beat_index }] : [])];
     const entries: Array<{ input: BeatAudioRequest; library: AudioLibraryBeat }> = [];
     for (const narration of narrations) {
@@ -55,8 +58,8 @@ export function registerReaderAudioJobs(
       const index = narration.beat_index;
       const id = state.workflow === "authored" ? story.beats[index]?.id ?? `beat-${index + 1}` : `scene-${index + 1}`;
       const title = state.beat_titles[index] ?? id;
-      const request: BeatAudioRequest = { run_id: input.run_id, beat_index: index, narration: narration.narration, voice: input.voice,
-        replace: false, story_title: state.title, beat_title: title, beat_id: id };
+      const request: BeatAudioRequest = { run_id: input.run_id, beat_index: index, narration: cueNarration(narration, turbo, state.imported_book?.language), voice: input.voice,
+        replace: false, story_title: state.title, beat_title: title, beat_id: id, language: narration.language ?? state.imported_book?.language };
       const eligible = Boolean(narration.narration.trim()) && !narration.incomplete_reason && !(narration.review && narration.review.narration !== narration.narration);
       const inspected = await store.prepare(request, true);
       entries.push({ input: request, library: { beat_index: index, id, title, eligible, outdated: Boolean(inspected.changed), audio: inspected.audio } });
@@ -68,7 +71,8 @@ export function registerReaderAudioJobs(
     const state = await getReaderState(root, storyPath, input.run_id);
     const narration = state.beat_index === input.beat_index && state.current_draft ? state.current_draft
       : state.accepted.find((beat) => beat.beat_index === input.beat_index);
-    if (!narration || narration.narration !== input.narration || narration.incomplete_reason || (narration.review && narration.review.narration !== narration.narration)) {
+    const turbo = await supportsVocalCues();
+    if (!narration || cueNarration(narration, turbo, state.imported_book?.language) !== input.narration || narration.incomplete_reason || (narration.review && narration.review.narration !== narration.narration)) {
       throw new Error(`Beat ${input.beat_index + 1} changed during audio generation. Saved audio was kept; review the change and start generation again.`);
     }
   }
@@ -88,7 +92,7 @@ export function registerReaderAudioJobs(
       if (audio.available.includes(index)) continue;
       await verifyNarration(entry.input, storyPath);
       current.clip_index = index;
-      await synthesize({ text, voice: audio.voice, speed: 1, beat: {
+      await synthesize({ text, voice: audio.voice, speed: 1, language: entry.input.language, beat: {
         run_id: audio.run_id, beat_index: audio.beat_index, revision: audio.revision, clip_index: index,
       } }, signal);
     }

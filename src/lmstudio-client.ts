@@ -122,23 +122,24 @@ function createThinkTagSplitter(callbacks: {
   };
 }
 
-export async function listLmStudioModels(baseUrl: string, apiToken?: string): Promise<string[]> {
+export async function listLmStudioModels(baseUrl: string, apiToken?: string, toolUseOnly = false): Promise<string[]> {
   const response = await fetch(endpoint(baseUrl, "/models"), {
     headers: headers(apiToken),
     dispatcher: lmStudioAgent,
   } as LmStudioRequestInit);
   if (!response.ok) throw new Error(`LM Studio returned ${response.status}.`);
   const body = await response.json() as {
-    models?: Array<{ type?: unknown; key?: unknown }>;
+    models?: Array<{ type?: unknown; key?: unknown; capabilities?: { trained_for_tool_use?: unknown } }>;
     data?: Array<{ id?: unknown }>;
   };
   if (body.models) {
     return body.models
       .filter((model) => model.type === "llm")
+      .filter((model) => !toolUseOnly || model.capabilities?.trained_for_tool_use === true)
       .map((model) => model.key)
       .filter((key): key is string => typeof key === "string" && key.length > 0);
   }
-  return (body.data ?? []).map((model) => model.id)
+  return (toolUseOnly ? [] : body.data ?? []).map((model) => model.id)
     .filter((id): id is string => typeof id === "string" && id.length > 0);
 }
 
@@ -424,6 +425,13 @@ const AUTHORING_ALLOWED_TOOLS = [
   "story_save",
 ];
 
+function authoringIntegrations(mcpPluginId: string, fileToolsPluginId?: string) {
+  return [
+    { type: "plugin", id: mcpPluginId, allowed_tools: AUTHORING_ALLOWED_TOOLS },
+    ...(fileToolsPluginId ? [{ type: "plugin", id: fileToolsPluginId }] : []),
+  ];
+}
+
 function authoringSystemPrompt(reasoningMode: ReasoningMode): string {
   const locus = reasoningLocus(reasoningMode);
   return [
@@ -434,6 +442,7 @@ function authoringSystemPrompt(reasoningMode: ReasoningMode): string {
     "Read before you write: call story_list / story_read to see what already exists.",
     "Build the story with the specific story_* tools it points you to, one call per element, instead of writing one large blueprint by hand.",
     "Use story_save only for a full rewrite the writer explicitly asked for; preserve every unrelated id and detail.",
+    "If file tools are available, use them for supporting files; prefer story_* tools for blueprint changes and validate any blueprint edited through file tools.",
     "Every turn must end with a final answer; never leave the requested result only in reasoning.",
     "When asked to output an existing draft or answer, reproduce it immediately without analyzing, revising, or calling tools.",
   ].join("\n");
@@ -447,6 +456,7 @@ export async function streamLmStudioAuthoring(options: {
   previousResponseId?: string;
   reasoningMode?: ReasoningMode;
   mcpPluginId: string;
+  fileToolsPluginId?: string;
   signal: AbortSignal;
   onDelta: (delta: string) => void;
   onReasoningDelta?: (delta: string) => void;
@@ -462,11 +472,7 @@ export async function streamLmStudioAuthoring(options: {
       system_prompt: options.previousResponseId
         ? undefined
         : authoringSystemPrompt(options.reasoningMode ?? "native"),
-      integrations: [{
-        type: "plugin",
-        id: options.mcpPluginId,
-        allowed_tools: AUTHORING_ALLOWED_TOOLS,
-      }],
+      integrations: authoringIntegrations(options.mcpPluginId, options.fileToolsPluginId),
       stream: true,
       store: true,
       temperature: 0.6,

@@ -60,6 +60,7 @@ interface ReaderServerOptions {
   folioPassword?: string;
   /** LM Studio mcp.json plugin id for the story teller server. */
   mcpPluginId?: string;
+  fileToolsPluginId?: string;
   audio?: ReaderAudioOptions;
 }
 
@@ -327,9 +328,10 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
       return reply.code(404).send({ error: message(error) });
     }
   });
-  app.get("/api/models", async (_request, reply) => {
+  app.get("/api/models", async (request, reply) => {
+    const toolUseOnly = (request.query as { tool_use?: string }).tool_use === "true";
     try {
-      return { models: await listLmStudioModels(options.lmStudioUrl, options.lmStudioApiToken) };
+      return { models: await listLmStudioModels(options.lmStudioUrl, options.lmStudioApiToken, toolUseOnly) };
     } catch (error) {
       return reply.code(502).send({ error: message(error) });
     }
@@ -364,6 +366,7 @@ export async function createReaderServer(options: ReaderServerOptions): Promise<
         previousResponseId: body.data.previous_response_id,
         reasoningMode: body.data.reasoning_mode,
         mcpPluginId: options.mcpPluginId ?? "mcp/story-teller",
+        fileToolsPluginId: options.fileToolsPluginId,
         signal: abort.signal,
         onDelta: (delta) => reply.raw.write(`event: delta\ndata: ${JSON.stringify(delta)}\n\n`),
         onReasoningDelta: (delta) => reply.raw.write(`event: reasoning\ndata: ${JSON.stringify(delta)}\n\n`),
@@ -1091,6 +1094,7 @@ async function main(): Promise<void> {
   const webRoot = fileURLToPath(new URL("../reader-dist", import.meta.url));
   const localUrl = `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`;
   const mcpPluginId = option(argv, "--mcp-plugin-id") ?? process.env.STORY_READER_MCP_ID ?? "mcp/story-teller";
+  const fileToolsPluginId = option(argv, "--file-tools-plugin-id") ?? process.env.STORY_READER_FILE_TOOLS_MCP_ID;
   const audioProfile = z.enum(["portable", "laptop", "desktop", "kokoro", "chatterbox"]).optional().parse(option(argv, "--tts-profile") ?? process.env.FOLIO_TTS_PROFILE);
   const audio: ReaderAudioOptions = {
     profile: audioProfile,
@@ -1100,7 +1104,7 @@ async function main(): Promise<void> {
     format: z.enum(["wav", "mp3"]).optional().parse(option(argv, "--tts-format") ?? process.env.FOLIO_TTS_FORMAT),
     apiToken: process.env.FOLIO_TTS_API_TOKEN,
   };
-  const app = await createReaderServer({ root, lmStudioUrl, lmStudioApiToken, webRoot, folioPassword, mcpPluginId, audio });
+  const app = await createReaderServer({ root, lmStudioUrl, lmStudioApiToken, webRoot, folioPassword, mcpPluginId, fileToolsPluginId, audio });
   await app.listen({ host, port });
   const urls = readerUrls(host, port, networkInterfaces(), await defaultGatewayInterfaces());
   console.log(`Story reader ready at ${localUrl}`);

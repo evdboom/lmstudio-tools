@@ -13,6 +13,7 @@ import { makeSandbox } from "./helpers.js";
 
 vi.mock("../src/lmstudio-client.js", () => ({
   listLmStudioModels: vi.fn(async () => ["test-model"]),
+  streamLmStudioAuthoring: vi.fn(async () => ({ message: "Updated.", responseId: "resp_author" })),
   generateLmStudioText: vi.fn(async () => JSON.stringify({
     checkpoint_id: "wai17",
     width: 832,
@@ -43,7 +44,7 @@ vi.mock("../src/lmstudio-client.js", () => ({
 }));
 
 import { createReaderServer, readerUrls } from "../src/reader-server.js";
-import { streamLmStudioNarration } from "../src/lmstudio-client.js";
+import { listLmStudioModels, streamLmStudioAuthoring, streamLmStudioNarration } from "../src/lmstudio-client.js";
 
 let root: string;
 let cleanup: () => Promise<void>;
@@ -91,6 +92,41 @@ beforeEach(async () => {
 });
 
 afterEach(async () => cleanup());
+
+it("filters only helper model requests by tool capability", async () => {
+  const app = await createReaderServer({ root, lmStudioUrl: "http://localhost/api/v1" });
+  try {
+    await app.inject({ method: "GET", url: "/api/models?tool_use=true" });
+    expect(listLmStudioModels).toHaveBeenLastCalledWith("http://localhost/api/v1", undefined, true);
+    await app.inject({ method: "GET", url: "/api/models" });
+    expect(listLmStudioModels).toHaveBeenLastCalledWith("http://localhost/api/v1", undefined, false);
+  } finally {
+    await app.close();
+  }
+});
+
+it("passes the configured file-tools plugin to authoring", async () => {
+  const app = await createReaderServer({
+    root,
+    lmStudioUrl: "http://localhost/api/v1",
+    mcpPluginId: "mcp/story-second",
+    fileToolsPluginId: "mcp/file-tools-second",
+  });
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/editor/chat",
+      payload: { model: "test-model", input: "Update the story." },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(streamLmStudioAuthoring).toHaveBeenLastCalledWith(expect.objectContaining({
+      mcpPluginId: "mcp/story-second",
+      fileToolsPluginId: "mcp/file-tools-second",
+    }));
+  } finally {
+    await app.close();
+  }
+});
 
 function parseDoneEvent<T>(payload: string): T {
   const marker = "event: done\ndata: ";

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   generateLmStudioText,
+  listLmStudioModels,
   streamLmStudioAuthoring,
   streamLmStudioNarration,
 } from "../src/lmstudio-client.js";
@@ -10,6 +11,24 @@ afterEach(() => {
 });
 
 describe("LM Studio streaming client", () => {
+  it("filters helper models by explicit tool training without restricting narration models", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ models: [
+      { type: "llm", key: "tools", capabilities: { trained_for_tool_use: true } },
+      { type: "llm", key: "prose", capabilities: { trained_for_tool_use: false } },
+      { type: "llm", key: "unknown" },
+      { type: "llm", key: "invalid", capabilities: { trained_for_tool_use: "true" } },
+      { type: "embedding", key: "embedding", capabilities: { trained_for_tool_use: true } },
+    ] }))));
+    expect(await listLmStudioModels("http://localhost/api/v1", undefined, true)).toEqual(["tools"]);
+    expect(await listLmStudioModels("http://localhost/api/v1")).toEqual(["tools", "prose", "unknown", "invalid"]);
+  });
+
+  it("treats legacy model lists as unknown tool support", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ data: [{ id: "legacy" }] }))));
+    expect(await listLmStudioModels("http://localhost/v1", undefined, true)).toEqual([]);
+    expect(await listLmStudioModels("http://localhost/v1")).toEqual(["legacy"]);
+  });
+
   it("generates one-shot text without storing narration state", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       output: [
@@ -469,6 +488,7 @@ describe("LM Studio streaming client", () => {
       input: "Expand the midpoint.",
       apiToken: "local-token",
       mcpPluginId: "mcp/story-teller",
+      fileToolsPluginId: "mcp/file-tools",
       signal: new AbortController().signal,
       onDelta: vi.fn(),
       onReasoningDelta,
@@ -497,7 +517,7 @@ describe("LM Studio streaming client", () => {
         "story_finalize",
         "story_save",
       ],
-    }]);
+    }, { type: "plugin", id: "mcp/file-tools" }]);
     expect(onTool).toHaveBeenCalledWith("story_read");
     expect(onReasoningDelta).toHaveBeenCalledWith("Need to inspect the beats.");
     expect(result).toEqual({ message: "I expanded the midpoint.", responseId: "resp_author" });

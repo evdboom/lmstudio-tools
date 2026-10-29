@@ -146,6 +146,7 @@ export function AuthoringApp() {
   });
   const [stories, setStories] = useState<StoryItem[]>([]);
   const [models, setModels] = useState<string[]>([]);
+  const [modelError, setModelError] = useState("");
   const [storyPath, setStoryPath] = useState("");
   const [story, setStory] = useState<Story>();
   const [isNew, setIsNew] = useState(false);
@@ -223,10 +224,11 @@ export function AuthoringApp() {
     refreshList().then((items) => {
       if (items[0]) void load(items[0].path);
     }).catch((reason) => setError(reason.message));
-    json<{ models: string[] }>("/api/models").then((modelResult) => {
+    json<{ models: string[] }>("/api/models?tool_use=true").then((modelResult) => {
       setModels(modelResult.models);
       setModel(modelResult.models[0] ?? "");
-    }).catch((reason) => setError(`LM Studio: ${reason.message}`));
+      if (modelResult.models.length === 0) setModelError("LM Studio reports no models trained for tool use. The collaborator is unavailable.");
+    }).catch((reason) => setModelError(`LM Studio: ${reason.message}`));
   }, []);
 
   function update(patch: Partial<Story>) { setStory((current) => current ? { ...current, ...patch } : current); setDirty(true); }
@@ -673,6 +675,7 @@ export function AuthoringApp() {
           <div className="panel-heading"><button className="secondary" onClick={addBeat}>Add beat</button><button className="primary" disabled={!dirty} onClick={() => void save()}>Save</button></div></section>
           {notice && <div className="notice">{notice}</div>}{error && <div className="error">{error}</div>}
         </>}
+        {modelError && <div className="error">{modelError}</div>}
       </section>
       <div className="chat-resizer" role="separator" aria-orientation="vertical" aria-label="Resize model collaborator panel" tabIndex={0} onMouseDown={beginChatResize} onKeyDown={(event) => { if (event.key === "ArrowLeft") { event.preventDefault(); nudgeChatWidth(20); } else if (event.key === "ArrowRight") { event.preventDefault(); nudgeChatWidth(-20); } }} />
       <aside className="author-chat"><div className="panel-heading"><h2>Model collaborator</h2><div className="chat-heading-actions"><select aria-label="Reasoning mode" value={reasoningMode} onChange={(event) => setReasoningMode(event.target.value as ReasoningMode)}><option value="native">Native reasoning</option><option value="template_think">Template /think ([THINK])</option><option value="think">XML &lt;think&gt;</option><option value="thinking">XML &lt;thinking&gt;</option></select><select value={model} onChange={(event) => setModel(event.target.value)}>{models.map((item) => <option key={item}>{item}</option>)}</select><button className="icon-button" disabled={chatBusy || messages.length === 0} title="New chat" aria-label="New chat" onClick={beginNewChat}>+</button></div></div><div className="chat-log">{messages.length === 0 && <p>Ask the model to create, inspect, or expand a story. Changes are applied through validated MCP tools.</p>}{messages.map((message, index) => <div key={index} className={`chat-message ${message.role}`}>{message.role === "assistant" && message.reasoning && <details className="collaborator-reasoning"><summary>Reasoning <span>{chatBusy && index === messages.length - 1 ? "live" : "trace"}</span></summary><pre>{message.reasoning}</pre></details>}{message.tools && message.tools.length > 0 && <div className="chat-tools">{message.tools.map((tool, toolIndex) => <span className="tool-chip" key={toolIndex}>{tool}</span>)}</div>}<div className="chat-output">{message.text || (message.stopped ? "Stopped." : message.failed ? "Request failed." : message.noFinal ? "Reasoning finished without a final answer." : "Working...")}</div>{message.noFinal && index === messages.length - 1 && !chatBusy && <button className="secondary output-draft" onClick={() => void chat("Output the complete draft answer.")}>Output draft</button>}</div>)}</div><div className="chat-input"><textarea value={chatInput} disabled={chatBusy} placeholder="Expand the midpoint with two escalating beats..." onChange={(event) => setChatInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void chat(); } }} />{chatBusy ? <button className="danger stop-button" onClick={cancelChat}>Stop</button> : <button className="primary" disabled={!chatInput.trim()} onClick={() => void chat()}>Send</button>}</div></aside>

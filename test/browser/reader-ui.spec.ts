@@ -85,7 +85,11 @@ test.beforeAll(async () => {
   lmStudioMock = createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/models") {
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ models: [{ type: "llm", key: "mock-model" }] }));
+      response.end(JSON.stringify({ models: [
+        { type: "llm", key: "mock-model", capabilities: { trained_for_tool_use: true } },
+        { type: "llm", key: "prose-model", capabilities: { trained_for_tool_use: false } },
+        { type: "llm", key: "unknown-model" },
+      ] }));
       return;
     }
     if (request.method === "POST" && request.url === "/v1/responses") {
@@ -130,6 +134,24 @@ test.afterAll(async () => {
   await readerServer.close();
   await new Promise<void>((resolve, reject) => lmStudioMock.close((error) => error ? reject(error) : resolve()));
   await cleanup();
+});
+
+test("offers only tool-trained models to the collaborator", async ({ page }) => {
+  await page.goto(`${readerUrl}/author`);
+  const picker = page.locator(".author-chat select").last();
+  await expect(picker.locator("option")).toHaveText(["mock-model"]);
+  await expect(picker).toHaveValue("mock-model");
+  await page.goto(readerUrl);
+  await page.getByRole("button", { name: "Model options" }).click();
+  await expect(page.getByRole("option", { name: "prose-model", exact: true }).first()).toBeAttached();
+  await expect(page.getByRole("option", { name: "unknown-model", exact: true }).first()).toBeAttached();
+});
+
+test("disables the collaborator when no tool-trained models are reported", async ({ page }) => {
+  await page.route("**/api/models?tool_use=true", (route) => route.fulfill({ json: { models: [] } }));
+  await page.goto(`${readerUrl}/author`);
+  await expect(page.getByText("LM Studio reports no models trained for tool use. The collaborator is unavailable.")).toBeVisible();
+  await expect(page.locator(".chat-input button")).toBeDisabled();
 });
 
 test("runs the real reader UI through mocked LM Studio streaming", async ({ page }) => {

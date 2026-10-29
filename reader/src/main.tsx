@@ -677,6 +677,7 @@ function App() {
 
   const audio = useReaderAudio({
     runId: state?.run_id,
+    storyPath: state?.story_path,
     busy,
     narrations: [...(state?.accepted ?? []), ...(state?.current_draft ? [{ ...state.current_draft, beat_index: state.beat_index }] : [])],
   });

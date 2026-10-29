@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Download, FileDown, Play, RefreshCw, Square, Volume2 } from "lucide-react";
-import { splitSpeechParagraphs } from "../../src/reader-audio-text";
+import { ChevronLeft, ChevronRight, Download, Play, RefreshCw, Square, Volume2 } from "lucide-react";
 import type { SavedBeatAudio } from "../../src/reader-audio-store";
+import type { AudioJob, AudioLibraryBeat } from "../../src/reader-audio-jobs";
 
 interface AudioConfig {
   enabled: boolean;
@@ -15,6 +15,19 @@ interface AudioConfig {
 interface AudioVoice {
   id: string;
   label: string;
+}
+
+function audioJobLabel(job: AudioJob): string {
+  if (job.status !== "running") return `${job.status}: ${job.completed_beats} generated, ${job.skipped_beats} skipped`;
+  const clip = job.clip_index === undefined ? "" : `, clip ${job.clip_index + 1} of ${job.clip_count}`;
+  return `Generating beat ${(job.beat_index ?? 0) + 1}${clip}`;
+}
+
+function audioBeatLabel(beat: AudioLibraryBeat): string {
+  let state = "not generated";
+  if (beat.audio) state = beat.audio.ready ? "ready" : "partial";
+  if (beat.outdated) state = "outdated";
+  return `${beat.beat_index + 1}. ${beat.title} (${state})`;
 }
 
 async function fetchAudioVoices(): Promise<AudioVoice[]> {
@@ -36,29 +49,9 @@ async function requestSpeech(payload: object, signal: AbortSignal): Promise<Blob
   return response.blob();
 }
 
-async function prepareBeatAudio(payload: { run_id: string; beat_index: number; narration: string; voice: string }, signal: AbortSignal) {
-  const prepare = async (replace = false) => {
-    const response = await fetch("/api/audio/beats", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ...payload, replace }), signal,
-    });
-    const result = await response.json() as { audio: SavedBeatAudio; changed?: boolean; error?: string };
-    signal.throwIfAborted();
-    return { response, result };
-  };
-  let { response, result } = await prepare();
-  if (response.status === 409 && result.changed) {
-    if (!window.confirm("This beat's prose or voice settings have changed. Delete its saved beat audio and render the updated version? Cancel keeps and opens the saved audio.")) {
-      return { audio: result.audio, render: false };
-    }
-    ({ response, result } = await prepare(true));
-  }
-  if (!response.ok) throw new Error(result.error ?? "Cannot prepare beat audio.");
-  return { audio: result.audio, render: true };
-}
-
 export function useReaderAudio(options: {
   runId?: string;
+  storyPath?: string;
   busy: boolean;
   narrations: Array<{ beat_index: number; narration: string }>;
 }) {
@@ -72,20 +65,24 @@ export function useReaderAudio(options: {
   const [rendering, setRendering] = useState(false);
   const [clipUrl, setClipUrl] = useState("");
   const [savedAudio, setSavedAudio] = useState<SavedBeatAudio>();
-  const [clipIndex, setClipIndex] = useState(0);
+  const [beats, setBeats] = useState<AudioLibraryBeat[]>([]);
+  const [job, setJob] = useState<AudioJob>();
+  const [starting, setStarting] = useState(false);
   const player = useRef<HTMLAudioElement>(null);
   const abort = useRef<AbortController | undefined>(undefined);
   const objectUrl = useRef("");
   const sequence = useRef(0);
   const nextClip = useRef<() => void>(() => {});
   const playlist = useRef<SavedBeatAudio | undefined>(undefined);
-  const waitingClip = useRef<number | undefined>(undefined);
+  const library = useRef<AudioLibraryBeat[]>([]);
+  const waitingBeat = useRef<number | undefined>(undefined);
+  const jobRunning = starting || job?.status === "running" || job?.status === "stopping";
   const sourceKey = JSON.stringify(options.narrations);
 
   function stop() {
     sequence.current += 1;
     abort.current?.abort();
-    waitingClip.current = undefined;
+    waitingBeat.current = undefined;
     nextClip.current = () => {};
     if (player.current) {
       player.current.pause();
@@ -134,21 +131,46 @@ export function useReaderAudio(options: {
     stop();
     playlist.current = undefined;
     setSavedAudio(undefined);
-    if (!options.runId) return;
-    const stored = localStorage.getItem(`folio-audio-beat:${options.runId}`);
-    if (stored === null || !/^\d+$/.test(stored)) return;
-    const controller = new AbortController();
-    const currentSequence = sequence.current;
-    fetch(`/api/audio/beats/${options.runId}/${stored}`, { signal: controller.signal }).then(async (response) => {
-      if (!response.ok) return;
-      const { audio } = await response.json() as { audio: SavedBeatAudio };
-      if (sequence.current !== currentSequence || controller.signal.aborted) return;
-      rememberAudio(audio);
-      setStatus(`Saved beat ${audio.beat_index + 1}, ${audio.available.length} of ${audio.clip_count} clips ready`);
-      if (audio.available.length) selectClip(audio.available[0], false);
-    }).catch(() => {});
-    return () => controller.abort();
+    setBeats([]);
+    library.current = [];
+    setJob(undefined);
   }, [options.runId]);
+
+  async function refreshLibrary(signal?: AbortSignal) {
+    if (!options.runId || !options.storyPath || !voice.trim()) return;
+    const query = new URLSearchParams({ story_path: options.storyPath, run_id: options.runId, voice: voice.trim() });
+    const response = await fetch(`/api/audio/library?${query}`, { signal });
+    const result = await response.json() as { beats: AudioLibraryBeat[]; job?: AudioJob; error?: string };
+    if (signal?.aborted) return;
+    if (!response.ok) throw new Error(result.error ?? "Cannot load saved audio.");
+    library.current = result.beats;
+    setBeats(result.beats);
+    setJob(result.job);
+    const desired = waitingBeat.current;
+    if (desired !== undefined && result.beats.some((beat) => beat.beat_index === desired && beat.audio?.ready && !beat.outdated)) {
+      selectBeat(desired);
+    } else if (!playlist.current) {
+      const stored = localStorage.getItem(`folio-audio-beat:${options.runId}`);
+      const selected = result.beats.find((beat) => beat.audio?.ready && String(beat.beat_index) === stored);
+      if (selected) selectBeat(selected.beat_index, false);
+    }
+  }
+
+  useEffect(() => {
+    if (!options.runId || !options.storyPath || !voice.trim() || options.busy) return;
+    const controller = new AbortController();
+    let loading = false;
+    const refresh = async () => {
+      if (loading) return;
+      loading = true;
+      try { await refreshLibrary(controller.signal); } catch (reason) {
+        if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : String(reason));
+      } finally { loading = false; }
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), 750);
+    return () => { controller.abort(); clearInterval(timer); };
+  }, [options.runId, options.storyPath, voice, sourceKey, options.busy]);
 
   useEffect(() => () => {
     sequence.current += 1;
@@ -173,28 +195,27 @@ export function useReaderAudio(options: {
   }
 
   function rememberAudio(audio: SavedBeatAudio) {
-    if (playlist.current?.revision !== audio.revision) setClipIndex(0);
     playlist.current = audio;
     setSavedAudio(audio);
     localStorage.setItem(`folio-audio-beat:${audio.run_id}`, String(audio.beat_index));
   }
 
-  function selectClip(index: number, autoplay = true) {
-    const audio = playlist.current;
-    if (!audio || !audio.available.includes(index) || !player.current) return;
-    waitingClip.current = undefined;
-    setClipIndex(index);
+  function selectBeat(index: number, autoplay = true) {
+    const entry = library.current.find((beat) => beat.beat_index === index);
+    const audio = entry?.audio;
+    if (!audio?.ready || !player.current) return;
+    waitingBeat.current = undefined;
+    rememberAudio(audio);
     setActiveBeat(audio.beat_index);
     if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
     objectUrl.current = "";
-    const url = `/api/audio/beats/${audio.run_id}/${audio.beat_index}/clips/${index}?revision=${audio.revision}`;
+    const url = `/api/audio/beats/${audio.run_id}/${audio.beat_index}/play?revision=${audio.revision}`;
     player.current.src = url;
     setClipUrl(url);
+    setStatus(`Beat ${audio.beat_index + 1}: ${entry.title}${entry.outdated ? " (earlier version)" : ""}`);
     nextClip.current = () => {
-      const current = playlist.current;
-      if (current?.revision !== audio.revision || index + 1 >= current.clip_count) return;
-      if (current.available.includes(index + 1)) selectClip(index + 1);
-      else waitingClip.current = index + 1;
+      const next = library.current.find((beat) => beat.beat_index > index && beat.audio?.ready);
+      if (next) selectBeat(next.beat_index);
     };
     if (autoplay) {
       const currentSequence = sequence.current;
@@ -204,31 +225,32 @@ export function useReaderAudio(options: {
     }
   }
 
-  async function renderBeat(audio: SavedBeatAudio, chunks: string[], currentSequence: number, controller: AbortController) {
-    setRendering(true);
-    waitingClip.current = 0;
-    if (audio.available.includes(0)) selectClip(0);
+  async function generateAudio(indices?: number[], autoplay = false) {
+    if (!options.runId || !options.storyPath || !voice.trim() || jobRunning) return;
+    setStarting(true);
+    setError("");
     try {
-      for (let index = 0; index < chunks.length; index += 1) {
-        controller.signal.throwIfAborted();
-        if (playlist.current?.available.includes(index)) continue;
-        setStatus(`Rendering beat ${audio.beat_index + 1}, clip ${index + 1} of ${chunks.length}`);
-        await requestSpeech({ text: chunks[index], voice: audio.voice, beat: {
-            run_id: audio.run_id, beat_index: audio.beat_index, revision: audio.revision, clip_index: index,
-        } }, controller.signal);
-        controller.signal.throwIfAborted();
-        const current = playlist.current!;
-        rememberAudio({ ...current, available: [...current.available, index].sort((left, right) => left - right) });
-        if (waitingClip.current === index) selectClip(index);
+      const payload = { story_path: options.storyPath, run_id: options.runId, voice: voice.trim(), beat_indices: indices };
+      const start = (replace = false) => fetch("/api/audio/jobs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...payload, replace }) });
+      let response = await start();
+      let result = await response.json() as { job: AudioJob; changed?: boolean; beats?: AudioLibraryBeat[]; error?: string };
+      if (response.status === 409 && result.changed) {
+        const titles = result.beats?.map((beat) => `${beat.beat_index + 1}. ${beat.title}`).join("\n") ?? "";
+        if (!window.confirm(`Replace saved audio for these changed beats?\n${titles}\nCancel keeps the earlier audio.`)) {
+          await refreshLibrary();
+          if (autoplay && indices) selectBeat(indices[0]);
+          return;
+        }
+        response = await start(true);
+        result = await response.json();
       }
-      setStatus(`Beat ${audio.beat_index + 1} complete, ${chunks.length} clips saved`);
+      if (!response.ok) throw new Error(result.error ?? "Cannot generate audio.");
+      setJob(result.job);
+      if (autoplay && indices) waitingBeat.current = indices[0];
+      await refreshLibrary();
     } catch (reason) {
-      if (sequence.current === currentSequence) {
-        setStatus(`Beat ${audio.beat_index + 1}, rendering stopped`);
-        setError(reason instanceof Error ? reason.message : String(reason));
-      }
-    }
-    if (sequence.current === currentSequence) setRendering(false);
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally { setStarting(false); }
   }
 
   async function previewVoice(text: string, currentSequence: number, controller: AbortController) {
@@ -255,44 +277,40 @@ export function useReaderAudio(options: {
     }
   }
 
-  async function openBeatAudio(runId: string, beatIndex: number, narration: string, chunks: string[], currentSequence: number, controller: AbortController) {
+  async function stopGeneration() {
+    if (!job) return;
+    waitingBeat.current = undefined;
     try {
-      const result = await prepareBeatAudio({ run_id: runId, beat_index: beatIndex, narration, voice: voice.trim() }, controller.signal);
-      if (sequence.current !== currentSequence) return;
-      rememberAudio(result.audio);
-      if (!result.render) {
-        setStatus(`Saved beat ${beatIndex + 1}, ${result.audio.available.length} of ${result.audio.clip_count} clips ready (earlier version)`);
-        if (result.audio.available.length) selectClip(result.audio.available[0]);
-        return;
-      }
-      setActiveBeat(beatIndex);
-      await renderBeat(result.audio, chunks, currentSequence, controller);
+      const response = await fetch(`/api/audio/jobs/${job.id}/stop`, { method: "POST" });
+      if (!response.ok) throw new Error("Cannot stop audio generation.");
+      setJob((await response.json()).job);
     } catch (reason) {
-      if (sequence.current === currentSequence) setError(reason instanceof Error ? reason.message : String(reason));
+      setError(reason instanceof Error ? reason.message : String(reason));
     }
   }
 
   async function readBeat(beatIndex: number, narration: string) {
-    stop();
-    setError("");
     if (!config?.enabled || !voice.trim() || options.busy) return;
-    let chunks: string[];
-    try {
-      chunks = splitSpeechParagraphs(narration);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+    if (beatIndex >= 0) {
+      const existing = library.current.find((beat) => beat.beat_index === beatIndex);
+      if (jobRunning) {
+        if (existing?.audio?.ready) selectBeat(beatIndex);
+        return;
+      }
+      stop();
+      await generateAudio([beatIndex], true);
       return;
     }
-    if (!chunks.length) return;
+    stop();
+    setError("");
     const currentSequence = sequence.current;
     const controller = new AbortController();
     abort.current = controller;
-    if (beatIndex >= 0 && options.runId) {
-      await openBeatAudio(options.runId, beatIndex, narration, chunks, currentSequence, controller);
-      return;
-    }
-    if (beatIndex < 0) await previewVoice(narration, currentSequence, controller);
+    await previewVoice(narration, currentSequence, controller);
   }
+
+  const readyBeats = beats.filter((beat) => beat.audio?.ready);
+  const selectedIndex = readyBeats.findIndex((beat) => beat.beat_index === savedAudio?.beat_index);
 
   const panel = <section className="audio-panel" aria-label="Story audio">
     <div className="audio-settings">
@@ -310,31 +328,35 @@ export function useReaderAudio(options: {
           }} />}
         </label>
         <button className="audio-icon" aria-label="Refresh voices" title="Refresh voices" onClick={() => void refreshVoices()}><RefreshCw size={18} /></button>
-        <button className="audio-icon" disabled={options.busy || !voice.trim()} aria-label="Preview narrator voice" title="Preview narrator voice" onClick={() => readBeat(-1, "The library was quiet, except for the rain against the windows. She paused at the doorway, then smiled. There was still time for one more story.")}><Play size={18} /></button>
+        <button className="audio-icon" disabled={options.busy || jobRunning || !voice.trim()} aria-label="Preview narrator voice" title="Preview narrator voice" onClick={() => readBeat(-1, "The library was quiet, except for the rain against the windows. She paused at the doorway, then smiled. There was still time for one more story.")}><Play size={18} /></button>
         <label className="audio-rate">Speed <output>{rate.toFixed(1)}x</output>
           <input aria-label="Audio playback speed" type="range" min="0.5" max="2" step="0.1" value={rate} onChange={(event) => setRate(Number(event.target.value))} />
         </label>
       </>}
     </div>
+    {config?.enabled && options.runId && <div className="audio-generation">
+      <button className="audio-command" disabled={options.busy || jobRunning || !voice.trim() || !options.narrations.length} onClick={() => void generateAudio()}><Volume2 size={18} />Generate audio</button>
+      {jobRunning && <button className="audio-command" onClick={() => void stopGeneration()} disabled={!job || job.status === "stopping"}><Square size={18} />Stop generation</button>}
+      {job && <output className="audio-job">{audioJobLabel(job)}</output>}
+    </div>}
+    {beats.length > 0 && <div className="audio-beats">
+      <button className="audio-icon" disabled={selectedIndex <= 0} aria-label="Previous audio beat" title="Previous audio beat" onClick={() => selectBeat(readyBeats[selectedIndex - 1].beat_index)}><ChevronLeft size={18} /></button>
+      <select aria-label="Audio beat" value={savedAudio?.beat_index ?? ""} onChange={(event) => selectBeat(Number(event.target.value))}>
+        <option value="" disabled>Select beat</option>
+        {beats.map((beat) => <option key={beat.beat_index} value={beat.beat_index} disabled={!beat.audio?.ready}>{audioBeatLabel(beat)}</option>)}
+      </select>
+      <button className="audio-icon" disabled={selectedIndex < 0 || selectedIndex + 1 >= readyBeats.length} aria-label="Next audio beat" title="Next audio beat" onClick={() => selectBeat(readyBeats[selectedIndex + 1].beat_index)}><ChevronRight size={18} /></button>
+    </div>}
     <div className="audio-playback" hidden={!config?.enabled}>
       <audio ref={player} aria-label="Story audio player" controls preload="metadata" onEnded={() => nextClip.current()} onError={() => {
         if (player.current?.getAttribute("src")) { stop(); setError("The browser could not decode this audio clip."); }
       }} />
       <div className="audio-actions"><button className="audio-icon" disabled={activeBeat === undefined && !clipUrl} aria-label="Stop audio" title="Stop audio" onClick={stop}><Square size={18} /></button>
-      {clipUrl && <a className="audio-icon" href={clipUrl} download={`folio-clip-${clipIndex + 1}.${savedAudio?.format ?? config?.response_format ?? "wav"}`} aria-label="Download current audio clip" title="Download current audio clip"><FileDown size={18} /></a>}
-      {savedAudio && (savedAudio.available.length === savedAudio.clip_count
-        ? <a className="audio-icon" href={`/api/audio/beats/${savedAudio.run_id}/${savedAudio.beat_index}/download?revision=${savedAudio.revision}`} download={`folio-beat-${savedAudio.beat_index + 1}.${savedAudio.format}`} aria-label="Download complete beat audio" title="Download complete beat audio"><Download size={18} /></a>
-        : <button className="audio-icon" disabled aria-label="Download complete beat audio" title="Render every clip to download the complete beat"><Download size={18} /></button>)}</div>
+      {savedAudio?.ready && <a className="audio-icon" href={`/api/audio/beats/${savedAudio.run_id}/${savedAudio.beat_index}/download?revision=${savedAudio.revision}`} download={savedAudio.filename} aria-label="Download complete beat audio" title="Download complete beat audio"><Download size={18} /></a>}</div>
     </div>
-    {savedAudio && <div className="audio-clips">
-      <button className="audio-icon" disabled={options.busy || !savedAudio.available.includes(clipIndex - 1)} aria-label="Previous audio clip" title="Previous audio clip" onClick={() => selectClip(clipIndex - 1)}><ChevronLeft size={18} /></button>
-      <select aria-label="Audio clip" value={clipIndex} disabled={options.busy} onChange={(event) => selectClip(Number(event.target.value))}>
-        {Array.from({ length: savedAudio.clip_count }, (_item, index) => <option key={index} value={index} disabled={!savedAudio.available.includes(index)}>Clip {index + 1} of {savedAudio.clip_count}{savedAudio.available.includes(index) ? "" : " (not ready)"}</option>)}
-      </select>
-      <button className="audio-icon" disabled={options.busy || !savedAudio.available.includes(clipIndex + 1)} aria-label="Next audio clip" title="Next audio clip" onClick={() => selectClip(clipIndex + 1)}><ChevronRight size={18} /></button>
-    </div>}
     {status && <div className="audio-status" role="status" aria-live="polite">{rendering && <span className="audio-pulse" />}{status}</div>}
     {error && <div className="audio-error" role="alert">{error}</div>}
+    {job?.error && <div className="audio-error" role="alert">{job.error}</div>}
   </section>;
 
   return {

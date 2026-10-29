@@ -16,6 +16,7 @@ let responseNumber = 0;
 let narrationOverride: string | undefined;
 let responseStream: ((response: ServerResponse, id: string) => void) | undefined;
 let speechRequests: Array<{ input: string; voice: string }> = [];
+let speechGate: Promise<void> | undefined;
 
 function silentWav(seconds = 2): Buffer {
   const samples = Math.round(24000 * seconds);
@@ -111,6 +112,7 @@ test.beforeAll(async () => {
     }
     if (request.method === "POST" && request.url === "/v1/audio/speech") {
       speechRequests.push(JSON.parse(await jsonBody(request)));
+      await speechGate;
       response.writeHead(200, { "content-type": "audio/wav" });
       response.end(silentWav());
       return;
@@ -169,7 +171,7 @@ test("runs the real reader UI through mocked LM Studio streaming", async ({ page
   )).toBe(true);
 });
 
-test("plays saved prose as a voice-selected queue and stops when generation starts", async ({ page }) => {
+test("plays saved prose as a voice-selected merged beat and stops when prose generation starts", async ({ page }) => {
   const firstParagraph = "The library was quiet, and rain tapped against the long windows. ".repeat(12).trim();
   narrationOverride = `${firstParagraph}\n\nRain tapped against the window.`;
   speechRequests = [];
@@ -188,9 +190,11 @@ test("plays saved prose as a voice-selected queue and stops when generation star
   await player.evaluate((element: HTMLAudioElement) => { element.currentTime = element.duration - 0.01; });
   await expect.poll(() => speechRequests.length).toBe(2);
   expect(speechRequests[1].input).toBe("Rain tapped against the window.");
-  await expect(page.getByRole("link", { name: "Download current audio clip" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Download complete beat audio" })).toBeVisible();
+  await expect(player).toHaveAttribute("src", /\/play\?/);
   await page.getByRole("button", { name: "Regenerate", exact: true }).click();
   await expect.poll(() => player.getAttribute("src")).toBeNull();
+  await expect(page.getByRole("button", { name: "Read beat 1 aloud" })).toBeEnabled();
   narrationOverride = undefined;
 });
 
@@ -200,7 +204,7 @@ test("shows speech errors and keeps audio controls within a phone viewport", asy
   await page.getByRole("button", { name: "Begin", exact: true }).click();
   const readButton = page.getByRole("button", { name: "Read beat 1 aloud" });
   await expect(readButton).toBeEnabled();
-  await page.route("**/api/audio/speech", (route) => route.fulfill({ status: 502, contentType: "application/json", body: JSON.stringify({ error: "Speech service unavailable." }) }));
+  await page.route("**/api/audio/jobs", (route) => route.fulfill({ status: 502, contentType: "application/json", body: JSON.stringify({ error: "Speech service unavailable." }) }));
   await readButton.click();
   await expect(page.getByRole("alert")).toHaveText("Speech service unavailable.");
   const panel = page.getByRole("region", { name: "Story audio" });
@@ -215,7 +219,7 @@ test("shows speech errors and keeps audio controls within a phone viewport", asy
   await page.screenshot({ path: "test-results/audio-desktop.png", fullPage: true });
 });
 
-test("renders a complete beat while paused, restores clips, and confirms replacement", async ({ page }) => {
+test("renders a merged beat, restores playback, and confirms replacement", async ({ page }) => {
   narrationOverride = "First saved paragraph.\n\nSecond saved paragraph.\n\nThird saved paragraph.";
   speechRequests = [];
   await page.goto(readerUrl);
@@ -223,19 +227,19 @@ test("renders a complete beat while paused, restores clips, and confirms replace
   await expect(page.locator("#beat-0")).toContainText("First saved paragraph.");
   await page.getByRole("button", { name: "Read beat 1 aloud" }).click();
   const player = page.getByLabel("Story audio player");
-  await expect(player).toHaveAttribute("src", /\/clips\/0\?/);
+  await expect(player).toHaveAttribute("src", /\/play\?/);
   await player.evaluate((element: HTMLAudioElement) => { element.pause(); });
   await expect(page.getByRole("link", { name: "Download complete beat audio" })).toBeVisible();
   expect(speechRequests).toHaveLength(3);
-  await page.getByRole("button", { name: "Next audio clip" }).click();
-  await expect(page.getByLabel("Audio clip", { exact: true })).toHaveValue("1");
-  await page.getByRole("button", { name: "Previous audio clip" }).click();
-  await expect(page.getByLabel("Audio clip", { exact: true })).toHaveValue("0");
+  await expect(page.getByLabel("Audio beat", { exact: true })).toHaveValue("0");
+  await expect(page.getByLabel("Audio clip", { exact: true })).toHaveCount(0);
   const downloadPath = await page.getByRole("link", { name: "Download complete beat audio" }).getAttribute("href");
   const complete = await page.request.get(new URL(downloadPath!, readerUrl).href);
   expect(complete.ok()).toBe(true);
+  expect(complete.headers()["content-disposition"]).toMatch(/Tidewrack_001_.*b01\.wav/);
   const completeAudio = await complete.body();
   expect(completeAudio.length).toBeGreaterThan(silentWav().length * 2);
+  await expect(page.getByRole("alert")).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });
   const panel = page.getByRole("region", { name: "Story audio" });
   expect(await panel.evaluate((element) => {
@@ -249,8 +253,8 @@ test("renders a complete beat while paused, restores clips, and confirms replace
   await page.reload();
   await page.getByRole("button", { name: "Continue", exact: true }).first().click();
   await expect(page.getByRole("link", { name: "Download complete beat audio" })).toBeVisible();
-  await page.getByLabel("Audio clip", { exact: true }).selectOption("2");
-  await expect(player).toHaveAttribute("src", /\/clips\/2\?/);
+  await page.getByLabel("Audio beat", { exact: true }).selectOption("0");
+  await expect(player).toHaveAttribute("src", /\/play\?/);
   narrationOverride = "The revised paragraph.";
   await page.getByRole("button", { name: "Regenerate", exact: true }).click();
   await expect(page.locator("#beat-0")).toContainText("The revised paragraph.");
@@ -260,11 +264,49 @@ test("renders a complete beat while paused, restores clips, and confirms replace
   expect(speechRequests).toHaveLength(3);
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Read beat 1 aloud" }).click();
-  await expect(page.locator(".audio-status")).toContainText("1 clips saved");
+  await expect.poll(() => speechRequests.length).toBe(4);
+  await expect(page.locator(".audio-job")).toContainText("1 generated");
   expect(speechRequests).toHaveLength(4);
   expect(speechRequests[3].input).toBe("The revised paragraph.");
   expect(page.url()).toBe(resumeUrl);
   narrationOverride = undefined;
+});
+
+test("generates all narrated beats across reloads without replacing playback and skips ready audio", async ({ page }) => {
+  let release!: () => void;
+  narrationOverride = "The first complete beat.";
+  speechRequests = [];
+  try {
+    await page.goto(readerUrl);
+    await page.getByRole("button", { name: "Begin", exact: true }).click();
+    await expect(page.locator("#beat-0")).toContainText(narrationOverride);
+    await page.getByRole("button", { name: "Read beat 1 aloud" }).click();
+    await expect(page.getByRole("link", { name: "Download complete beat audio" })).toBeVisible();
+    narrationOverride = "The second complete beat.";
+    await page.getByRole("button", { name: "Next", exact: true }).click();
+    await expect(page.locator("#beat-1")).toContainText(narrationOverride);
+    await page.getByLabel("Audio beat", { exact: true }).selectOption("0");
+    const player = page.getByLabel("Story audio player");
+    const source = await player.getAttribute("src");
+    speechGate = new Promise<void>((resolve) => { release = resolve; });
+    await page.getByRole("button", { name: "Generate audio", exact: true }).click();
+    await expect.poll(() => speechRequests.length).toBe(2);
+    await expect(player).toHaveAttribute("src", source!);
+    await page.reload();
+    await page.getByRole("button", { name: "Continue", exact: true }).first().click();
+    await expect(page.getByRole("button", { name: "Stop generation" })).toBeVisible();
+    release();
+    speechGate = undefined;
+    await expect(page.locator(".audio-job")).toContainText("complete: 1 generated, 1 skipped");
+    await expect(page.getByLabel("Audio beat", { exact: true }).locator("option:enabled")).toHaveCount(2);
+    await page.getByRole("button", { name: "Next audio beat" }).click();
+    await expect(page.getByLabel("Audio beat", { exact: true })).toHaveValue("1");
+    await page.getByRole("button", { name: "Previous audio beat" }).click();
+    await expect(page.getByLabel("Audio beat", { exact: true })).toHaveValue("0");
+    await page.getByRole("button", { name: "Generate audio", exact: true }).click();
+    await expect(page.locator(".audio-job")).toContainText("complete: 0 generated, 2 skipped");
+    expect(speechRequests).toHaveLength(2);
+  } finally { release?.(); speechGate = undefined; narrationOverride = undefined; }
 });
 
 test("previews a narrator without stories or an LM Studio model", async ({ page }) => {

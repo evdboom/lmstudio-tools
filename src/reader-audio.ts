@@ -4,6 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prepareSpeechText } from "./reader-audio-text.js";
 import { beatClipSchema, registerReaderBeatAudio, speechCacheKey } from "./reader-audio-store.js";
+import { registerReaderAudioJobs } from "./reader-audio-jobs.js";
 
 export interface ReaderAudioOptions {
   profile?: "portable" | "laptop" | "desktop" | "kokoro" | "chatterbox";
@@ -21,6 +22,9 @@ const speechSchema = z.object({
   beat: beatClipSchema.optional(),
 }).strict();
 const MAX_AUDIO_BYTES = 30 * 1024 * 1024;
+class AudioServiceError extends Error {
+  constructor(public statusCode: number, message: string) { super(message); }
+}
 
 export function audioConfiguration(options?: ReaderAudioOptions) {
   const chatterbox = options?.profile === "desktop" || options?.profile === "chatterbox";
@@ -45,21 +49,27 @@ export function registerReaderAudio(app: FastifyInstance, root: string, options?
   const headers: Record<string, string> = options?.apiToken ? { authorization: `Bearer ${options.apiToken}` } : {};
   let active = false;
 
-  async function supportsVocalCues(): Promise<boolean> {
-    if (!config.enabled || !chatterbox) return false;
-    try {
+  let providerInfo: Promise<{ engine?: string; cues: boolean }> | undefined;
+  let providerInfoExpires = 0;
+  function getProviderInfo(): Promise<{ engine?: string; cues: boolean }> {
+    if (!config.enabled || !chatterbox) return Promise.resolve({ cues: false });
+    if (providerInfo && Date.now() < providerInfoExpires) return providerInfo;
+    providerInfoExpires = Date.now() + 1_000;
+    providerInfo = (async () => {
       const response = await fetch(`${config.baseUrl.replace(/\/v1\/?$/, "")}/api/model-info`, {
         headers, redirect: "error", signal: AbortSignal.timeout(3_000),
       });
-      if (!response.ok) return false;
+      if (!response.ok) return { cues: false };
       const modelInfo = await response.json() as { type?: unknown; supports_paralinguistic_tags?: unknown };
-      return modelInfo.type === "turbo" && modelInfo.supports_paralinguistic_tags === true;
-    } catch {
-      return false;
-    }
+      return { engine: typeof modelInfo.type === "string" ? modelInfo.type : undefined,
+        cues: modelInfo.type === "turbo" && modelInfo.supports_paralinguistic_tags === true };
+    })().catch(() => ({ cues: false }));
+    return providerInfo;
   }
+  const supportsVocalCues = async () => (await getProviderInfo()).cues;
 
-  const beatAudio = registerReaderBeatAudio(app, cacheDirectory, config, supportsVocalCues, () => active);
+  const beatAudio = registerReaderBeatAudio(app, cacheDirectory, config, supportsVocalCues, () => active, async () => (await getProviderInfo()).engine);
+  const jobs = registerReaderAudioJobs(app, root, config.enabled, beatAudio, synthesize, () => active);
 
   app.get("/api/audio/config", async () => {
     return {
@@ -108,36 +118,36 @@ export function registerReaderAudio(app: FastifyInstance, root: string, options?
     }
   });
 
-  app.post("/api/audio/speech", async (request, reply) => {
-    if (!config.enabled) return reply.code(503).send({ error: "Audio is disabled. Start Folio with --tts-profile or --tts-url." });
-    const parsed = speechSchema.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: "Speech requires 1-20000 characters, a voice ID, and speed between 0.5 and 2." });
-    const synthesisText = prepareSpeechText(parsed.data.text, await supportsVocalCues());
-    if (!synthesisText) return reply.code(400).send({ error: "No speakable text remains after removing unsupported vocal cues." });
-    const payload = { model: config.model, input: synthesisText, voice: parsed.data.voice ?? config.voice, speed: parsed.data.speed, response_format: config.responseFormat };
-    const key = speechCacheKey(config.baseUrl, payload);
-    if (parsed.data.beat) {
-      try { await beatAudio.validateClip(parsed.data.beat, key); } catch {
-        return reply.code(409).send({ error: "Saved audio no longer matches this request. Select Read aloud again." });
+  async function synthesize(data: z.infer<typeof speechSchema>, signal: AbortSignal): Promise<Buffer> {
+    if (!config.enabled) throw new AudioServiceError(503, "Audio is disabled. Start Folio with --tts-profile or --tts-url.");
+    signal.throwIfAborted();
+    const info = await getProviderInfo();
+    const synthesisText = prepareSpeechText(data.text, info.cues);
+    if (!synthesisText) throw new AudioServiceError(400, "No speakable text remains after removing unsupported vocal cues.");
+    const payload = { model: config.model, input: synthesisText, voice: data.voice ?? config.voice, speed: data.speed, response_format: config.responseFormat };
+    const key = speechCacheKey(config.baseUrl, { ...payload, ...(info.engine ? { engine: info.engine } : {}) });
+    if (data.beat) {
+      try { await beatAudio.validateClip(data.beat, key); } catch {
+        throw new AudioServiceError(409, "Saved audio no longer matches this request. Select Read aloud again.");
       }
     }
     const cachePath = path.join(cacheDirectory, `${key}.${config.responseFormat}`);
-    const audioMimeType = config.responseFormat === "mp3" ? "audio/mpeg" : "audio/wav";
     const sendAudio = async (audio: Buffer) => {
-      if (parsed.data.beat) await beatAudio.saveClip(parsed.data.beat, key, audio);
-      return reply.header("cache-control", "private, no-store").type(audioMimeType).send(audio);
+      if (data.beat) await beatAudio.saveClip(data.beat, key, audio);
+      return audio;
     };
     try {
       return await sendAudio(await fs.readFile(cachePath));
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return reply.code(500).send({ error: "Cannot read the audio cache." });
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new AudioServiceError(500, "Cannot read the audio cache.");
     }
-    if (active) return reply.code(429).send({ error: "Another audio clip is rendering. Try again shortly." });
+    if (active) throw new AudioServiceError(429, "Another audio clip is rendering. Try again shortly.");
     active = true;
     const abort = new AbortController();
     const timeout = setTimeout(() => abort.abort(), 180_000);
-    const disconnect = () => { if (!reply.raw.writableEnded) abort.abort(); };
-    reply.raw.on("close", disconnect);
+    const disconnect = () => abort.abort();
+    signal.addEventListener("abort", disconnect, { once: true });
+    if (signal.aborted) abort.abort();
     try {
       const response = await fetch(`${config.baseUrl}/audio/speech`, {
         method: "POST", headers: { ...headers, "content-type": "application/json" },
@@ -180,14 +190,30 @@ export function registerReaderAudio(app: FastifyInstance, root: string, options?
       }
       return await sendAudio(audio);
     } catch (error) {
-      return reply.code(502).send({ error: abort.signal.aborted
+      throw new AudioServiceError(502, abort.signal.aborted
         ? "Audio rendering was cancelled or timed out."
         : error instanceof TypeError ? "Cannot reach the TTS service. Start the configured speech server and check its URL."
-        : error instanceof Error ? error.message : "Cannot connect to the TTS service." });
+        : error instanceof Error ? error.message : "Cannot connect to the TTS service.");
     } finally {
       clearTimeout(timeout);
-      reply.raw.off("close", disconnect);
+      signal.removeEventListener("abort", disconnect);
       active = false;
     }
+  }
+
+  app.post("/api/audio/speech", async (request, reply) => {
+    if (!config.enabled) return reply.code(503).send({ error: "Audio is disabled. Start Folio with --tts-profile or --tts-url." });
+    const parsed = speechSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "Speech requires 1-20000 characters, a voice ID, and speed between 0.5 and 2." });
+    if (jobs.running()) return reply.code(429).send({ error: "An audio generation job is running. Stop generation before previewing a voice." });
+    const abort = new AbortController();
+    const disconnect = () => { if (!reply.raw.writableEnded) abort.abort(); };
+    reply.raw.on("close", disconnect);
+    try {
+      const audio = await synthesize(parsed.data, abort.signal);
+      return reply.header("cache-control", "private, no-store").type(config.responseFormat === "mp3" ? "audio/mpeg" : "audio/wav").send(audio);
+    } catch (error) {
+      return reply.code(error instanceof AudioServiceError ? error.statusCode : 502).send({ error: error instanceof Error ? error.message : "Cannot render audio." });
+    } finally { reply.raw.off("close", disconnect); }
   });
 }

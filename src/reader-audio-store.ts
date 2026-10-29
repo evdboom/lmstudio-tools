@@ -4,7 +4,7 @@ import { createReadStream, promises as fs } from "node:fs";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import ffmpeg from "ffmpeg-static";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, RouteHandlerMethod } from "fastify";
 import { z } from "zod";
 import { prepareSpeechText, splitSpeechParagraphs } from "./reader-audio-text.js";
 
@@ -15,12 +15,22 @@ export const beatClipSchema = z.object({
   revision: z.string().regex(/^[a-f0-9]{64}$/), clip_index: z.number().int().min(0).max(100_000),
 }).strict();
 type BeatClip = z.infer<typeof beatClipSchema>;
+export const beatAudioRequestSchema = z.object({
+  run_id: z.string().uuid(), beat_index: z.number().int().min(0).max(100_000),
+  narration: z.string().trim().min(1).max(2_000_000), voice: z.string().trim().min(1).max(200),
+  replace: z.boolean().default(false),
+  story_title: z.string().max(500).optional(), beat_title: z.string().max(500).optional(), beat_id: z.string().max(200).optional(),
+}).strict();
+export type BeatAudioRequest = z.infer<typeof beatAudioRequestSchema>;
 type SpeechSettings = { baseUrl: string; model: string; responseFormat: "wav" | "mp3" };
 interface Manifest {
   revision: string;
   format: "wav" | "mp3";
   voice: string;
   keys: string[];
+  filename?: string;
+  engine?: string;
+  supports_vocal_cues?: boolean;
 }
 export interface SavedBeatAudio {
   run_id: string;
@@ -30,6 +40,15 @@ export interface SavedBeatAudio {
   voice: string;
   clip_count: number;
   available: number[];
+  ready: boolean;
+  filename: string;
+}
+
+export function beatAudioFilename(story: string, index: number, title: string, id: string, format: string): string {
+  const clean = (value: string) => value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 70);
+  return [clean(story) || "Story", String(index + 1).padStart(3, "0"), clean(title), clean(id) || `beat-${index + 1}`]
+    .filter(Boolean).join("_") + `.${format}`;
 }
 
 export function speechCacheKey(baseUrl: string, payload: object): string {
@@ -42,6 +61,7 @@ export function registerReaderBeatAudio(
   settings: SpeechSettings,
   supportsVocalCues: () => Promise<boolean>,
   isRendering: () => boolean,
+  engineIdentity: () => Promise<string | undefined> = async () => undefined,
 ) {
   const exports = new Map<string, Promise<void>>();
   const preparing = new Set<string>();
@@ -53,38 +73,83 @@ export function registerReaderBeatAudio(
       run_id: runId, beat_index: beatIndex, revision: manifest.revision, format: manifest.format,
       voice: manifest.voice, clip_count: manifest.keys.length,
       available: manifest.keys.flatMap((_key, index) => files.has(`${index}.${manifest.format}`) ? [index] : []),
+      ready: files.has(manifest.filename ?? `complete.${manifest.format}`),
+      filename: manifest.filename ?? `folio-beat-${beatIndex + 1}.${manifest.format}`,
     };
   }
 
-  app.post("/api/audio/beats", async (request, reply) => {
-    const parsed = z.object({
-      run_id: z.string().uuid(), beat_index: z.number().int().min(0).max(100_000),
-      narration: z.string().trim().min(1).max(2_000_000), voice: z.string().trim().min(1).max(200),
-      replace: z.boolean().default(false),
-    }).strict().safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: "Invalid beat audio request." });
-    const input = parsed.data;
+  async function assembleBeat(runId: string, beatIndex: number) {
+    const folder = directory(runId, beatIndex);
+    const manifest = await readManifest(folder);
+    const status = await describe(runId, beatIndex, manifest);
+    if (status.available.length !== status.clip_count) return;
+    const clipsFolder = path.join(folder, manifest.revision);
+    const output = path.join(clipsFolder, manifest.filename ?? `complete.${manifest.format}`);
+    let pending = exports.get(folder);
+    if (!pending) {
+      pending = (async () => {
+        try { await fs.access(output); return; } catch {}
+        if (!ffmpeg) throw new Error("The bundled FFmpeg executable is unavailable.");
+        const list = path.join(clipsFolder, "clips.txt");
+        await fs.writeFile(list, manifest.keys.map((_key, index) => `file '${index}.${manifest.format}'`).join("\n"));
+        const temporary = path.join(clipsFolder, `complete.tmp.${manifest.format}`);
+        try {
+          await execute(ffmpeg, ["-nostdin", "-v", "error", "-y", "-f", "concat", "-safe", "1", "-i", list, "-c", "copy", temporary], { timeout: 120_000, windowsHide: true });
+          await fs.rename(temporary, output);
+        } finally { await fs.rm(temporary, { force: true }); }
+      })();
+      exports.set(folder, pending);
+      void pending.finally(() => exports.delete(folder)).catch(() => {});
+    }
+    await pending;
+    return output;
+  }
+
+  async function prepare(input: BeatAudioRequest, inspectOnly = false) {
     const folder = directory(input.run_id, input.beat_index);
-    if (preparing.has(folder)) return reply.code(409).send({ error: "This beat's saved audio is being prepared. Try again shortly." });
-    preparing.add(folder);
+    if (!inspectOnly && preparing.has(folder)) throw new Error("This beat's saved audio is being prepared. Try again shortly.");
+    if (!inspectOnly) preparing.add(folder);
     try {
-      const cues = await supportsVocalCues();
-      const paragraphs = splitSpeechParagraphs(input.narration);
-      const keys = paragraphs.map((text) => speechCacheKey(settings.baseUrl, {
-        model: settings.model, input: prepareSpeechText(text, cues), voice: input.voice,
-        speed: 1, response_format: settings.responseFormat,
-      }));
-      const revision = createHash("sha256").update(JSON.stringify({ narration: input.narration, keys })).digest("hex");
       let previous: Manifest | undefined;
       try { previous = await readManifest(folder); } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
+      const currentEngine = await engineIdentity();
+      const engine = currentEngine ?? previous?.engine;
+      const detectedCues = await supportsVocalCues();
+      const cues = currentEngine === undefined && previous?.engine ? previous.supports_vocal_cues === true : detectedCues;
+      const paragraphs = splitSpeechParagraphs(input.narration);
+      const keys = paragraphs.map((text) => speechCacheKey(settings.baseUrl, {
+        model: settings.model, input: prepareSpeechText(text, cues), voice: input.voice,
+        speed: 1, response_format: settings.responseFormat,
+        ...(engine ? { engine } : {}),
+      }));
+      const revision = createHash("sha256").update(JSON.stringify({ narration: input.narration, keys })).digest("hex");
       if (previous && previous.revision !== revision && !input.replace) {
-        return reply.code(409).send({ changed: true, audio: await describe(input.run_id, input.beat_index, previous) });
+        return { changed: true, audio: await describe(input.run_id, input.beat_index, previous) };
       }
-      if (previous?.revision === revision) return { audio: await describe(input.run_id, input.beat_index, previous) };
-      if (isRendering() || exports.has(folder)) return reply.code(409).send({ error: "Stop the active audio render or wait for the download before replacing saved audio." });
-      const manifest: Manifest = { revision, keys, voice: input.voice, format: settings.responseFormat };
+      if (inspectOnly) return { changed: false, audio: previous ? await describe(input.run_id, input.beat_index, previous) : undefined };
+      if (previous?.revision === revision) {
+        if (input.story_title) {
+          const filename = beatAudioFilename(input.story_title, input.beat_index, input.beat_title ?? "", input.beat_id ?? "", previous.format);
+          if (previous.filename !== filename) {
+            if (exports.has(folder)) throw new Error("Wait for the current audio download before renaming this beat.");
+            const clipsFolder = path.join(folder, previous.revision);
+            try { await fs.rename(path.join(clipsFolder, previous.filename ?? `complete.${previous.format}`), path.join(clipsFolder, filename)); } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+            }
+            previous.filename = filename;
+            await fs.writeFile(path.join(folder, "manifest.json.tmp"), JSON.stringify(previous));
+            await fs.rename(path.join(folder, "manifest.json.tmp"), path.join(folder, "manifest.json"));
+          }
+        }
+        await assembleBeat(input.run_id, input.beat_index);
+        return { audio: await describe(input.run_id, input.beat_index, previous) };
+      }
+      if (isRendering() || exports.has(folder)) throw new Error("Stop the active audio render or wait for the download before replacing saved audio.");
+      const manifest: Manifest = { revision, keys, voice: input.voice, format: settings.responseFormat, engine, supports_vocal_cues: cues,
+        ...(input.story_title ? { filename: beatAudioFilename(input.story_title, input.beat_index, input.beat_title ?? "", input.beat_id ?? "", settings.responseFormat) } : {}),
+      };
       const clipsFolder = path.join(folder, revision);
       await fs.mkdir(clipsFolder, { recursive: true });
       await Promise.all(keys.map(async (key, index) => {
@@ -96,11 +161,21 @@ export function registerReaderBeatAudio(
       await fs.writeFile(temporaryPath, JSON.stringify(manifest));
       await fs.rename(temporaryPath, path.join(folder, "manifest.json"));
       if (previous) await fs.rm(path.join(folder, previous.revision), { recursive: true, force: true });
+      await assembleBeat(input.run_id, input.beat_index);
       return { audio: await describe(input.run_id, input.beat_index, manifest) };
-    } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : "Cannot prepare beat audio." });
     } finally {
-      preparing.delete(folder);
+      if (!inspectOnly) preparing.delete(folder);
+    }
+  }
+
+  app.post("/api/audio/beats", async (request, reply) => {
+    const parsed = beatAudioRequestSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "Invalid beat audio request." });
+    try {
+      const result = await prepare(parsed.data);
+      return result.changed ? reply.code(409).send(result) : result;
+    } catch (error) {
+      return reply.code(409).send({ error: error instanceof Error ? error.message : "Cannot prepare beat audio." });
     }
   });
 
@@ -132,7 +207,7 @@ export function registerReaderBeatAudio(
     }
   });
 
-  app.get("/api/audio/beats/:runId/:beatIndex/download", async (request, reply) => {
+  const serveBeat: RouteHandlerMethod = async (request, reply) => {
     const parsed = identitySchema.safeParse(request.params);
     const query = z.object({ revision: z.string().regex(/^[a-f0-9]{64}$/) }).safeParse(request.query);
     if (!parsed.success || !query.success) return reply.code(400).send({ error: "Invalid beat download request." });
@@ -143,35 +218,17 @@ export function registerReaderBeatAudio(
       if (manifest.revision !== query.data.revision) return reply.code(409).send({ error: "Saved audio has changed. Select Read aloud again." });
       const status = await describe(runId, beatIndex, manifest);
       if (status.available.length !== status.clip_count) return reply.code(409).send({ error: "Render every clip before downloading the complete beat." });
-      if (!ffmpeg) throw new Error("The bundled FFmpeg executable is unavailable.");
-      const clipsFolder = path.join(folder, manifest.revision);
-      const output = path.join(clipsFolder, `complete.${manifest.format}`);
-      async function assemble() {
-        try { await fs.access(output); return; } catch {}
-        const list = path.join(clipsFolder, "clips.txt");
-        await fs.writeFile(list, manifest.keys.map((_key, index) => `file '${index}.${manifest.format}'`).join("\n"));
-        const temporary = path.join(clipsFolder, `complete.tmp.${manifest.format}`);
-        try {
-          await execute(ffmpeg!, ["-nostdin", "-v", "error", "-y", "-f", "concat", "-safe", "1", "-i", list, "-c", "copy", temporary], { timeout: 120_000, windowsHide: true });
-          await fs.rename(temporary, output);
-        } finally {
-          await fs.rm(temporary, { force: true });
-        }
-      }
-      let pending = exports.get(folder);
-      if (!pending) {
-        pending = assemble();
-        exports.set(folder, pending);
-        void pending.finally(() => exports.delete(folder)).catch(() => {});
-      }
-      await pending;
-      return reply.header("content-disposition", `attachment; filename="folio-beat-${beatIndex + 1}.${manifest.format}"`)
+      const output = await assembleBeat(runId, beatIndex);
+      if (!output) return reply.code(409).send({ error: "Beat audio is incomplete." });
+      return reply.header("content-disposition", `${request.url.includes("/download") ? "attachment" : "inline"}; filename="${status.filename}"`)
         .header("cache-control", "private, no-store").type(manifest.format === "wav" ? "audio/wav" : "audio/mpeg")
         .send(createReadStream(output));
     } catch {
       return reply.code(502).send({ error: "Cannot assemble the complete beat. Check that every clip is valid audio and FFmpeg is installed correctly." });
     }
-  });
+  };
+  app.get("/api/audio/beats/:runId/:beatIndex/download", serveBeat);
+  app.get("/api/audio/beats/:runId/:beatIndex/play", serveBeat);
 
   async function validateClip(reference: BeatClip, key: string) {
     const folder = directory(reference.run_id, reference.beat_index);
@@ -182,12 +239,18 @@ export function registerReaderBeatAudio(
     return path.join(folder, manifest.revision, `${reference.clip_index}.${manifest.format}`);
   }
   return {
+    prepare,
+    assemble: assembleBeat,
+    async get(runId: string, beatIndex: number) {
+      return describe(runId, beatIndex, await readManifest(directory(runId, beatIndex)));
+    },
     validateClip,
     async saveClip(reference: BeatClip, key: string, audio: Buffer) {
       const output = await validateClip(reference, key);
       const temporary = `${output}.tmp`;
       await fs.writeFile(temporary, audio);
       await fs.rename(temporary, output);
+      await assembleBeat(reference.run_id, reference.beat_index);
     },
   };
 }

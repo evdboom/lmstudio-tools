@@ -1,10 +1,14 @@
 import Fastify from "fastify";
+import { promises as fs } from "node:fs";
+import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 import ffmpeg from "ffmpeg-static";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { audioConfiguration, registerReaderAudio } from "../src/reader-audio.js";
 import { makeSandbox } from "./helpers.js";
 import { createReaderServer } from "../src/reader-server.js";
+import { createReaderRun, mutateReaderRun, readReaderRun } from "../src/reader-store.js";
+import { tidewrack } from "./fixtures/tidewrack.js";
 
 const cleanups: Array<() => Promise<unknown>> = [];
 const wav = Buffer.from("RIFF0000WAVEfmt test audio");
@@ -33,7 +37,159 @@ async function server(options?: Parameters<typeof registerReaderAudio>[2]) {
   return app;
 }
 
+async function narratedServer(profile: "portable" | "chatterbox" = "portable") {
+  const sandbox = await makeSandbox();
+  await fs.mkdir(path.join(sandbox.root, "book"));
+  await fs.writeFile(path.join(sandbox.root, "book", "story.json"), JSON.stringify(tidewrack()));
+  const run = await createReaderRun({ root: sandbox.root, story_path: "book", prose_window: 1, include_iterations: "none",
+    reasoning_mode: "native", reasoning_effort: "default", ongoing_instructions: [], reviewer: null, generationMode: "direct", iterationCount: 1 });
+  await mutateReaderRun(sandbox.root, "book", run.run_id, (current) => {
+    current.accepted = [{ beat_index: 0, narration: "First paragraph.\n\nSecond paragraph." }];
+    current.beat_index = 1;
+    current.current_draft = { narration: "Another complete beat." };
+  });
+  const app = Fastify();
+  registerReaderAudio(app, sandbox.root, { profile });
+  cleanups.push(sandbox.cleanup, () => app.close());
+  const payload = { story_path: "book", run_id: run.run_id, voice: profile === "chatterbox" ? "Emily.wav" : "af_heart" };
+  const libraryUrl = `/api/audio/library?${new URLSearchParams(payload)}`;
+  const jobUrl = `/api/audio/jobs?run_id=${run.run_id}`;
+  return { app, root: sandbox.root, payload, libraryUrl, jobUrl };
+}
+
 describe("reader audio", () => {
+  it("serializes background session reads with narration writes", async () => {
+    const { root, payload } = await narratedServer();
+    let release!: () => void;
+    let insideMutation = false;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const mutation = mutateReaderRun(root, "book", payload.run_id, async (run) => {
+      insideMutation = true;
+      await gate;
+      run.accepted[0].narration = "Committed narration.";
+    });
+    await vi.waitFor(() => expect(insideMutation).toBe(true));
+    const snapshot = readReaderRun(root, "book", payload.run_id);
+    release();
+    await mutation;
+    expect((await snapshot).accepted[0].narration).toBe("Committed narration.");
+  });
+
+  it("does not let read-only library polling block a generation job", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let inspecting = false;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.endsWith("/api/model-info")) {
+        inspecting = true;
+        await gate;
+        return Response.json({ type: "original", supports_paralinguistic_tags: false });
+      }
+      return new Response(pcmWav());
+    }));
+    const { app, payload, libraryUrl, jobUrl } = await narratedServer("chatterbox");
+    const inspection = app.inject(libraryUrl).then((response) => response);
+    await vi.waitFor(() => expect(inspecting).toBe(true));
+    const start = app.inject({ method: "POST", url: "/api/audio/jobs", payload }).then((response) => response);
+    release();
+    expect((await inspection).statusCode).toBe(200);
+    expect((await start).statusCode).toBe(202);
+    await vi.waitFor(async () => expect((await app.inject(jobUrl)).json().job.status).toBe("complete"));
+  });
+
+  it("generates saved narration server-side, merges automatically, and skips unchanged beats", async () => {
+    const fetchMock = vi.fn(async () => new Response(pcmWav()));
+    vi.stubGlobal("fetch", fetchMock);
+    const { app, root, payload, libraryUrl, jobUrl } = await narratedServer();
+    expect((await app.inject({ method: "POST", url: "/api/audio/jobs", payload })).statusCode).toBe(202);
+    await vi.waitFor(async () => expect((await app.inject(jobUrl)).json().job.status).toBe("complete"));
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const library = (await app.inject(libraryUrl)).json();
+    expect(library.beats).toHaveLength(2);
+    expect(library.beats.every((beat: { audio: { ready: boolean } }) => beat.audio.ready)).toBe(true);
+    expect(library.beats[0].audio.filename).toMatch(/^Tidewrack_001_.*b01\.wav$/);
+    const audio = library.beats[0].audio;
+    await fs.access(path.join(root, ".folio-audio-cache", "beats", payload.run_id, "0", audio.revision, audio.filename));
+    await app.inject({ method: "POST", url: "/api/audio/jobs", payload });
+    await vi.waitFor(async () => expect((await app.inject(jobUrl)).json().job.status).toBe("complete"));
+    expect((await app.inject(jobUrl)).json().job.skipped_beats).toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const storyFile = path.join(root, "book", "story.json");
+    const renamedStory = JSON.parse(await fs.readFile(storyFile, "utf8"));
+    renamedStory.title = "Renamed: Tidewrack?";
+    await fs.writeFile(storyFile, JSON.stringify(renamedStory));
+    await app.inject({ method: "POST", url: "/api/audio/jobs", payload });
+    await vi.waitFor(async () => expect((await app.inject(jobUrl)).json().job.status).toBe("complete"));
+    const renamed = (await app.inject(libraryUrl)).json().beats[0].audio;
+    expect(renamed.filename).toMatch(/^Renamed_Tidewrack_001_/);
+    expect(renamed.revision).toBe(audio.revision);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await mutateReaderRun(root, "book", payload.run_id, (run) => { run.accepted[0].narration = "Revised paragraph."; });
+    const changed = await app.inject({ method: "POST", url: "/api/audio/jobs", payload });
+    expect(changed.statusCode).toBe(409);
+    expect(changed.json().changed).toBe(true);
+    expect((await app.inject(libraryUrl)).json().beats[0].outdated).toBe(true);
+    await app.inject({ method: "POST", url: "/api/audio/jobs", payload: { ...payload, replace: true } });
+    await vi.waitFor(async () => expect((await app.inject(jobUrl)).json().job.status).toBe("complete"));
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("stops a server queue without deleting checkpoints, then resumes missing clips", async () => {
+    let speechCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      speechCalls += 1;
+      if (speechCalls !== 2) return new Response(pcmWav());
+      return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("cancelled")), { once: true }));
+    }));
+    const { app, payload, libraryUrl, jobUrl } = await narratedServer();
+    const start = await app.inject({ method: "POST", url: "/api/audio/jobs", payload });
+    await vi.waitFor(() => expect(speechCalls).toBe(2));
+    expect((await app.inject({ method: "POST", url: "/api/audio/jobs", payload })).statusCode).toBe(409);
+    await app.inject({ method: "POST", url: `/api/audio/jobs/${start.json().job.id}/stop` });
+    await vi.waitFor(async () => expect((await app.inject(jobUrl)).json().job.status).toBe("stopped"));
+    expect((await app.inject(libraryUrl)).json().beats[0].audio.available).toEqual([0]);
+    await app.inject({ method: "POST", url: "/api/audio/jobs", payload });
+    await vi.waitFor(async () => expect((await app.inject(jobUrl)).json().job.status).toBe("complete"));
+    expect(speechCalls).toBe(4);
+  });
+
+  it("skips unresolved narration and detects the actual Chatterbox engine", async () => {
+    let engine = "original";
+    const fetchMock = vi.fn(async (url: string) => url.endsWith("/api/model-info")
+      ? Response.json({ type: engine, supports_paralinguistic_tags: engine === "turbo" }) : new Response(pcmWav()));
+    vi.stubGlobal("fetch", fetchMock);
+    const { app, root, payload, libraryUrl, jobUrl } = await narratedServer("chatterbox");
+    await mutateReaderRun(root, "book", payload.run_id, (run) => { run.current_draft!.incomplete_reason = "Stopped"; });
+    await app.inject({ method: "POST", url: "/api/audio/jobs", payload });
+    await vi.waitFor(async () => expect((await app.inject(jobUrl)).json().job.status).toBe("complete"));
+    expect((await app.inject(jobUrl)).json().job.skipped_beats).toBe(1);
+    expect((await app.inject(libraryUrl)).json().beats[1].eligible).toBe(false);
+    const unavailable = vi.fn(async () => { throw new Error("offline"); });
+    vi.stubGlobal("fetch", unavailable);
+    const later = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 1_500);
+    try { expect((await app.inject(libraryUrl)).json().beats[0].outdated).toBe(false); } finally { later.mockRestore(); }
+    vi.stubGlobal("fetch", fetchMock);
+    engine = "turbo";
+    const future = Date.now() + 4_000;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(future);
+    try { expect((await app.inject(libraryUrl)).json().beats[0].outdated).toBe(true); } finally { clock.mockRestore(); }
+  });
+
+  it("keeps checkpoints and stops when prose changes during a server render", async () => {
+    let release!: () => void;
+    const gate = new Promise<Response>((resolve) => { release = () => resolve(new Response(pcmWav())); });
+    vi.stubGlobal("fetch", vi.fn(async () => gate));
+    const { app, root, payload, libraryUrl, jobUrl } = await narratedServer();
+    await app.inject({ method: "POST", url: "/api/audio/jobs", payload });
+    await vi.waitFor(async () => expect((await app.inject(jobUrl)).json().job.clip_index).toBe(0));
+    await mutateReaderRun(root, "book", payload.run_id, (run) => { run.accepted[0].narration = "New source prose."; });
+    release();
+    await vi.waitFor(async () => expect((await app.inject(jobUrl)).json().job.status).toBe("failed"));
+    expect((await app.inject(jobUrl)).json().job.error).toContain("changed during audio generation");
+    expect((await app.inject(libraryUrl)).json().beats[0].audio.available).toEqual([0]);
+    expect((await app.inject(libraryUrl)).json().beats[0].outdated).toBe(true);
+  });
+
   it("exports a complete MP3 and rejects mismatched clip references", async () => {
     const encoded = spawnSync(ffmpeg!, ["-nostdin", "-v", "error", "-i", "pipe:0", "-f", "mp3", "pipe:1"], { input: pcmWav(), windowsHide: true });
     expect(encoded.status).toBe(0);
@@ -75,11 +231,13 @@ describe("reader audio", () => {
       beat: { run_id: audioRunId, beat_index: 0, revision: saved.revision, clip_index: 1 },
     } });
     expect((await app.inject(base)).json().audio.available).toEqual([0, 1]);
+    expect((await app.inject(base)).json().audio.ready).toBe(true);
     expect((await app.inject(`${base}/clips/0?revision=${saved.revision}`)).rawPayload).toEqual(pcmWav());
     const complete = await app.inject(`${base}/download?revision=${saved.revision}`);
     expect(complete.statusCode).toBe(200);
     expect(complete.headers["content-disposition"]).toContain("folio-beat-1.wav");
     expect(complete.rawPayload.length).toBeGreaterThan(pcmWav().length);
+    expect((await app.inject(`${base}/play?revision=${saved.revision}`)).headers["content-disposition"]).toContain("inline");
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const changed = await app.inject({ ...prepare, payload: { ...prepare.payload, narration: "Changed prose." } });
     expect(changed.statusCode).toBe(409);

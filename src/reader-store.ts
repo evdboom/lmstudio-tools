@@ -199,7 +199,7 @@ export async function createReaderRun(request: RunRequest): Promise<ReaderRun> {
   return run;
 }
 
-export async function readReaderRun(
+async function readReaderRunData(
   root: string,
   storyPath: string,
   runId: string
@@ -214,6 +214,11 @@ export async function readReaderRun(
     if (error instanceof z.ZodError) throw new Error("Reader run data is invalid.");
     throw error;
   }
+}
+
+export async function readReaderRun(root: string, storyPath: string, runId: string): Promise<ReaderRun> {
+  const file = await runFile(root, storyPath, runId);
+  return withMutationLock(file, () => readReaderRunData(root, storyPath, runId));
 }
 
 export async function deleteReaderRun(
@@ -242,7 +247,7 @@ export async function mutateReaderRun<T>(
 ): Promise<T> {
   const file = await runFile(root, storyPath, runId);
   return withMutationLock(file, async () => {
-    const run = await readReaderRun(root, storyPath, runId);
+    const run = await readReaderRunData(root, storyPath, runId);
     const result = await mutate(run);
     run.updated_at = new Date().toISOString();
     await writeRun(file, run);

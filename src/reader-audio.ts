@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prepareSpeechText } from "./reader-audio-text.js";
+import { beatClipSchema, registerReaderBeatAudio, speechCacheKey } from "./reader-audio-store.js";
 
 export interface ReaderAudioOptions {
   profile?: "portable" | "laptop" | "desktop" | "kokoro" | "chatterbox";
@@ -18,6 +18,7 @@ const speechSchema = z.object({
   text: z.string().trim().min(1).max(20_000),
   voice: z.string().trim().min(1).max(200).optional(),
   speed: z.number().min(0.5).max(2).default(1),
+  beat: beatClipSchema.optional(),
 }).strict();
 const MAX_AUDIO_BYTES = 30 * 1024 * 1024;
 
@@ -57,6 +58,8 @@ export function registerReaderAudio(app: FastifyInstance, root: string, options?
       return false;
     }
   }
+
+  const beatAudio = registerReaderBeatAudio(app, cacheDirectory, config, supportsVocalCues, () => active);
 
   app.get("/api/audio/config", async () => {
     return {
@@ -112,12 +115,20 @@ export function registerReaderAudio(app: FastifyInstance, root: string, options?
     const synthesisText = prepareSpeechText(parsed.data.text, await supportsVocalCues());
     if (!synthesisText) return reply.code(400).send({ error: "No speakable text remains after removing unsupported vocal cues." });
     const payload = { model: config.model, input: synthesisText, voice: parsed.data.voice ?? config.voice, speed: parsed.data.speed, response_format: config.responseFormat };
-    const key = createHash("sha256").update(JSON.stringify({ baseUrl: config.baseUrl, ...payload })).digest("hex");
+    const key = speechCacheKey(config.baseUrl, payload);
+    if (parsed.data.beat) {
+      try { await beatAudio.validateClip(parsed.data.beat, key); } catch {
+        return reply.code(409).send({ error: "Saved audio no longer matches this request. Select Read aloud again." });
+      }
+    }
     const cachePath = path.join(cacheDirectory, `${key}.${config.responseFormat}`);
     const audioMimeType = config.responseFormat === "mp3" ? "audio/mpeg" : "audio/wav";
-    const sendAudio = (audio: Buffer) => reply.header("cache-control", "private, no-store").type(audioMimeType).send(audio);
+    const sendAudio = async (audio: Buffer) => {
+      if (parsed.data.beat) await beatAudio.saveClip(parsed.data.beat, key, audio);
+      return reply.header("cache-control", "private, no-store").type(audioMimeType).send(audio);
+    };
     try {
-      return sendAudio(await fs.readFile(cachePath));
+      return await sendAudio(await fs.readFile(cachePath));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") return reply.code(500).send({ error: "Cannot read the audio cache." });
     }
@@ -134,6 +145,9 @@ export function registerReaderAudio(app: FastifyInstance, root: string, options?
       });
       if (!response.ok) {
         await response.body?.cancel();
+        if (chatterbox && response.status === 503) {
+          throw new Error("Chatterbox is not ready to synthesize speech. Check that its model loaded successfully and inspect the Chatterbox startup log.");
+        }
         if (chatterbox && response.status === 404) {
           throw new Error("Chatterbox could not find that voice file. Refresh the voice list and select an installed voice (for example, Emily.wav).");
         }
@@ -164,7 +178,7 @@ export function registerReaderAudio(app: FastifyInstance, root: string, options?
       } finally {
         await fs.rm(temporaryPath, { force: true });
       }
-      return sendAudio(audio);
+      return await sendAudio(audio);
     } catch (error) {
       return reply.code(502).send({ error: abort.signal.aborted
         ? "Audio rendering was cancelled or timed out."

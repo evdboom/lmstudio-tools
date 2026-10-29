@@ -215,6 +215,58 @@ test("shows speech errors and keeps audio controls within a phone viewport", asy
   await page.screenshot({ path: "test-results/audio-desktop.png", fullPage: true });
 });
 
+test("renders a complete beat while paused, restores clips, and confirms replacement", async ({ page }) => {
+  narrationOverride = "First saved paragraph.\n\nSecond saved paragraph.\n\nThird saved paragraph.";
+  speechRequests = [];
+  await page.goto(readerUrl);
+  await page.getByRole("button", { name: "Begin", exact: true }).click();
+  await expect(page.locator("#beat-0")).toContainText("First saved paragraph.");
+  await page.getByRole("button", { name: "Read beat 1 aloud" }).click();
+  const player = page.getByLabel("Story audio player");
+  await expect(player).toHaveAttribute("src", /\/clips\/0\?/);
+  await player.evaluate((element: HTMLAudioElement) => { element.pause(); });
+  await expect(page.getByRole("link", { name: "Download complete beat audio" })).toBeVisible();
+  expect(speechRequests).toHaveLength(3);
+  await page.getByRole("button", { name: "Next audio clip" }).click();
+  await expect(page.getByLabel("Audio clip", { exact: true })).toHaveValue("1");
+  await page.getByRole("button", { name: "Previous audio clip" }).click();
+  await expect(page.getByLabel("Audio clip", { exact: true })).toHaveValue("0");
+  const downloadPath = await page.getByRole("link", { name: "Download complete beat audio" }).getAttribute("href");
+  const complete = await page.request.get(new URL(downloadPath!, readerUrl).href);
+  expect(complete.ok()).toBe(true);
+  const completeAudio = await complete.body();
+  expect(completeAudio.length).toBeGreaterThan(silentWav().length * 2);
+  await page.setViewportSize({ width: 390, height: 844 });
+  const panel = page.getByRole("region", { name: "Story audio" });
+  expect(await panel.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    return [...element.querySelectorAll("button, select, audio, a")].every((child) => child.getBoundingClientRect().right <= bounds.right + 1);
+  })).toBe(true);
+  await panel.screenshot({ path: "test-results/beat-audio-mobile.png" });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await panel.screenshot({ path: "test-results/beat-audio-desktop.png" });
+  const resumeUrl = page.url();
+  await page.reload();
+  await page.getByRole("button", { name: "Continue", exact: true }).first().click();
+  await expect(page.getByRole("link", { name: "Download complete beat audio" })).toBeVisible();
+  await page.getByLabel("Audio clip", { exact: true }).selectOption("2");
+  await expect(player).toHaveAttribute("src", /\/clips\/2\?/);
+  narrationOverride = "The revised paragraph.";
+  await page.getByRole("button", { name: "Regenerate", exact: true }).click();
+  await expect(page.locator("#beat-0")).toContainText("The revised paragraph.");
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page.getByRole("button", { name: "Read beat 1 aloud" }).click();
+  await expect(page.locator(".audio-status")).toContainText("earlier version");
+  expect(speechRequests).toHaveLength(3);
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Read beat 1 aloud" }).click();
+  await expect(page.locator(".audio-status")).toContainText("1 clips saved");
+  expect(speechRequests).toHaveLength(4);
+  expect(speechRequests[3].input).toBe("The revised paragraph.");
+  expect(page.url()).toBe(resumeUrl);
+  narrationOverride = undefined;
+});
+
 test("previews a narrator without stories or an LM Studio model", async ({ page }) => {
   await page.route("**/api/stories", (route) => route.fulfill({ json: { stories: [] } }));
   await page.route("**/api/models", (route) => route.fulfill({ json: { models: [] } }));

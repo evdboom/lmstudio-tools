@@ -1,4 +1,6 @@
 import Fastify from "fastify";
+import { spawnSync } from "node:child_process";
+import ffmpeg from "ffmpeg-static";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { audioConfiguration, registerReaderAudio } from "../src/reader-audio.js";
 import { makeSandbox } from "./helpers.js";
@@ -7,6 +9,16 @@ import { createReaderServer } from "../src/reader-server.js";
 const cleanups: Array<() => Promise<unknown>> = [];
 const wav = Buffer.from("RIFF0000WAVEfmt test audio");
 const mp3 = Buffer.from("ID3 test audio");
+const audioRunId = "1a2039b0-4b3b-4ee2-8e42-8319b88ed628";
+
+function pcmWav(): Buffer {
+  const audio = Buffer.alloc(44 + 4800);
+  audio.write("RIFF", 0); audio.writeUInt32LE(audio.length - 8, 4); audio.write("WAVEfmt ", 8);
+  audio.writeUInt32LE(16, 16); audio.writeUInt16LE(1, 20); audio.writeUInt16LE(1, 22);
+  audio.writeUInt32LE(24000, 24); audio.writeUInt32LE(48000, 28); audio.writeUInt16LE(2, 32);
+  audio.writeUInt16LE(16, 34); audio.write("data", 36); audio.writeUInt32LE(4800, 40);
+  return audio;
+}
 
 afterEach(async () => {
   vi.unstubAllGlobals();
@@ -22,6 +34,62 @@ async function server(options?: Parameters<typeof registerReaderAudio>[2]) {
 }
 
 describe("reader audio", () => {
+  it("exports a complete MP3 and rejects mismatched clip references", async () => {
+    const encoded = spawnSync(ffmpeg!, ["-nostdin", "-v", "error", "-i", "pipe:0", "-f", "mp3", "pipe:1"], { input: pcmWav(), windowsHide: true });
+    expect(encoded.status).toBe(0);
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => url.endsWith("/api/model-info")
+      ? Response.json({ type: "original", supports_paralinguistic_tags: false })
+      : new Response(encoded.stdout)));
+    const app = await server({ profile: "chatterbox", format: "mp3" });
+    const prepared = (await app.inject({ method: "POST", url: "/api/audio/beats", payload: {
+      run_id: audioRunId, beat_index: 1, narration: "One.\n\nTwo.", voice: "Emily.wav",
+    } })).json().audio;
+    const reference = { run_id: audioRunId, beat_index: 1, revision: prepared.revision, clip_index: 0 };
+    const wrong = await app.inject({ method: "POST", url: "/api/audio/speech", payload: { text: "Wrong text.", voice: "Emily.wav", beat: reference } });
+    expect(wrong.statusCode).toBe(409);
+    for (const [clipIndex, text] of ["One.", "Two."].entries()) {
+      expect((await app.inject({ method: "POST", url: "/api/audio/speech", payload: { text, voice: "Emily.wav", beat: { ...reference, clip_index: clipIndex } } })).statusCode).toBe(200);
+    }
+    const result = await app.inject(`/api/audio/beats/${audioRunId}/1/download?revision=${prepared.revision}`);
+    expect(result.statusCode).toBe(200);
+    expect(result.headers["content-type"]).toContain("audio/mpeg");
+    const decoded = spawnSync(ffmpeg!, ["-nostdin", "-v", "error", "-i", "pipe:0", "-f", "s16le", "pipe:1"], { input: result.rawPayload, windowsHide: true });
+    expect(decoded.status).toBe(0);
+    expect(decoded.stdout.length).toBeGreaterThan(4800);
+  });
+
+  it("preserves a beat playlist, reuses cached clips, and exports one complete WAV", async () => {
+    const fetchMock = vi.fn(async () => new Response(pcmWav()));
+    vi.stubGlobal("fetch", fetchMock);
+    const app = await server({ profile: "portable" });
+    await app.inject({ method: "POST", url: "/api/audio/speech", payload: { text: "First paragraph.", voice: "af_heart" } });
+    const prepare = { method: "POST" as const, url: "/api/audio/beats", payload: {
+      run_id: audioRunId, beat_index: 0, narration: "First paragraph.\n\nSecond paragraph.", voice: "af_heart",
+    } };
+    const saved = (await app.inject(prepare)).json().audio;
+    expect(saved.available).toEqual([0]);
+    const base = `/api/audio/beats/${audioRunId}/0`;
+    expect((await app.inject(`${base}/download?revision=${saved.revision}`)).statusCode).toBe(409);
+    await app.inject({ method: "POST", url: "/api/audio/speech", payload: {
+      text: "Second paragraph.", voice: "af_heart",
+      beat: { run_id: audioRunId, beat_index: 0, revision: saved.revision, clip_index: 1 },
+    } });
+    expect((await app.inject(base)).json().audio.available).toEqual([0, 1]);
+    expect((await app.inject(`${base}/clips/0?revision=${saved.revision}`)).rawPayload).toEqual(pcmWav());
+    const complete = await app.inject(`${base}/download?revision=${saved.revision}`);
+    expect(complete.statusCode).toBe(200);
+    expect(complete.headers["content-disposition"]).toContain("folio-beat-1.wav");
+    expect(complete.rawPayload.length).toBeGreaterThan(pcmWav().length);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const changed = await app.inject({ ...prepare, payload: { ...prepare.payload, narration: "Changed prose." } });
+    expect(changed.statusCode).toBe(409);
+    expect(changed.json().changed).toBe(true);
+    expect((await app.inject(`${base}/clips/0?revision=${saved.revision}`)).statusCode).toBe(200);
+    const replaced = await app.inject({ ...prepare, payload: { ...prepare.payload, narration: "Changed prose.", replace: true } });
+    expect(replaced.json().audio.available).toEqual([]);
+    expect((await app.inject(`${base}/clips/0?revision=${saved.revision}`)).statusCode).toBe(409);
+  });
+
   it("defaults to disabled and keeps CPU-compatible laptop settings separate from desktop", () => {
     expect(audioConfiguration().enabled).toBe(false);
     expect(audioConfiguration({ profile: "laptop" })).toMatchObject({ enabled: true, model: "kokoro", voice: "af_heart" });
@@ -90,6 +158,17 @@ describe("reader audio", () => {
     expect(failed.body).not.toContain("secret upstream detail");
     expect((await app.inject(request)).json().error).toContain("WAV");
     expect((await app.inject(request)).statusCode).toBe(200);
+  });
+
+  it("reports Chatterbox readiness failures without blaming the voice ID", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => url.endsWith("/api/model-info")
+      ? Response.json({ loaded: false, supports_paralinguistic_tags: false })
+      : Response.json({ detail: "TTS engine model is not currently loaded or available." }, { status: 503 })));
+    const app = await server({ profile: "chatterbox" });
+    const result = await app.inject({ method: "POST", url: "/api/audio/speech", payload: { text: "Hello", voice: "Emily.wav" } });
+    expect(result.statusCode).toBe(502);
+    expect(result.json().error).toContain("model loaded successfully");
+    expect(result.json().error).not.toContain("voice ID");
   });
 
   it("requests and caches MP3 output for Chatterbox", async () => {

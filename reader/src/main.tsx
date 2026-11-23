@@ -576,7 +576,7 @@ function App() {
           prose_window: proseWindow,
           reasoning_mode: reasoningMode,
           reasoning_effort: reasoningEffort,
-          ongoing_instructions: buildReaderRunInstructions(ongoingInstructions, chatterboxVocalCues && audio.supportsVocalCues),
+          ongoing_instructions: buildReaderRunInstructions(ongoingInstructions, chatterboxVocalCues),
           reviewer_model: differentReviewer ? reviewerModel : undefined,
           reviewer_reasoning_mode: differentReviewer ? reviewerReasoningMode : undefined,
           reviewer_reasoning_effort: differentReviewer ? reviewerReasoningEffort : undefined,
@@ -905,9 +905,8 @@ function App() {
               <input
                 type="checkbox"
                 aria-label="Include vocal cue guidance"
-                checked={chatterboxVocalCues && audio.supportsVocalCues}
-                disabled={!audio.supportsVocalCues}
-                title="English narration with Chatterbox Turbo only"
+                checked={chatterboxVocalCues}
+                title="Optional writing guidance; audio support is independent"
                 onChange={(event) => setChatterboxVocalCues(event.target.checked)}
               />
               <span>

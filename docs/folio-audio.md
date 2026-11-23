@@ -112,9 +112,10 @@ than speech. Do not remove intentional breaths through blanket silence trimming.
   plan after prose review, with spans that reference exact source text, speaker
   IDs, delivery notes, pauses, and optional vocal/effect events.
 - The current **Suggest Chatterbox vocal cues** run option adds a persistent
-  ongoing narration instruction only for the Chatterbox profile. It is off by
-  default; it targets Turbo specifically and does not guarantee the selected
-  engine will interpret tags. The tags remain visible in authored narration.
+  ongoing narration instruction, independently of audio-profile readiness. It
+  is always enableable and off by default; it targets Turbo specifically and
+  does not guarantee the selected engine will interpret tags. The tags remain
+  visible in authored narration.
 - Before speech synthesis, Folio strips recognized Chatterbox cue tags unless
   the active Chatterbox service reports Turbo with
   `supports_paralinguistic_tags`. If capability probing fails, tags are

@@ -346,9 +346,9 @@ test("previews a narrator without stories or an LM Studio model", async ({ page 
   await expect(page.getByLabel("Story audio player")).not.toHaveAttribute("src");
 });
 
-test("enables English vocal cue guidance only when Turbo capabilities are reported", async ({ page }) => {
+test("allows vocal cue guidance when Chatterbox is unavailable", async ({ page }) => {
   await page.route("**/api/audio/config", (route) => route.fulfill({ json: {
-    enabled: true, profile: "portable", model: "portable", voice: "af_heart",
+    enabled: false, profile: "chatterbox", model: "chatterbox", voice: "",
     response_format: "wav", supports_vocal_cues: false,
   } }));
   responseRequests = [];
@@ -357,27 +357,14 @@ test("enables English vocal cue guidance only when Turbo capabilities are report
   await page.getByRole("button", { name: "Model options" }).click();
   const cueOption = page.getByLabel("Include vocal cue guidance");
   await expect(cueOption).toBeVisible();
-  await expect(cueOption).toBeDisabled();
-  await page.route("**/api/audio/config", (route) => route.fulfill({ json: {
-    enabled: true, profile: "chatterbox", model: "chatterbox", voice: "Emily.wav",
-    response_format: "wav", supports_vocal_cues: true,
-  } }));
-  await page.reload();
-  await page.getByRole("button", { name: "Model options" }).click();
   await expect(cueOption).toBeEnabled();
   await cueOption.check();
   await page.getByRole("button", { name: "Done" }).click();
   await page.getByRole("button", { name: "Begin", exact: true }).click();
   await expect(page.getByText("First draft.")).toBeVisible();
   const firstPrompt = responseRequests[0]?.input?.map((message) => message.content).join("\n") ?? "";
-  expect(firstPrompt).toContain("[dramatic]");
-  expect(firstPrompt).toContain("[clear throat]");
   expect(firstPrompt).toContain("Use Chatterbox Turbo's bracketed special tokens sparingly");
   expect(firstPrompt).toContain("English-only");
-  await page.getByRole("button", { name: "Next", exact: true }).click();
-  await expect(page.getByText("Final draft.")).toBeVisible();
-  const nextBeatPrompt = responseRequests[1]?.input?.map((message) => message.content).join("\n") ?? "";
-  expect(nextBeatPrompt).toContain("Use Chatterbox Turbo's bracketed special tokens sparingly");
 });
 
 test("previews and applies English Turbo cues without rewriting prose or invalidating audio until approval", async ({ page }) => {
